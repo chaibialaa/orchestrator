@@ -138,9 +138,6 @@ The tests cover what must never give way: the conditions under which an objectiv
 closes, and how verdicts are read. A rule loosened by accident is a promise
 broken.
 
-Note for contributors: the code comments, the CLI output and the interface are in
-French. The README is not.
-
 ## License
 
 [PolyForm Noncommercial 1.0.0](LICENSE.md) — free for any **noncommercial
