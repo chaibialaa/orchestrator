@@ -4,150 +4,151 @@
 
 <h1 align="center">Orchestrator</h1>
 
-<p align="center"><b>Un juge décide, un agent exécute, une preuve tranche.</b></p>
+<p align="center"><b>A judge decides, an agent executes, proof settles it.</b></p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/node-%E2%89%A5%2020-informational" alt="Node 20 ou plus">
-  <img src="https://img.shields.io/badge/licence-PolyForm%20Noncommercial%201.0.0-blue" alt="Licence PolyForm Noncommercial 1.0.0">
-  <img src="https://img.shields.io/badge/base-SQLite%20locale-lightgrey" alt="SQLite locale">
+  <img src="https://img.shields.io/badge/node-%E2%89%A5%2020-informational" alt="Node 20 or later">
+  <img src="https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue" alt="PolyForm Noncommercial 1.0.0 license">
+  <img src="https://img.shields.io/badge/database-local%20SQLite-lightgrey" alt="Local SQLite database">
 </p>
 
-Une boucle de pilotage d'agents de code. L'outil supprime le copier-coller entre
-la conversation qui pilote — celle où vous réfléchissez avec un modèle — et les
-harnais qui travaillent vraiment dans le dépôt. Il lit la consigne, l'exécute,
-dérive le coût et les livrables des traces, joint les rendus, reposte le compte
-rendu. Le juge valide ou refuse, et la boucle enchaîne.
+An orchestration loop for coding agents. It removes the copy-pasting between the
+conversation where you think — with a model that judges the work — and the
+harnesses that actually touch the repository. It reads the instruction, runs it,
+derives cost and deliverables from the traces, attaches the renders, and posts
+the report back. The judge accepts or rejects, and the loop carries on.
 
-Et il **refuse de conclure un objectif tant que sa preuve n'est pas là.**
+And it **refuses to close an objective until its proof is in.**
 
-## L'idée
+## The idea
 
-« Terminé » n'est pas un champ qu'un agent écrit, c'est une **condition qu'on
-évalue**. Un objectif ne conclut que si :
+"Done" is not a field an agent writes, it is a **condition you evaluate**. An
+objective closes only if:
 
-- son critère de preuve est écrit — sans lui, personne ne peut le prendre ;
-- ses sous-objectifs sont clos — un chapitre ne conclut pas avant ses parties ;
-- une preuve `pass` existe, et **une image si le critère demande de voir** ;
-- un rayon de souffle élevé a reçu une preuve du réel, pas un build vert ;
-- le juge du projet s'est prononcé — et un refus **retire** son accord précédent ;
-- aucun arrêt exigeant un humain ne reste ouvert.
+- its proof criterion is written down — without one, nobody may claim it;
+- its sub-objectives are closed — a chapter never closes before its parts;
+- a `pass` proof exists, and **an image if the criterion is about seeing**;
+- a high blast radius has been answered with real-world proof, not a green build;
+- the project's judge has ruled — and a rejection **revokes** its earlier approval;
+- no halt that requires a human is still open.
 
-Tout le reste est **dérivé, jamais déclaré** : le coût vient des transcripts, les
-livrables des fichiers réellement écrits pendant la session, l'état d'activité
-d'une tentative encore ouverte. Un agent ne peut pas oublier de déclarer ce qu'on
-lit à sa place — et ne peut pas se décerner un succès.
+Everything else is **derived, never declared**: cost comes from the transcripts,
+deliverables from the files actually written during the session, liveness from an
+attempt that has no end. An agent cannot forget to report what is read on its
+behalf — and cannot award itself a success.
 
-## Démarrer
+## Getting started
 
-Le paquet n'est pas encore publié sur npm ; on l'installe depuis les sources.
+The package is not published on npm yet; install it from source.
 
 ```bash
 git clone https://github.com/chaibialaa/orchestrator.git
 cd orchestrator
-npm install            # le serveur
-npm --prefix web i     # l'interface
-npm run build          # compile l'interface dans public/
+npm install            # the server
+npm --prefix web i     # the interface
+npm run build          # builds the interface into public/
 npm start              # http://localhost:4747
 ```
 
-Un seul processus sert l'interface **et** l'API. Les données vivent dans un
-fichier SQLite sous `~/.orchestrator/` — pas de base à installer, une sauvegarde
-se fait en copiant le fichier ; `orchestrator where` dit lequel.
+One process serves the interface **and** the API. Data lives in a SQLite file
+under `~/.orchestrator/` — no database to install, and a backup is a copy of that
+file; `orchestrator where` tells you which one.
 
-## Déclarer un projet
+## Declaring a project
 
-À la racine de **chaque dépôt piloté**, un `.orchestrator.json` déclare ce qui
-est local à cette machine. Le serveur, lui, ne stocke jamais une commande à
-exécuter : c'est cette séparation qui permettra de l'héberger sans qu'il puisse
-faire tourner quoi que ce soit chez quelqu'un.
+In the root of **every repository you drive**, an `.orchestrator.json` declares
+what is local to this machine. The server itself never stores a command to run:
+that separation is what will make it safe to host without it being able to
+execute anything on anyone's machine.
 
 ```json
 {
-  "project": "mon-projet",
-  "blastRadius": ["src/paiements/**", "migrations/*"],
+  "project": "my-project",
+  "blastRadius": ["src/payments/**", "migrations/*"],
   "proofs": {
     "build": "npm run build",
     "test": "npm test -- --run"
   },
   "probes": {
-    "migrations_touchees": "git status --porcelain -- migrations | grep -c . || true"
+    "migrations_touched": "git status --porcelain -- migrations | grep -c . || true"
   },
-  "binaries": { "codex": "/chemin/vers/codex" },
+  "binaries": { "codex": "/path/to/codex" },
   "env": { "NODE_ENV": "test" },
   "secrets": { "RUNPOD_API_KEY": "" }
 }
 ```
 
-| clé | ce qu'elle décide |
+| key | what it decides |
 | --- | --- |
-| `project` | le projet, côté serveur, auquel ce dépôt est rattaché |
-| `blastRadius` | les chemins sensibles : y toucher exige une preuve du réel |
-| `proofs` | les **seules** commandes exécutables — rien d'autre ne l'est jamais |
-| `probes` | des relevés de diagnostic, joints au compte rendu |
-| `binaries` | où trouver un harnais ; `ORCHESTRATOR_CODEX_BIN` l'emporte, sinon le PATH tranche |
-| `env`, `secrets` | ce qu'on injecte dans l'environnement de l'agent (un secret vide n'écrase rien) |
-| `deliverableDirs`, `deliverableIgnore` | borner le balayage des livrables, si le défaut ne suffit pas |
+| `project` | which server-side project this repository belongs to |
+| `blastRadius` | the sensitive paths: touching them demands real-world proof |
+| `proofs` | the **only** commands that may ever run — nothing else is executable |
+| `probes` | diagnostic readings, attached to the report |
+| `binaries` | where to find a harness; `ORCHESTRATOR_CODEX_BIN` wins, otherwise the PATH decides |
+| `env`, `secrets` | what gets injected into the agent's environment (an empty secret overrides nothing) |
+| `deliverableDirs`, `deliverableIgnore` | narrow the deliverable sweep when the default is not enough |
 
-Ce fichier contient des chemins de machine et des clés : il est **ignoré par
-git**, gardez-le local.
+This file holds machine paths and keys, so it is **git-ignored** — keep it local.
 
-## La boucle
+## The loop
 
 ```bash
-cd mon-projet
+cd my-project
 orchestrator chapter --objective 42 --budget 60 --max-turns 8 --post
 ```
 
-`--post` commande **l'exécution et l'écriture** : sans lui, la boucle lit et
-n'exécute rien. Et le garde-fou qui compte n'est pas le budget mais
-`--budget-sans-progres` (40 $ par défaut) : ce qu'on tolère de dépenser sans
-qu'un seul objectif soit prouvé. Ni les dollars ni le nombre de tours ne mesurent
-l'avancement ; celui-là le fait.
+`--post` commands **execution as well as writing**: without it the loop reads and
+runs nothing. And the guardrail that matters is not the budget but
+`--budget-sans-progres` (40 $ by default): what you tolerate spending without a
+single objective being proven. Neither dollars nor turns measure progress; that
+one does.
 
-Une boucle lancée en tâche de fond d'un terminal meurt avec lui. Détachez-la :
+A loop started in the background of a terminal dies with it. Detach it:
 
 ```bash
 nohup orchestrator chapter --objective 42 --budget 60 --post \
-  > chapitre-42.log 2>&1 < /dev/null & disown
+  > chapter-42.log 2>&1 < /dev/null & disown
 ```
 
-## Commandes
+## Commands
 
 ```
-orchestrator serve            l'interface et l'API
-orchestrator chapter          la boucle : juger, exécuter, prouver, rendre compte
-orchestrator plan --watch     découper un brief libre en étapes prouvables
-orchestrator do <harnais>     une consigne unique, hors boucle (--probe : hors objectif)
-orchestrator agents:check     constater ce qui est joignable sur cette machine
-orchestrator inventory        ce que le dépôt contient vraiment
-orchestrator prove <id> <clé> exécuter une preuve déclarée et la verser au dossier
-orchestrator import <json>    reprendre un export
-orchestrator where            où vit la base
+orchestrator serve            the interface and the API
+orchestrator chapter          the loop: judge, execute, prove, report
+orchestrator plan --watch     break a free-form brief into provable steps
+orchestrator do <harness>     a single instruction, outside the loop (--probe: no objective)
+orchestrator agents:check     establish what is reachable on this machine
+orchestrator inventory        what the repository actually contains
+orchestrator prove <id> <key> run a declared proof and file it as evidence
+orchestrator import <json>    restore an export
+orchestrator where            where the database lives
 ```
 
-`orchestrator` sans argument liste tout le reste.
+`orchestrator` with no argument lists everything else.
 
-## Développer
+## Development
 
 ```bash
-npm run dev          # interface en rechargement à chaud
-npm run build        # compile l'interface dans public/
-npm test             # les règles du gate, verrouillées
+npm run dev          # interface with hot reload
+npm run build        # builds the interface into public/
+npm test             # the gate rules, locked down
 ```
 
-Les tests portent sur ce qui ne doit jamais céder : les conditions de conclusion
-d'un objectif et la lecture des verdicts. Une règle qu'on assouplit sans le
-vouloir est une promesse qu'on casse.
+The tests cover what must never give way: the conditions under which an objective
+closes, and how verdicts are read. A rule loosened by accident is a promise
+broken.
 
-## Licence
+Note for contributors: the code comments, the CLI output and the interface are in
+French. The README is not.
 
-[PolyForm Noncommercial 1.0.0](LICENSE.md) — usage libre pour tout **but non
-commercial** : étude, projets personnels, recherche publique, écoles,
-associations, administrations. Tout usage commercial demande une licence
-séparée ; écrivez-moi.
+## License
 
-Ce n'est **pas** une licence open source au sens de l'OSI, qui interdit de
-restreindre les domaines d'usage — c'est du code source ouvert et lisible, sous
-condition non commerciale.
+[PolyForm Noncommercial 1.0.0](LICENSE.md) — free for any **noncommercial
+purpose**: study, personal projects, public research, schools, charities,
+government. Any commercial use needs a separate license; get in touch.
+
+This is **not** an open source license under the OSI definition, which forbids
+restricting fields of use — it is source available, readable and modifiable,
+under a noncommercial condition.
 
 © 2026 Chaibi Alaa
