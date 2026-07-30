@@ -4,56 +4,56 @@ import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 
 /**
- * Chiffrement des clés d'API au repos. La base ne doit jamais contenir un
- * secret en clair : elle se copie, se sauvegarde, se partage par mégarde.
+ * API keys encrypted at rest. The database must never hold a secret in the
+ * clear: it gets copied, backed up, and shared by accident.
  *
- * Le secret de chiffrement vit à côté, dans un fichier lisible par le seul
- * propriétaire. Copier la base sans lui ne donne rien d'exploitable.
+ * The encryption secret lives beside it, in a file only its owner can read.
+ * Copying the database without that file yields nothing usable.
  */
-function cheminSecret() {
+function secretPath() {
   return process.env.ORCHESTRATOR_KEY_FILE ?? join(homedir(), '.orchestrator', 'secret.key')
 }
 
-let cle = null
+let key = null
 
-function cleMaitresse() {
-  if (cle) return cle
+function masterKey() {
+  if (key) return key
 
-  const chemin = cheminSecret()
-  if (!existsSync(chemin)) {
-    mkdirSync(dirname(chemin), { recursive: true })
-    writeFileSync(chemin, randomBytes(32).toString('base64'), { mode: 0o600 })
-    chmodSync(chemin, 0o600)
+  const path = secretPath()
+  if (!existsSync(path)) {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, randomBytes(32).toString('base64'), { mode: 0o600 })
+    chmodSync(path, 0o600)
   }
 
-  cle = scryptSync(readFileSync(chemin, 'utf8').trim(), 'orchestrator', 32)
-  return cle
+  key = scryptSync(readFileSync(path, 'utf8').trim(), 'orchestrator', 32)
+  return key
 }
 
-export function chiffrer(clair) {
-  if (clair === null || clair === undefined || clair === '') return null
+export function encrypt(plain) {
+  if (plain === null || plain === undefined || plain === '') return null
   const iv = randomBytes(12)
-  const c = createCipheriv('aes-256-gcm', cleMaitresse(), iv)
-  const chiffre = Buffer.concat([c.update(String(clair), 'utf8'), c.final()])
+  const c = createCipheriv('aes-256-gcm', masterKey(), iv)
+  const chiffre = Buffer.concat([c.update(String(plain), 'utf8'), c.final()])
   return `v1.${iv.toString('base64url')}.${c.getAuthTag().toString('base64url')}.${chiffre.toString('base64url')}`
 }
 
-export function dechiffrer(stocke) {
-  if (!stocke) return null
-  const [v, iv, tag, corps] = String(stocke).split('.')
-  if (v !== 'v1' || !iv || !tag || !corps) return null
+export function decrypt(stored) {
+  if (!stored) return null
+  const [v, iv, tag, body] = String(stored).split('.')
+  if (v !== 'v1' || !iv || !tag || !body) return null
   try {
-    const d = createDecipheriv('aes-256-gcm', cleMaitresse(), Buffer.from(iv, 'base64url'))
+    const d = createDecipheriv('aes-256-gcm', masterKey(), Buffer.from(iv, 'base64url'))
     d.setAuthTag(Buffer.from(tag, 'base64url'))
-    return Buffer.concat([d.update(Buffer.from(corps, 'base64url')), d.final()]).toString('utf8')
+    return Buffer.concat([d.update(Buffer.from(body, 'base64url')), d.final()]).toString('utf8')
   } catch {
     // Secret perdu ou base d'une autre machine : on ne devine pas, on le dit.
     return null
   }
 }
 
-/** Ce que l'écran a le droit de voir d'une clé : qu'elle existe, et sa fin. */
-export function indice(stocke) {
-  const clair = dechiffrer(stocke)
-  return clair ? '••••••' + clair.slice(-4) : null
+/** What the screen is allowed to see of a key: that it exists, and how it ends. */
+export function keyHint(stored) {
+  const plain = decrypt(stored)
+  return plain ? '••••••' + plain.slice(-4) : null
 }

@@ -72,9 +72,9 @@ const decisionStyle: Record<Decision, string> = {
 }
 
 const decisionLabel: Record<Decision, string> = {
-  allow: 'autorisé',
-  deny: 'refusé',
-  ask: 'à trancher',
+  allow: 'allowed',
+  deny: 'refused',
+  ask: 'undecided',
 }
 </script>
 
@@ -83,44 +83,44 @@ const decisionLabel: Record<Decision, string> = {
     <section class="card p-4 border-ink-800">
       <div class="flex items-start gap-4">
         <div class="flex-1">
-          <h1 class="text-ink-100 text-[15px]">Autorisations</h1>
+          <h1 class="text-ink-100 text-[15px]">Permissions</h1>
           <p class="text-ink-400 mt-1.5 leading-relaxed max-w-3xl">
-            Ce que les agents ont le droit de faire sur ce projet. La décision se prend
-            <strong class="text-ink-300">ici, une fois</strong>, et se projette dans la
-            configuration des harnais — au lieu d'être revalidée à chaque geste.
-            Une session lancée sans personne devant l'écran ne peut rien demander : ce qui n'est
-            pas autorisé ici est simplement refusé.
+            What agents are allowed to do on this project. You decide
+            <strong class="text-ink-300">here, once</strong>, and it is written into the harness
+            configuration — instead of being re-approved at every step.
+            A session running with nobody at the screen cannot ask for anything: whatever is not
+            allowed here is simply refused.
           </p>
         </div>
         <input
           v-model="filter"
-          placeholder="filtrer…"
+          placeholder="filter…"
           class="shrink-0 bg-ink-900 border border-ink-700 rounded px-2.5 py-1 text-[12px] w-52 focus:outline-none focus:border-ink-600"
         />
       </div>
 
       <div class="flex items-center gap-5 mt-4 text-[12px]">
-        <span class="text-proof">{{ counts.allow }} autorisés</span>
-        <span class="text-fail">{{ counts.deny }} refusés</span>
-        <span :class="counts.ask ? 'text-halt' : 'text-ink-600'">{{ counts.ask }} à trancher</span>
+        <span class="text-proof">{{ counts.allow }} allowed</span>
+        <span class="text-fail">{{ counts.deny }} refused</span>
+        <span :class="counts.ask ? 'text-halt' : 'text-ink-600'">{{ counts.ask }} undecided</span>
         <span class="ml-auto text-ink-600">
-          Projeter dans le harnais :
+          Write into the harness:
           <code class="text-ink-400">orchestrator permissions:sync</code>
         </span>
       </div>
     </section>
 
     <section v-if="pending.length">
-      <h2 class="text-halt text-[14px] mb-1">À trancher — {{ pending.length }}</h2>
+      <h2 class="text-halt text-[14px] mb-1">Undecided — {{ pending.length }}</h2>
       <p class="text-ink-400 mb-3">
-        Des sessions ont réclamé ces outils sans les obtenir. Tant qu'ils ne sont pas tranchés,
-        elles se cognent dessus à chaque tour.
+        Sessions asked for these tools and did not get them. Until they are decided, every turn
+        runs into the same wall.
       </p>
       <div class="card divide-y divide-ink-800 border-halt/35">
         <div v-for="p in pending" :key="p.id" class="p-3 flex items-center gap-3 flex-wrap">
           <code class="text-ink-100 flex-1">{{ p.pattern }}</code>
           <span v-if="p.requested" class="text-ink-600 text-[11px]"
-            >réclamé {{ p.requested }} fois</span
+            >asked {{ p.requested }} times</span
           >
           <div class="flex gap-1">
             <button
@@ -137,7 +137,7 @@ const decisionLabel: Record<Decision, string> = {
       </div>
     </section>
 
-    <div v-if="loading" class="text-ink-400">chargement…</div>
+    <div v-if="loading" class="text-ink-400">loading…</div>
 
     <section v-for="(list, family) in grouped" :key="family">
       <div class="flex items-baseline gap-3 mb-2">
@@ -145,10 +145,10 @@ const decisionLabel: Record<Decision, string> = {
         <span class="text-ink-600 text-[11px]">{{ list.length }}</span>
         <div class="ml-auto flex gap-1">
           <button class="chip border-ink-600 text-ink-400 hover:text-proof" @click="setFamily(family, 'allow')">
-            tout autoriser
+            allow all
           </button>
           <button class="chip border-ink-600 text-ink-400 hover:text-fail" @click="setFamily(family, 'deny')">
-            tout refuser
+            refuse all
           </button>
         </div>
       </div>
@@ -181,7 +181,7 @@ const decisionLabel: Record<Decision, string> = {
     </section>
 
     <p v-if="!loading && !perms.length" class="text-ink-600">
-      Aucune autorisation déclarée. Elles apparaissent ici dès qu'une session en réclame une.
+      No permissions recorded yet. They show up here as soon as a session asks for one.
     </p>
   </div>
 </template>

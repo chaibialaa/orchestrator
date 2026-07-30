@@ -4,24 +4,24 @@ import { api, type Brief, type BlastRadius, type ProposedStep } from '../api'
 import { blastLabel } from '../labels'
 
 const props = defineProps<{ slug: string }>()
-const emit = defineEmits<{ applique: [] }>()
+const emit = defineEmits<{ applied: [] }>()
 
-const texte = ref('')
+const text = ref('')
 const briefs = ref<Brief[]>([])
-const envoi = ref(false)
-const erreur = ref<string | null>(null)
-let minuteur: ReturnType<typeof setInterval> | null = null
+const sending = ref(false)
+const error = ref<string | null>(null)
+let poller: ReturnType<typeof setInterval> | null = null
 
-/** Copie locale du découpage, pour que l'humain puisse le corriger avant. */
-const brouillon = ref<Record<number, { chapter: string; intent: string; steps: ProposedStep[] }>>({})
+/** A local copy of the breakdown, so it can be corrected before it counts. */
+const draft = ref<Record<number, { chapter: string; intent: string; steps: ProposedStep[] }>>({})
 
-async function charger() {
+async function load() {
   try {
     briefs.value = await api.briefs(props.slug)
     for (const b of briefs.value) {
-      if (b.status === 'proposed' && b.proposal && !brouillon.value[b.id]) {
-        brouillon.value = {
-          ...brouillon.value,
+      if (b.status === 'proposed' && b.proposal && !draft.value[b.id]) {
+        draft.value = {
+          ...draft.value,
           [b.id]: {
             chapter: b.proposal.chapter,
             intent: b.proposal.intent ?? '',
@@ -31,94 +31,94 @@ async function charger() {
       }
     }
   } catch {
-    /* le composeur n'est pas essentiel : il ne casse pas la page */
+    /* the composer is not essential: it must not take the page down */
   }
 }
 
 onMounted(() => {
-  charger()
-  // On attend un agent qui tourne ailleurs : sans sondage, l'écran resterait
-  // bloqué sur « en attente » alors que la proposition est déjà arrivée.
-  minuteur = setInterval(() => {
-    if (briefs.value.some((b) => b.status === 'pending' || b.status === 'running')) charger()
+  load()
+  // We are waiting on an agent running elsewhere: without polling, the screen
+  // would sit on "waiting" long after the proposal had arrived.
+  poller = setInterval(() => {
+    if (briefs.value.some((b) => b.status === 'pending' || b.status === 'running')) load()
   }, 4000)
 })
-onBeforeUnmount(() => minuteur && clearInterval(minuteur))
+onBeforeUnmount(() => poller && clearInterval(poller))
 
-async function soumettre() {
-  const body = texte.value.trim()
+async function submit() {
+  const body = text.value.trim()
   if (body.length < 20) {
-    erreur.value = 'Trop court pour être découpé — décris ce que tu veux obtenir.'
+    error.value = 'Too short to break down — describe what you want to end up with.'
     return
   }
-  envoi.value = true
-  erreur.value = null
+  sending.value = true
+  error.value = null
   try {
     const b = await api.createBrief(props.slug, body)
     briefs.value = [b, ...briefs.value]
-    texte.value = ''
+    text.value = ''
   } catch (e: any) {
-    erreur.value = e?.response?.data?.message ?? "l'envoi a échoué"
+    error.value = e?.response?.data?.message ?? 'the request failed'
   } finally {
-    envoi.value = false
+    sending.value = false
   }
 }
 
-async function appliquer(b: Brief) {
-  const d = brouillon.value[b.id]
+async function apply(b: Brief) {
+  const d = draft.value[b.id]
   if (!d) return
   try {
     await api.applyBrief(b.id, { chapter: d.chapter, intent: d.intent || null, steps: d.steps })
-    await charger()
-    emit('applique')
+    await load()
+    emit('applied')
   } catch (e: any) {
-    erreur.value = e?.response?.data?.message ?? "le plan n'a pas pu être créé"
+    error.value = e?.response?.data?.message ?? 'the plan could not be created'
   }
 }
 
-async function jeter(b: Brief) {
+async function discard(b: Brief) {
   await api.deleteBrief(b.id).catch(() => undefined)
   briefs.value = briefs.value.filter((x) => x.id !== b.id)
 }
 
-function retirerEtape(id: number, i: number) {
-  const d = brouillon.value[id]
+function removeStep(id: number, i: number) {
+  const d = draft.value[id]
   if (d) d.steps = d.steps.filter((_, n) => n !== i)
 }
 
-const RISQUES: BlastRadius[] = ['cosmetic', 'feature', 'api', 'critical']
-const enCours = (b: Brief) => b.status === 'pending' || b.status === 'running'
+const RISKS: BlastRadius[] = ['cosmetic', 'feature', 'api', 'critical']
+const busyOn = (b: Brief) => b.status === 'pending' || b.status === 'running'
 </script>
 
 <template>
   <section class="card p-5">
-    <h2 class="text-ink-100 text-[14px]">Décrire d'un bloc</h2>
+    <h2 class="text-ink-100 text-[14px]">Describe it all at once</h2>
     <p class="text-ink-400 mt-1.5 leading-relaxed max-w-3xl">
-      Colle ta demande telle que tu l'as écrite — un prompt, un cahier des charges, des notes. Un
-      agent la découpe en chapitre et étapes, avec un critère de preuve pour chacune. Il
-      <strong class="text-ink-300">propose</strong> : rien n'entre dans le plan avant que tu l'aies
-      relu et accepté.
+      Paste your request exactly as you wrote it — a prompt, a spec, some notes. An agent breaks it
+      into a chapter and steps, each with a proof criterion. It
+      <strong class="text-ink-300">proposes</strong>: nothing enters the plan before you have read it
+      and accepted it.
     </p>
 
-    <form class="mt-4" @submit.prevent="soumettre">
+    <form class="mt-4" @submit.prevent="submit">
       <textarea
-        v-model="texte"
+        v-model="text"
         rows="7"
         class="w-full bg-ink-950 border border-ink-800 rounded px-3 py-2.5 text-[13px] text-ink-300 leading-relaxed focus:outline-none focus:border-run"
-        placeholder="Ex. — Reprendre l'import d'employés Excel : accepter les .xlsx et .csv, refuser les doublons de matricule avec un message clair, produire un rapport téléchargeable des lignes rejetées, et couvrir le tout par des tests…"
+        placeholder="E.g. — Rework the Excel employee import: accept .xlsx and .csv, reject duplicate staff numbers with a clear message, produce a downloadable report of rejected rows, and cover all of it with tests…"
       />
       <div class="flex items-center gap-3 mt-2.5">
-        <button class="btn" :disabled="envoi || texte.trim().length < 20">
-          {{ envoi ? 'envoi…' : 'découper' }}
+        <button class="btn" :disabled="sending || text.trim().length < 20">
+          {{ sending ? 'sending…' : 'break it down' }}
         </button>
         <span class="text-ink-600 text-[11px]">
-          Le découpage tourne sur ta machine, via l'agent — lance
-          <code class="text-ink-400">orchestrator plan --watch</code> s'il n'est pas déjà en veille.
+          The breakdown runs on your machine, through the agent — start
+          <code class="text-ink-400">orchestrator plan --watch</code> if it is not already watching.
         </span>
       </div>
     </form>
 
-    <p v-if="erreur" class="mt-3 text-fail text-[12px]">{{ erreur }}</p>
+    <p v-if="error" class="mt-3 text-fail text-[12px]">{{ error }}</p>
 
     <div v-if="briefs.length" class="mt-5 space-y-3">
       <article
@@ -132,7 +132,7 @@ const enCours = (b: Brief) => b.status === 'pending' || b.status === 'running'
           <span
             class="label"
             :class="{
-              'text-run': enCours(b),
+              'text-run': busyOn(b),
               'text-halt': b.status === 'proposed',
               'text-proof': b.status === 'applied',
               'text-fail': b.status === 'failed',
@@ -140,20 +140,20 @@ const enCours = (b: Brief) => b.status === 'pending' || b.status === 'running'
           >
             {{
               b.status === 'pending'
-                ? "en attente d'un agent"
+                ? 'waiting for an agent'
                 : b.status === 'running'
-                  ? 'découpage en cours'
+                  ? 'breaking it down'
                   : b.status === 'proposed'
-                    ? 'à relire'
+                    ? 'to review'
                     : b.status === 'applied'
-                      ? 'appliqué au plan'
-                      : 'échec'
+                      ? 'applied to the plan'
+                      : 'failed'
             }}
           </span>
-          <button class="label hover:text-fail ml-auto" @click="jeter(b)">jeter</button>
+          <button class="label hover:text-fail ml-auto" @click="discard(b)">discard</button>
         </header>
 
-        <p v-if="enCours(b)" class="text-ink-500 text-[12px] mt-2">
+        <p v-if="busyOn(b)" class="text-ink-500 text-[12px] mt-2">
           {{ b.body.slice(0, 160) }}{{ b.body.length > 160 ? '…' : '' }}
         </p>
 
@@ -163,14 +163,14 @@ const enCours = (b: Brief) => b.status === 'pending' || b.status === 'running'
           >{{ b.error }}</pre
         >
 
-        <div v-if="b.status === 'proposed' && brouillon[b.id]" class="mt-3 space-y-2.5">
+        <div v-if="b.status === 'proposed' && draft[b.id]" class="mt-3 space-y-2.5">
           <input
-            v-model="brouillon[b.id].chapter"
+            v-model="draft[b.id].chapter"
             class="w-full bg-transparent text-ink-100 border-b border-ink-800 focus:border-run focus:outline-none pb-1"
           />
 
           <div
-            v-for="(e, i) in brouillon[b.id].steps"
+            v-for="(e, i) in draft[b.id].steps"
             :key="i"
             class="border border-ink-800 rounded p-2.5"
           >
@@ -180,36 +180,36 @@ const enCours = (b: Brief) => b.status === 'pending' || b.status === 'running'
                 v-model="e.title"
                 class="flex-1 bg-transparent text-ink-100 border-b border-transparent hover:border-ink-700 focus:border-run focus:outline-none"
               />
-              <button class="label hover:text-fail" title="retirer" @click="retirerEtape(b.id, i)">
+              <button class="label hover:text-fail" title="remove" @click="removeStep(b.id, i)">
                 ×
               </button>
             </div>
             <textarea
               v-model="e.proof_spec"
               rows="4"
-              placeholder="Ce qui prouvera que c'est fini"
+              placeholder="What will prove this is finished"
               class="mt-2 w-full bg-ink-950 border rounded px-2.5 py-1.5 text-[12px] text-ink-300 leading-relaxed resize-y focus:outline-none focus:border-run"
               :class="e.proof_spec ? 'border-ink-800' : 'border-halt/40'"
             />
             <div class="flex items-center gap-2 mt-2">
-              <span class="label">Risque</span>
+              <span class="label">Risk</span>
               <select
                 v-model="e.blast_radius"
                 class="bg-ink-950 border border-ink-800 rounded px-2 py-1 text-[12px] text-ink-300 focus:outline-none focus:border-run"
               >
-                <option v-for="r in RISQUES" :key="r" :value="r">{{ blastLabel[r] }}</option>
+                <option v-for="r in RISKS" :key="r" :value="r">{{ blastLabel[r] }}</option>
               </select>
               <span v-if="!e.proof_spec" class="text-halt text-[11px]"
-                >sans critère, cette étape restera à préciser</span
+                >without a criterion, this step stays undefined</span
               >
             </div>
           </div>
 
           <div class="flex items-center gap-3 pt-1">
-            <button class="btn" @click="appliquer(b)">créer ce plan</button>
+            <button class="btn" @click="apply(b)">create this plan</button>
             <span class="text-ink-600 text-[11px]"
-              >{{ brouillon[b.id].steps.length }} étape(s) · découpé par
-              {{ b.harness ?? 'un agent' }}</span
+              >{{ draft[b.id].steps.length }} step(s) · broken down by
+              {{ b.harness ?? 'an agent' }}</span
             >
           </div>
         </div>

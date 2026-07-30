@@ -2,74 +2,74 @@
 import { onBeforeUnmount, onMounted, ref, computed } from 'vue'
 import { api, type Project, type Scan } from '../api'
 
-const emit = defineEmits<{ applique: [] }>()
+const emit = defineEmits<{ applied: [] }>()
 
 const scans = ref<Scan[]>([])
-const projets = ref<Project[]>([])
-const erreur = ref<string | null>(null)
-const ouvert = ref<Record<string, boolean>>({})
-const cible = ref<Record<string, string>>({})
-let minuteur: ReturnType<typeof setInterval> | null = null
+const projects = ref<Project[]>([])
+const error = ref<string | null>(null)
+const open = ref<Record<string, boolean>>({})
+const target = ref<Record<string, string>>({})
+let poller: ReturnType<typeof setInterval> | null = null
 
-// Le dernier relevé n'est pas forcément le plus utile : un inventaire tout
-// neuf sans distillation cache une analyse complète faite juste avant. On
-// montre donc celui qui a des résultats, et on signale l'autre.
-const dernier = computed(() => scans.value.find((s) => s.result) ?? scans.value[0] ?? null)
-const inventairePlusRecent = computed(() => {
-  const tete = scans.value[0]
-  return tete && dernier.value && tete.id !== dernier.value.id ? tete : null
+// The newest scan is not necessarily the most useful: a brand-new inventory
+// with no distillation hides a complete analysis run just before it. So we show
+// the one that has results, and mention the other.
+const latest = computed(() => scans.value.find((s) => s.result) ?? scans.value[0] ?? null)
+const newerInventory = computed(() => {
+  const head = scans.value[0]
+  return head && latest.value && head.id !== latest.value.id ? head : null
 })
-const enCours = (s: Scan | null) => s && ['pending', 'running'].includes(s.status)
+const busyOn = (s: Scan | null) => s && ['pending', 'running'].includes(s.status)
 
-async function charger() {
+async function load() {
   try {
-    ;[scans.value, projets.value] = await Promise.all([api.scans(), api.projects()])
+    ;[scans.value, projects.value] = await Promise.all([api.scans(), api.projects()])
   } catch {
-    /* la vue d'ensemble ne doit pas tomber pour ça */
+    /* the overview must not go down over this */
   }
 }
 
 onMounted(() => {
-  charger()
-  minuteur = setInterval(() => enCours(dernier.value) && charger(), 4000)
+  load()
+  poller = setInterval(() => busyOn(latest.value) && load(), 4000)
 })
-onBeforeUnmount(() => minuteur && clearInterval(minuteur))
+onBeforeUnmount(() => poller && clearInterval(poller))
 
-async function lancer() {
-  erreur.value = null
+async function start() {
+  error.value = null
   try {
     scans.value = [await api.createScan(), ...scans.value]
   } catch (e: any) {
-    erreur.value = e?.response?.data?.message ?? "le relevé n'a pas pu être demandé"
+    error.value = e?.response?.data?.message ?? 'the scan could not be requested'
   }
 }
 
-async function appliquer(id: number, nom: string, bloc: NonNullable<Scan['result']>[string]) {
-  const slug = cible.value[nom]
+async function attach(id: number, name: string, bloc: NonNullable<Scan['result']>[string]) {
+  const slug = target.value[name]
   if (!slug) return
   try {
     await api.applyScan(id, slug, {
-      title: bloc.titre,
+      title: bloc.title,
       body: [
-        bloc.contexte ?? '',
-        bloc.contraintes?.length ? '\n**Contraintes**\n' + bloc.contraintes.map((c) => `- ${c}`).join('\n') : '',
-        bloc.contradictions?.length ? '\n**Contradictions relevées**\n' + bloc.contradictions.map((c) => `- ${c}`).join('\n') : '',
+        bloc.context ?? '',
+        bloc.constraints?.length ? '\n**Constraints**\n' + bloc.constraints.map((c) => `- ${c}`).join('\n') : '',
+        bloc.contradictions?.length ? '\n**Contradictions found**\n' + bloc.contradictions.map((c) => `- ${c}`).join('\n') : '',
       ]
         .filter(Boolean)
         .join('\n'),
       sources: bloc.sources,
     })
-    cible.value = { ...cible.value, [nom]: '' }
-    erreur.value = null
-    ouvert.value = { ...ouvert.value, [nom]: false }
+    target.value = { ...target.value, [name]: '' }
+    error.value = null
+    open.value = { ...open.value, [name]: false }
   } catch (e: any) {
-    erreur.value = e?.response?.data?.message ?? "le contexte n'a pas pu être rattaché"
+    error.value = e?.response?.data?.message ?? 'the context could not be attached'
   }
 }
 
-/** Un identifiant de projet lisible, déduit du nom : minuscules, tirets. */
-function versSlug(nom: string) {
-  return nom
+/** A readable project id, derived from the name: lowercase, hyphens. */
+function toSlug(name: string) {
+  return name
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -78,17 +78,17 @@ function versSlug(nom: string) {
     .slice(0, 40)
 }
 
-const existe = (nom: string) => projets.value.some((p) => p.slug === versSlug(nom))
+const exists = (name: string) => projects.value.some((p) => p.slug === toSlug(name))
 
-const depot = ref<Record<string, string>>({})
+const repoPath = ref<Record<string, string>>({})
 
-/** Le corps du contexte, assemblé comme à l'application. */
-function corps(bloc: NonNullable<Scan['result']>[string]) {
+/** The context body, assembled the same way as on apply. */
+function body(bloc: NonNullable<Scan['result']>[string]) {
   return [
-    bloc.contexte ?? '',
-    bloc.contraintes?.length ? '\n**Contraintes**\n' + bloc.contraintes.map((c) => `- ${c}`).join('\n') : '',
+    bloc.context ?? '',
+    bloc.constraints?.length ? '\n**Constraints**\n' + bloc.constraints.map((c) => `- ${c}`).join('\n') : '',
     bloc.contradictions?.length
-      ? '\n**Contradictions relevées**\n' + bloc.contradictions.map((c) => `- ${c}`).join('\n')
+      ? '\n**Contradictions found**\n' + bloc.contradictions.map((c) => `- ${c}`).join('\n')
       : '',
   ]
     .filter(Boolean)
@@ -96,33 +96,33 @@ function corps(bloc: NonNullable<Scan['result']>[string]) {
 }
 
 /**
- * Crée le projet à partir du contexte distillé. C'était l'intention d'origine
- * du relevé : découvrir les projets dans les mémoires, pas seulement enrichir
- * ceux qu'on avait déclarés à la main.
+ * Creates the project from the distilled context. That was the point of the scan
+ * in the first place: discover projects inside the memories, not merely enrich
+ * the ones that were declared by hand.
  */
-async function creerProjet(id: number, nom: string, bloc: NonNullable<Scan['result']>[string]) {
+async function createProject(id: number, name: string, bloc: NonNullable<Scan['result']>[string]) {
   try {
     await api.createProjectFromScan(id, {
-      slug: versSlug(nom),
-      name: nom,
-      repo_path: depot.value[nom]?.trim() || null,
-      title: bloc.titre,
-      body: corps(bloc),
+      slug: toSlug(name),
+      name: name,
+      repo_path: repoPath.value[name]?.trim() || null,
+      title: bloc.title,
+      body: body(bloc),
       sources: bloc.sources,
     })
-    await charger()
-    emit('applique')
+    await load()
+    emit('applied')
   } catch (e: any) {
-    erreur.value = e?.response?.data?.message ?? "le projet n'a pas pu être créé"
+    error.value = e?.response?.data?.message ?? 'the project could not be created'
   }
 }
 
-const ko = (o: number) => `${Math.round(o / 1024)} ko`
+const kb = (n: number) => `${Math.round(n / 1024)} kB`
 
-function attente(min: number) {
+function waited(min: number) {
   if (min < 60) return `${min} min`
   const h = Math.floor(min / 60)
-  return h < 24 ? `${h} h` : `${Math.floor(h / 24)} jour${h >= 48 ? 's' : ''}`
+  return h < 24 ? `${h} h` : `${Math.floor(h / 24)} day${h >= 48 ? 's' : ''}`
 }
 </script>
 
@@ -130,138 +130,138 @@ function attente(min: number) {
   <section class="card p-5">
     <div class="flex items-start gap-4 flex-wrap">
       <div class="flex-1 min-w-[20rem]">
-        <h2 class="text-ink-100 text-[14px]">Les mémoires laissées sur cette machine</h2>
+        <h2 class="text-ink-100 text-[14px]">The memories left on this machine</h2>
         <p class="text-ink-400 mt-1.5 leading-relaxed max-w-3xl">
-          Instructions de projet, mémoire du harnais, règles Codex : ce qu'on a appris est
-          éparpillé et plus personne ne le relit. Le relevé dit
-          <strong class="text-ink-300">ce qui existe et où</strong> — c'est gratuit. La
-          distillation, elle, coûte un appel de modèle par projet et ne part
-          <strong class="text-ink-300">que sur ta demande</strong>.
+          Project instructions, harness memory, Codex rules: what we learned is scattered and
+          nobody rereads it. The scan says
+          <strong class="text-ink-300">what exists and where</strong> — that part is free.
+          Distilling costs one model call per project and only runs
+          <strong class="text-ink-300">when you ask for it</strong>.
         </p>
       </div>
-      <button class="btn shrink-0" :disabled="Boolean(enCours(dernier))" @click="lancer">
-        {{ enCours(dernier) ? 'relevé en cours…' : 'analyser les mémoires locales' }}
+      <button class="btn shrink-0" :disabled="Boolean(busyOn(latest))" @click="start">
+        {{ busyOn(latest) ? 'scanning…' : 'analyse the local memories' }}
       </button>
     </div>
 
-    <p v-if="erreur" class="mt-3 text-fail text-[12px]">{{ erreur }}</p>
+    <p v-if="error" class="mt-3 text-fail text-[12px]">{{ error }}</p>
 
     <p
-      v-if="enCours(dernier)"
+      v-if="busyOn(latest)"
       class="mt-4 text-[12px]"
-      :class="(dernier?.attente_minutes ?? 0) > 5 ? 'text-halt' : 'text-ink-500'"
+      :class="(latest?.waiting_minutes ?? 0) > 5 ? 'text-halt' : 'text-ink-500'"
     >
-      <template v-if="(dernier?.attente_minutes ?? 0) > 5">
-        <strong>Personne ne l'a pris depuis {{ attente(dernier!.attente_minutes!) }}.</strong>
-        Aucun agent n'écoute sur cette machine. Lance
-        <code class="text-ink-300">orchestrator memory:scan --watch --analyser</code> depuis un dépôt
-        suivi — sinon ce relevé attendra indéfiniment.
+      <template v-if="(latest?.waiting_minutes ?? 0) > 5">
+        <strong>Nobody has picked it up for {{ waited(latest!.waiting_minutes!) }}.</strong>
+        No agent is listening on this machine. Run
+        <code class="text-ink-300">orchestrator memory:scan --watch --analyse</code> from a tracked
+        repository — otherwise this scan waits forever.
       </template>
       <template v-else>
-        En attente d'un agent — lance
-        <code class="text-ink-400">orchestrator memory:scan --watch --analyser</code> sur la machine
-        à inspecter. Le disque n'est lu que là-bas, jamais par le serveur.
+        Waiting for an agent — run
+        <code class="text-ink-400">orchestrator memory:scan --watch --analyse</code> on the machine to
+        inspect. The disk is only read there, never by the server.
       </template>
     </p>
 
-    <p v-if="dernier?.perime" class="mt-3 text-halt text-[12px]">
-      Les mémoires ont changé depuis ce relevé — ce qu'il montre n'est plus l'état du moment.
+    <p v-if="latest?.stale" class="mt-3 text-halt text-[12px]">
+      The memories have changed since this scan — what it shows is no longer the current state.
     </p>
 
-    <p v-if="inventairePlusRecent" class="mt-3 text-ink-500 text-[12px]">
-      Un inventaire plus récent existe (relevé #{{ inventairePlusRecent.id }}) mais n'a pas été
-      distillé. Ce qui suit vient du relevé #{{ dernier?.id }}.
+    <p v-if="newerInventory" class="mt-3 text-ink-500 text-[12px]">
+      A newer inventory exists (scan #{{ newerInventory.id }}) but was never distilled. What follows
+      comes from scan #{{ latest?.id }}.
     </p>
 
-    <div v-if="dernier?.inventory" class="mt-5">
+    <div v-if="latest?.inventory" class="mt-5">
       <div class="label mb-2">
-        Trouvé — {{ dernier.inventory.total }} fichiers, {{ ko(dernier.inventory.octets) }}
+        Found — {{ latest.inventory.total }} files, {{ kb(latest.inventory.bytes) }}
       </div>
       <div
-        v-for="(p, nom) in dernier.inventory.projets"
-        :key="nom"
+        v-for="(p, name) in latest.inventory.projects"
+        :key="name"
         class="flex items-baseline gap-3 py-1 text-[12px] border-b border-ink-850 last:border-0"
       >
-        <span class="text-ink-100 flex-1 truncate" :title="String(nom)">{{ nom }}</span>
-        <span class="text-ink-500">{{ p.nombre }} fichiers</span>
-        <span class="text-ink-600 w-16 text-right">{{ ko(p.octets) }}</span>
+        <span class="text-ink-100 flex-1 truncate" :title="String(name)">{{ name }}</span>
+        <span class="text-ink-500">{{ p.count }} files</span>
+        <span class="text-ink-600 w-16 text-right">{{ kb(p.bytes) }}</span>
       </div>
     </div>
 
-    <div v-if="dernier?.result" class="mt-6 space-y-3">
-      <div class="label">Ce qui en a été tiré — à rattacher, ou pas</div>
+    <div v-if="latest?.result" class="mt-6 space-y-3">
+      <div class="label">What was drawn out of it — attach it, or do not</div>
       <article
-        v-for="(bloc, nom) in dernier.result"
-        :key="nom"
+        v-for="(bloc, name) in latest.result"
+        :key="name"
         class="border border-ink-800 rounded p-3.5"
-        :class="bloc.erreur ? 'border-fail/40' : ''"
+        :class="bloc.error ? 'border-fail/40' : ''"
       >
         <header class="flex items-baseline gap-3 flex-wrap">
-          <span class="text-ink-100">{{ bloc.titre ?? nom }}</span>
-          <span v-if="bloc.releve_sous && bloc.releve_sous !== nom" class="label text-ink-600"
-            >relevé sous {{ bloc.releve_sous }}</span
+          <span class="text-ink-100">{{ bloc.title ?? name }}</span>
+          <span v-if="bloc.written_to && bloc.written_to !== name" class="label text-ink-600"
+            >recorded as {{ bloc.written_to }}</span
           >
-          <span v-if="bloc.contraintes?.length" class="label text-proof"
-            >{{ bloc.contraintes.length }} contraintes</span
+          <span v-if="bloc.constraints?.length" class="label text-proof"
+            >{{ bloc.constraints.length }} constraints</span
           >
           <span v-if="bloc.contradictions?.length" class="label text-halt"
             >{{ bloc.contradictions.length }} contradictions</span
           >
-          <span v-if="bloc.perime?.length" class="label text-ink-500"
-            >{{ bloc.perime.length }} périmées</span
+          <span v-if="bloc.stale?.length" class="label text-ink-500"
+            >{{ bloc.stale.length }} stale</span
           >
           <button
             class="label hover:text-run ml-auto"
-            @click="ouvert = { ...ouvert, [nom]: !ouvert[nom] }"
+            @click="open = { ...open, [name]: !open[name] }"
           >
-            {{ ouvert[nom] ? '▾ replier' : '▸ lire' }}
+            {{ open[name] ? '▾ collapse' : '▸ read' }}
           </button>
         </header>
 
-        <p v-if="bloc.erreur" class="text-fail text-[12px] mt-2">{{ bloc.erreur }}</p>
+        <p v-if="bloc.error" class="text-fail text-[12px] mt-2">{{ bloc.error }}</p>
 
-        <div v-if="ouvert[nom]" class="mt-3 space-y-3">
+        <div v-if="open[name]" class="mt-3 space-y-3">
           <pre
             class="p-3 bg-ink-950 border border-ink-800 rounded text-[12px] text-ink-300 whitespace-pre-wrap max-h-80 overflow-y-auto"
-            >{{ bloc.contexte }}</pre
+            >{{ bloc.context }}</pre
           >
-          <ul v-if="bloc.contraintes?.length" class="space-y-1">
-            <li v-for="c in bloc.contraintes" :key="c" class="text-ink-300 text-[12px]">— {{ c }}</li>
+          <ul v-if="bloc.constraints?.length" class="space-y-1">
+            <li v-for="c in bloc.constraints" :key="c" class="text-ink-300 text-[12px]">— {{ c }}</li>
           </ul>
-          <p v-if="bloc.laisses_nombre" class="text-ink-600 text-[11px]">
-            {{ bloc.laisses_nombre }} fichier(s) laissés de côté, trop volumineux pour une seule lecture.
+          <p v-if="bloc.skipped_count" class="text-ink-600 text-[11px]">
+            {{ bloc.skipped_count }} file(s) set aside, too large to read in one pass.
           </p>
-          <p class="text-ink-600 text-[11px]">{{ bloc.sources_nombre ?? bloc.sources?.length ?? 0 }} fichier(s) lus.</p>
+          <p class="text-ink-600 text-[11px]">{{ bloc.sources_count ?? bloc.sources?.length ?? 0 }} file(s) read.</p>
         </div>
 
-        <div v-if="!bloc.erreur" class="mt-3 space-y-2">
-          <div v-if="existe(String(nom))" class="flex items-center gap-2 flex-wrap">
-            <span class="label text-proof">projet déjà suivi</span>
+        <div v-if="!bloc.error" class="mt-3 space-y-2">
+          <div v-if="exists(String(name))" class="flex items-center gap-2 flex-wrap">
+            <span class="label text-proof">project already tracked</span>
             <select
-              v-model="cible[nom]"
+              v-model="target[name]"
               class="bg-ink-950 border border-ink-800 rounded px-2 py-1 text-[12px] text-ink-300 focus:outline-none focus:border-run"
             >
-              <option value="">rattacher au projet…</option>
-              <option v-for="p in projets" :key="p.slug" :value="p.slug">{{ p.name }}</option>
+              <option value="">attach to project…</option>
+              <option v-for="p in projects" :key="p.slug" :value="p.slug">{{ p.name }}</option>
             </select>
-            <button class="btn" :disabled="!cible[nom]" @click="appliquer(dernier!.id, String(nom), bloc)">
-              en faire une décision du projet
+            <button class="btn" :disabled="!target[name]" @click="attach(latest!.id, String(name), bloc)">
+              make it a project decision
             </button>
             <span class="text-ink-600 text-[11px]"
-              >elle sera relue par l'agent à chaque brief — c'est tout l'intérêt</span
+              >the agent rereads it on every brief — that is the whole point</span
             >
           </div>
 
           <div v-else class="flex items-center gap-2 flex-wrap">
-            <span class="label text-halt">projet non suivi</span>
-            <code class="text-[11px] text-ink-500">{{ versSlug(String(nom)) }}</code>
+            <span class="label text-halt">project not tracked</span>
+            <code class="text-[11px] text-ink-500">{{ toSlug(String(name)) }}</code>
             <input
-              v-model="depot[nom]"
-              placeholder="chemin du dépôt (facultatif)"
+              v-model="repoPath[name]"
+              placeholder="repository path (optional)"
               class="flex-1 min-w-[16rem] bg-ink-950 border border-ink-800 rounded px-2.5 py-1 text-[12px] text-ink-300 focus:outline-none focus:border-run"
             />
-            <button class="btn" @click="creerProjet(dernier!.id, String(nom), bloc)">
-              créer ce projet
+            <button class="btn" @click="createProject(latest!.id, String(name), bloc)">
+              create this project
             </button>
           </div>
         </div>

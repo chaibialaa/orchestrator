@@ -3,9 +3,8 @@ import { base } from './index.js'
 
 /**
  * Reprend l'export de l'ancien socle. On garde les identifiants d'origine :
- * les preuves, les arrêts et les décisions se citent entre eux par numéro, et
- * les journaux déjà écrits mentionnent « #14 ». Les renuméroter rendrait faux
- * tout ce qui a été dit jusqu'ici.
+ * proofs, halts and decisions cite each other by number, and the logs already
+ * written mention "#14". Renumbering them would falsify everything said so far.
  */
 const TABLES = [
   'projects',
@@ -31,19 +30,19 @@ const BOOLEENS = {
   agents: ['enabled'],
 }
 
-export function importer(fichier, { verbose = true } = {}) {
+export function importData(file, { verbose = true } = {}) {
   const db = base()
-  const dump = JSON.parse(readFileSync(fichier, 'utf8'))
-  const bilan = {}
+  const dump = JSON.parse(readFileSync(file, 'utf8'))
+  const outcome = {}
 
   const colonnesDe = (table) =>
     new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name))
 
   db.transaction(() => {
     for (const table of TABLES) {
-      const lignes = dump[table] ?? []
-      if (!lignes.length) {
-        bilan[table] = 0
+      const lines = dump[table] ?? []
+      if (!lines.length) {
+        outcome[table] = 0
         continue
       }
 
@@ -52,7 +51,7 @@ export function importer(fichier, { verbose = true } = {}) {
       let posees = 0
       let ignorees = new Set()
 
-      for (const ligne of lignes) {
+      for (const ligne of lines) {
         const champs = {}
         for (const [k, v] of Object.entries(ligne)) {
           if (!connues.has(k)) {
@@ -71,12 +70,12 @@ export function importer(fichier, { verbose = true } = {}) {
         posees++
       }
 
-      bilan[table] = posees
+      outcome[table] = posees
       if (verbose && ignorees.size) {
-        console.log(`  ${table} : ${[...ignorees].join(', ')} — colonne(s) abandonnée(s), sans usage`)
+        console.log(`  ${table}: ${[...ignorees].join(', ')} — column(s) dropped, unused`)
       }
     }
   })()
 
-  return bilan
+  return outcome
 }

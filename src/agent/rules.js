@@ -1,12 +1,11 @@
 /**
- * Le pack de pièges — nos cicatrices, compilées.
+ * The trap pack — our scars, compiled.
  *
- * Chaque règle vient d'un incident réel. Elle ne vaut que si elle est
- * mécanique : pas d'heuristique, pas de « probablement ». Une règle qui
- * produit des faux positifs sera désactivée, et le pack entier perdra
- * sa crédibilité.
+ * Every rule comes from a real incident. It is only worth having if it is
+ * mechanical: no heuristics, no "probably". A rule that produces false positives
+ * will get switched off, and the whole pack loses its credibility.
  *
- * `test` reçoit (ligne, chemin) et renvoie vrai si la ligne enfreint.
+ * `test` receives (line, path) and returns true when the line breaks the rule.
  */
 
 export const RULES = [
@@ -14,7 +13,7 @@ export const RULES = [
     id: 'cache-remember-collection',
     files: /\.php$/,
     severity: 'halt',
-    why: "Laravel 13 désérialise une Collection mise en cache en __PHP_Incomplete_Class.",
+    why: "Laravel 13 deserialises a cached Collection into __PHP_Incomplete_Class.",
     test: (line) =>
       /Cache::remember\w*\(/.test(line) && /->get\(\)|->all\(\)|collect\(/.test(line),
   },
@@ -22,7 +21,7 @@ export const RULES = [
     id: 'cache-remember-ttl-court',
     files: /\.php$/,
     severity: 'warn',
-    why: "Un calcul plus long que son TTL empile les recalculs — c'est la panne 504 d'incident.tn.",
+    why: "A computation longer than its TTL stacks up recomputations — that was incident.tn's 504 outage.",
     test: (line) => /Cache::remember\w*\([^,]+,\s*(\d{1,2})\s*,/.test(line),
   },
   {
@@ -36,7 +35,7 @@ export const RULES = [
     id: 'find-puis-where',
     files: /\.php$/,
     severity: 'halt',
-    why: "->find() renvoie un modèle : le ->where() qui suit ne filtre plus rien.",
+    why: "->find() returns a model: the ->where() that follows filters nothing at all.",
     // `Model::find($id)->where(...)` autant que `$repo->find($id)->where(...)`
     test: (line) => /(->|::)find\(\s*\$?\w+\s*\)\s*->where\(/.test(line),
   },
@@ -44,14 +43,14 @@ export const RULES = [
     id: 'load-sur-support-collection',
     files: /\.php$/,
     severity: 'warn',
-    why: "->load() n'existe pas sur Support\\Collection — 500 à l'exécution.",
+    why: "->load() does not exist on Support\\Collection — a 500 at runtime.",
     test: (line) => /collect\([^)]*\)\s*->load\(/.test(line),
   },
   {
     id: 'validation-cle-plate',
     files: /validation\.php$/,
     severity: 'halt',
-    why: "Laravel cherche des clés IMBRIQUÉES (max.string) ; une clé plate (max_string) affiche la clé brute.",
+    why: "Laravel looks for NESTED keys (max.string); a flat key (max_string) displays the raw key.",
     test: (line) => /^\s*'(max|min|between|size|gt|lt|gte|lte)_(string|numeric|file|array)'\s*=>/.test(line),
   },
   {
@@ -65,21 +64,21 @@ export const RULES = [
     id: 'response-success-sur-205',
     files: /\.(vue|ts)$/,
     severity: 'halt',
-    why: "response.success est VRAI pour un 205 : un refus ferme le formulaire en annonçant un succès. Utiliser isAccepted().",
+    why: "response.success is TRUE for a 205: a refusal closes the form announcing success. Use isAccepted().",
     test: (line) => /\b(response|res|data)\.success\b/.test(line) && !/isAccepted/.test(line),
   },
   {
     id: 'import-meta-env-dans-flechee',
     files: /\.(ts|js|vue)$/,
     severity: 'halt',
-    why: "() => import.meta.env.X casse le BUILD (pas le dev) si la variable est absente. Assigner au niveau module.",
+    why: "() => import.meta.env.X breaks the BUILD (not dev) when the variable is absent. Assign at module level.",
     test: (line) => /=>\s*import\.meta\.env\./.test(line),
   },
   {
-    id: 'migration-hors-fichier-unique',
+    id: 'migration-outside-single-file',
     files: /database\/migrations\/.*\.php$/,
     severity: 'halt',
-    why: "Convention : pas de nouvelle migration — étendre create_finances_tables + migrate:post-update idempotent.",
+    why: "Convention: no new migration — extend create_finances_tables plus an idempotent migrate:post-update.",
     test: (line, path) =>
       /Schema::create\(/.test(line) && !/create_finances_tables/.test(path),
   },

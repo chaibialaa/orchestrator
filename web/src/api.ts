@@ -1,8 +1,8 @@
 import axios from 'axios'
 
 export const http = axios.create({
-  // Le serveur sert l'interface ET l'API : un chemin relatif suit le port
-  // sur lequel on l'a lancé, sans rien à configurer.
+  // One server holds both the interface AND the API: a relative path follows
+  // whatever port it was started on, with nothing to configure.
   baseURL: import.meta.env.VITE_API_URL ?? '/api',
 })
 
@@ -152,7 +152,7 @@ export interface Agent {
   name: string
   label: string
   reach: 'cli' | 'browser' | 'api'
-  role: 'executant' | 'juge' | 'both'
+  role: 'executant' | 'judge' | 'both'
   enabled: boolean
   priority: number
   settings: Record<string, any> | null
@@ -169,22 +169,22 @@ export interface Scan {
   status: 'pending' | 'running' | 'inventoried' | 'analysed' | 'applied' | 'failed'
   inventory: {
     total: number
-    octets: number
-    projets: Record<string, { nombre: number; octets: number; fichiers: string[] }>
+    bytes: number
+    projects: Record<string, { count: number; bytes: number; files: string[] }>
   } | null
   result: Record<
     string,
     {
-      titre?: string
-      contexte?: string
-      contraintes?: string[]
+      title?: string
+      context?: string
+      constraints?: string[]
       contradictions?: string[]
-      perime?: string[]
+      stale?: string[]
       sources?: string[]
-      sources_nombre?: number
-      laisses_nombre?: number
-      releve_sous?: string
-      erreur?: string
+      sources_count?: number
+      skipped_count?: number
+      written_to?: string
+      error?: string
     }
   > | null
   error: string | null
@@ -192,13 +192,13 @@ export interface Scan {
   created_at: string
   taken_at?: string | null
   fingerprint?: string | null
-  attente_minutes?: number | null
-  perime?: boolean
+  waiting_minutes?: number | null
+  stale?: boolean
 }
 
-export interface Activite {
-  type: 'en_cours' | 'tentative' | 'verdict' | 'arret'
-  quand: string
+export interface Activity {
+  type: 'live' | 'attempt' | 'verdict' | 'halt'
+  at: string
   objective_id: number
   objective_title: string | null
   project: string | null
@@ -219,6 +219,18 @@ export interface Activite {
   resolved_at?: string | null
 }
 
+/** What is in the way, derived from traces — never typed. Every entry names its action. */
+export interface Blocker {
+  kind: string
+  severity: 'blocking' | 'warning'
+  project: string | null
+  objective: number | null
+  title: string
+  detail: string
+  action: string
+  since: string | null
+}
+
 export interface Storage {
   id: number
   provider: 'gdrive' | 'dropbox'
@@ -229,7 +241,13 @@ export interface Storage {
   last_status: 'ok' | 'refused' | 'absent' | 'unknown'
   last_detail: string | null
   last_sync_at: string | null
-  envois: number
+  uploads: number
+  /** How we authenticate: a connected account is not fixed the same way a key is. */
+  auth_kind: 'oauth' | 'service_account' | 'token' | null
+  /** Who the connected account belongs to — derived from the token, never typed. */
+  account: string | null
+  /** Is the OAuth app registered on this machine? */
+  oauth_ready: boolean
 }
 
 export interface Stats {
@@ -361,8 +379,8 @@ export const api = {
     http.patch<Objective>(`/objectives/${id}`, payload).then((r) => r.data),
   resolveHalt: (id: number) => http.patch<Halt>(`/halts/${id}/resolve`).then((r) => r.data),
 
-  // Réordonner d'un seul appel : envoyer N patchs laisserait l'ordre à moitié
-  // appliqué si l'un d'eux échoue en route.
+  // Reorder in a single call: sending N patches would leave the order half
+  // applied if one of them fails on the way.
   reorderObjectives: (slug: string, ordre: { id: number; priority: number }[]) =>
     http.patch(`/projects/${slug}/objectives/reorder`, { ordre }).then((r) => r.data),
 
@@ -371,26 +389,29 @@ export const api = {
 
   activity: (slug?: string) =>
     http
-      .get<{ en_cours: Activite[]; fil: Activite[] }>(`/activity${slug ? `?project=${slug}` : ''}`)
+      .get<{ live: Activity[]; feed: Activity[] }>(`/activity${slug ? `?project=${slug}` : ''}`)
       .then((r) => r.data),
 
+  blockers: () => http.get<Blocker[]>('/blockers').then((r) => r.data),
   storages: () => http.get<Storage[]>('/storages').then((r) => r.data),
   createStorage: (payload: { provider: string; label: string; target?: string | null; credentials?: unknown }) =>
     http.post<Storage>('/storages', payload).then((r) => r.data),
   updateStorage: (id: number, payload: Record<string, unknown>) =>
     http.patch<Storage>(`/storages/${id}`, payload).then((r) => r.data),
   deleteStorage: (id: number) => http.delete(`/storages/${id}`).then(() => undefined),
-  prepareStorage: (id: number, payload?: { nom?: string; partager_avec?: string }) =>
+  prepareStorage: (id: number, payload?: { name?: string; partager_avec?: string }) =>
     http
-      .post<{ dossier: { id: string; nom: string; url: string; partage: string | null } }>(
+      .post<{ folder: { id: string; name: string; url: string; sharedWith: string | null } }>(
         `/storages/${id}/prepare`,
         payload ?? {},
       )
       .then((r) => r.data),
-  checkStorage: (id: number) => http.post<Storage>(`/storages/${id}/check`).then((r) => r.data),
+  connectStorage: (id: number) =>
+    http.post<{ url: string; provider: string }>(`/storages/${id}/connect`).then((r) => r.data),
+  runCheck: (id: number) => http.post<Storage>(`/storages/${id}/check`).then((r) => r.data),
   syncStorage: (id: number) =>
     http
-      .post<{ envoyes: { fichier: string; url: string | null }[]; echecs: { fichier: string; erreur: string }[]; restant: number }>(
+      .post<{ uploaded: { file: string; url: string | null }[]; failures: { file: string; error: string }[]; remaining: number }>(
         `/storages/${id}/sync`,
       )
       .then((r) => r.data),
@@ -432,9 +453,9 @@ export const api = {
   deleteWorkflow: (id: number) => http.delete(`/workflows/${id}`).then(() => undefined),
 
   dashboard: () => http.get<Dashboard>('/dashboard').then((r) => r.data),
-  // `w` demande une vignette : sans lui on sert l'original, qui pèse
-  // plusieurs mégaoctets et laisse la grille de preuves vide le temps qu'il
-  // arrive. La visionneuse, elle, veut la pleine résolution.
+  // `w` asks for a thumbnail: without it we serve the original, which weighs
+  // several megabytes and leaves the proof grid blank while it arrives. The
+  // viewer, on the other hand, wants full resolution.
   evidenceFileUrl: (id: number, n = 0, w?: number) =>
     `${http.defaults.baseURL}/evidences/${id}/file?n=${n}${w ? `&w=${w}` : ''}`,
 

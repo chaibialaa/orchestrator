@@ -1,102 +1,103 @@
 /**
- * Tout le vocabulaire visible par un humain. Le modèle de données garde
- * ses termes techniques ; l'écran, lui, parle français.
+ * Every word a person reads. The data model keeps its technical terms; the
+ * screen speaks plainly — a status is what it means to you, not what the column
+ * is called.
  */
 
 export const statusLabel: Record<string, string> = {
-  draft: 'À préciser',
-  ready: 'Prêt à démarrer',
-  in_progress: 'En cours',
-  blocked: 'En attente de toi',
-  proven: 'Terminé et vérifié',
-  abandoned: 'Abandonné',
+  draft: 'Needs a criterion',
+  ready: 'Ready to start',
+  in_progress: 'In progress',
+  blocked: 'Waiting on you',
+  proven: 'Done and verified',
+  abandoned: 'Dropped',
 }
 
 export const statusHelp: Record<string, string> = {
-  draft: "On ne sait pas encore comment on saura que c'est fait. Personne ne peut le prendre.",
-  ready: 'Le but et la vérification sont clairs. Un agent peut le prendre.',
-  in_progress: "Un agent l'a pris en charge. La pastille dit si l'un d'eux y travaille en ce moment.",
-  blocked: "L'outil s'est arrêté volontairement et attend une décision de ta part.",
-  proven: "C'est fait, et la preuve a été fournie et acceptée.",
-  abandoned: 'Écarté, on n’y revient pas.',
+  draft: "Nobody has said yet how we'd know this is done. No agent can take it.",
+  ready: 'The goal and the check are clear. An agent can pick this up.',
+  in_progress: 'An agent took it on. The dot tells you whether one is working on it right now.',
+  blocked: 'The tool stopped on purpose and is waiting for you to decide.',
+  proven: 'It is done, and the proof was produced and accepted.',
+  abandoned: 'Set aside for good.',
 }
 
 export const blastLabel: Record<string, string> = {
-  cosmetic: 'Sans risque',
-  feature: 'Risque limité',
-  api: 'Touche aux données',
-  critical: 'Critique',
+  cosmetic: 'No risk',
+  feature: 'Limited risk',
+  api: 'Touches data',
+  critical: 'Critical',
 }
 
 export const blastHelp: Record<string, string> = {
-  cosmetic: "Visuel ou confort. Si c'est raté, on le voit et on refait — l'agent avance seul.",
-  feature: "Une fonction visible. Une vérification dans le vrai écran suffit — l'agent avance seul.",
-  api: 'Données ou interface partagée. Une relecture humaine est demandée avant de conclure.',
+  cosmetic: 'Visual or convenience. If it comes out wrong you see it and redo it — the agent runs alone.',
+  feature: 'A visible feature. One check in the real screen is enough — the agent runs alone.',
+  api: 'Data or a shared interface. A human read is required before concluding.',
   critical:
-    'Argent, paie, mise en production. Aucune autonomie : une preuve dans le réel et ton accord sont exigés.',
+    'Money, payroll, production. No autonomy: proof from the real world and your approval are both required.',
 }
 
 export const harnessLabel: Record<string, string> = {
   claude: 'Claude',
   codex: 'Codex',
   gpt: 'GPT',
-  human: 'Toi',
+  human: 'You',
 }
 
 export const verdictLabel: Record<string, string> = {
-  advanced: 'A fait avancer',
-  no_progress: "N'a rien démontré",
-  halted: "S'est arrêté",
-  failed: 'A échoué',
+  advanced: 'Moved it forward',
+  no_progress: 'Demonstrated nothing',
+  halted: 'Stopped',
+  failed: 'Failed',
 }
 
 export const evidenceLabel: Record<string, string> = {
-  test: 'Test automatisé',
-  e2e: 'Parcours réel dans l’écran',
-  screenshot: 'Capture d’écran',
-  render: 'Rendu visuel',
-  diff: 'Vérification du code modifié',
-  invariant: 'Mesure sur la production',
-  manual: 'Vérifié à la main',
+  test: 'Automated test',
+  e2e: 'Real run through the screen',
+  screenshot: 'Screenshot',
+  render: 'Rendered image',
+  diff: 'Review of the changed code',
+  invariant: 'Measurement on production',
+  manual: 'Checked by hand',
 }
 
 export const evidenceVerdictLabel: Record<string, string> = {
-  pass: 'concluante',
-  fail: 'en échec',
-  inconclusive: 'non concluante',
+  pass: 'passing',
+  fail: 'failing',
+  inconclusive: 'inconclusive',
 }
 
 export const haltLabel: Record<string, string> = {
-  no_provable_criterion: 'On ne sait pas comment le vérifier',
-  blast_radius: 'Trop risqué pour décider seul',
-  piege_rule: 'Une règle du projet a été enfreinte',
-  invariant_regression: 'Une mesure de production s’est dégradée',
-  no_new_proof: 'Plusieurs essais, rien de démontré',
-  budget: 'Budget atteint',
-  human_request: 'Tu as demandé l’arrêt',
-  verdict_rejected: 'Refusé au verdict, à reprendre',
-  children_open: 'Des sous-objectifs sont encore ouverts',
-  error: 'Erreur technique',
+  no_provable_criterion: 'No way to verify it',
+  blast_radius: 'Too risky to decide alone',
+  piege_rule: 'A project rule was broken',
+  invariant_regression: 'A production measurement degraded',
+  no_new_proof: 'Several attempts, nothing demonstrated',
+  budget: 'Budget reached',
+  human_request: 'You asked it to stop',
+  verdict_rejected: 'Rejected at verdict, to be redone',
+  children_open: 'Sub-objectives are still open',
+  error: 'Technical error',
 }
 
 export const haltHelp: Record<string, string> = {
   no_provable_criterion:
-    "Personne n'a su dire ce qui prouverait que c'est terminé. C'est le signe que la demande est encore trop floue — précise-la et l'outil repart.",
+    "Nobody could say what would prove this is finished. That means the request is still too vague — sharpen it and the tool starts again.",
   blast_radius:
-    "Le changement touche une zone sensible du projet. L'outil a préparé le travail mais refuse de conclure sans toi.",
+    'The change touches a sensitive area. The tool prepared the work but refuses to conclude without you.',
   piege_rule:
-    "Le code produit enfreint une règle qu'on s'est fixée après un incident passé. L'outil préfère s'arrêter plutôt que de la contourner.",
+    'The code breaks a rule we set after a past incident. The tool would rather stop than work around it.',
   invariant_regression:
-    'Une mesure prise sur le site en production est sortie de sa limite. Le travail est suspendu, quelque chose vient de casser pour de vrai.',
+    'A measurement taken on the live site went out of bounds. Work is suspended — something just broke for real.',
   no_new_proof:
-    "Plusieurs tentatives se sont enchaînées sans jamais rien démontrer. Continuer coûterait sans rien apporter : c'est souvent le signe qu'il faut changer d'approche, pas insister.",
-  budget: "La limite de dépense fixée pour cet objectif est atteinte. À toi de dire si on continue.",
-  human_request: 'Arrêt demandé explicitement.',
+    'Attempt after attempt demonstrated nothing. Continuing would cost without adding anything: usually the sign to change approach, not to push harder.',
+  budget: 'The spending limit set for this objective was reached. It is your call whether to continue.',
+  human_request: 'Stop requested explicitly.',
   verdict_rejected:
-    "Le juge du projet a examiné le travail et l'a refusé. Ce n'est pas un blocage : c'est une consigne de reprise, avec la raison du refus.",
+    "The project's judge looked at the work and turned it down. That is not a blocker: it is an instruction to redo, with the reason attached.",
   children_open:
-    "Un chapitre ne se conclut pas avant ses parties. Les sous-objectifs encore ouverts doivent être traités d'abord.",
-  error: "Quelque chose a planté côté outil. À regarder avant de relancer.",
+    'A chapter does not conclude before its parts. The sub-objectives still open have to be dealt with first.',
+  error: 'Something crashed inside the tool. Worth a look before relaunching.',
 }
 
 export function formatTokens(n: number | null | undefined): string {
@@ -107,7 +108,7 @@ export function formatTokens(n: number | null | undefined): string {
 }
 
 export function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} o`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} ko`
-  return `${(bytes / 1024 / 1024).toFixed(1)} Mo`
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} kB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }

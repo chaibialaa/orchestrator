@@ -33,13 +33,13 @@ async function onFiles(event: Event) {
 
   for (const file of Array.from(input.files)) {
     if (file.size > 5 * 1024 * 1024) {
-      uploadError.value = `${file.name} fait ${formatSize(file.size)} — la limite est 5 Mo.`
+      uploadError.value = `${file.name} is ${formatSize(file.size)} — the limit is 5 MB.`
       continue
     }
     try {
       await api.uploadResource(props.slug, file, '')
     } catch (e: any) {
-      uploadError.value = e?.response?.data?.message ?? `Échec sur ${file.name}`
+      uploadError.value = e?.response?.data?.message ?? `Failed on ${file.name}`
     }
   }
 
@@ -95,18 +95,18 @@ const includedCount = computed(() => resources.value.filter((r) => r.included).l
     <section class="card p-4 border-ink-800">
       <div class="flex items-start gap-4">
         <div class="flex-1">
-          <h1 class="text-ink-100 text-[15px]">Mémoire du projet</h1>
+          <h1 class="text-ink-100 text-[15px]">Project memory</h1>
           <p class="text-ink-400 mt-1.5 leading-relaxed max-w-3xl">
-            Ce que l'outil ressort tout seul au démarrage d'une nouvelle session de travail, pour
-            ne pas avoir à réexpliquer le projet à chaque fois. Deux choses :
-            les <strong class="text-ink-300">décisions</strong> — rattachées aux fichiers concernés,
-            elles remontent dès qu'un agent ouvre l'un d'eux — et les
-            <strong class="text-ink-300">documents</strong> que tu déposes ici.
+            What the tool brings back on its own when a new work session starts, so nobody has to
+            re-explain the project every time. Two things:
+            <strong class="text-ink-300">decisions</strong> — attached to the files they concern, they
+            surface the moment an agent opens one of them — and the
+            <strong class="text-ink-300">documents</strong> you drop here.
           </p>
         </div>
         <input
           v-model="filter"
-          placeholder="filtrer…"
+          placeholder="filter…"
           class="shrink-0 bg-ink-900 border border-ink-700 rounded px-2.5 py-1 text-[12px] w-56 focus:outline-none focus:border-ink-600"
         />
       </div>
@@ -116,20 +116,20 @@ const includedCount = computed(() => resources.value.filter((r) => r.included).l
     <section>
       <div class="flex items-baseline gap-3 mb-1">
         <h2 class="text-ink-100 text-[14px]">Documents — {{ resources.length }}</h2>
-        <span class="text-ink-400 text-[12px]">{{ includedCount }} inclus dans le contexte</span>
+        <span class="text-ink-400 text-[12px]">{{ includedCount }} included in the context</span>
         <button class="btn ml-auto" :disabled="uploading" @click="fileInput?.click()">
-          {{ uploading ? 'envoi…' : 'déposer un fichier' }}
+          {{ uploading ? 'uploading…' : 'add a file' }}
         </button>
         <input ref="fileInput" type="file" multiple class="hidden" @change="onFiles" />
       </div>
       <p class="text-ink-400 mb-3 max-w-3xl">
-        Images, notes, exports — jusqu'à 5 Mo par fichier. Décoche un document pour le garder en
-        archive sans l'envoyer aux agents.
+        Images, notes, exports — up to 5 MB per file. Untick a document to keep it on file without
+        sending it to agents.
       </p>
 
       <div v-if="uploadError" class="card p-3 border-fail/40 text-fail mb-3">{{ uploadError }}</div>
 
-      <div v-if="!filteredResources.length" class="text-ink-600">aucun document</div>
+      <div v-if="!filteredResources.length" class="text-ink-600">no documents</div>
 
       <div v-else class="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
         <article
@@ -163,10 +163,10 @@ const includedCount = computed(() => resources.value.filter((r) => r.included).l
               <button
                 class="chip shrink-0"
                 :class="r.included ? 'border-proof/50 text-proof' : 'border-ink-600 text-ink-400'"
-                :title="r.included ? 'Envoyé aux agents' : 'Gardé en archive'"
+                :title="r.included ? 'Sent to agents' : 'Kept on file only'"
                 @click="toggle(r)"
               >
-                {{ r.included ? 'inclus' : 'exclu' }}
+                {{ r.included ? 'included' : 'excluded' }}
               </button>
             </div>
 
@@ -176,30 +176,29 @@ const includedCount = computed(() => resources.value.filter((r) => r.included).l
 
             <input
               :value="r.summary ?? ''"
-              placeholder="à quoi ça sert ?"
+              placeholder="what is it for?"
               class="w-full mt-2 bg-ink-850 border border-ink-700 rounded px-2 py-1 text-[12px] focus:outline-none focus:border-ink-600"
               @change="saveSummary(r, ($event.target as HTMLInputElement).value)"
             />
 
             <button class="text-ink-600 hover:text-fail text-[11px] mt-2" @click="remove(r)">
-              retirer de la mémoire
+              remove from memory
             </button>
           </div>
         </article>
       </div>
     </section>
 
-    <!-- Décisions -->
+    <!-- Decisions -->
     <section>
-      <h2 class="text-ink-100 text-[14px] mb-1">Décisions — {{ decisions.length }}</h2>
+      <h2 class="text-ink-100 text-[14px] mb-1">Decisions — {{ decisions.length }}</h2>
       <p class="text-ink-400 mb-3 max-w-3xl">
-        Chaque décision est rattachée à des fichiers. Quand un agent s'apprête à toucher l'un
-        d'eux, elle lui est rappelée automatiquement — c'est ce qui évite de refaire deux fois la
-        même erreur.
+        Every decision is attached to files. When an agent is about to touch one of them, it is
+        reminded automatically — that is what stops the same mistake from happening twice.
       </p>
 
-      <div v-if="loading" class="text-ink-400">chargement…</div>
-      <div v-else-if="!filteredDecisions.length" class="text-ink-600">aucune décision</div>
+      <div v-if="loading" class="text-ink-400">loading…</div>
+      <div v-else-if="!filteredDecisions.length" class="text-ink-600">no decisions</div>
 
       <div v-else class="space-y-3">
         <article v-for="d in filteredDecisions" :key="d.id" class="card p-4">
@@ -209,7 +208,7 @@ const includedCount = computed(() => resources.value.filter((r) => r.included).l
           </div>
           <p class="text-ink-300 mt-2 whitespace-pre-wrap leading-relaxed">{{ d.body }}</p>
           <div v-if="d.paths?.length" class="mt-3 flex flex-wrap items-center gap-1.5">
-            <span class="text-ink-600 text-[11px]">rappelée sur :</span>
+            <span class="text-ink-600 text-[11px]">recalled on:</span>
             <code v-for="p in d.paths" :key="p" class="chip border-ink-700 text-ink-400 bg-ink-850">{{
               p
             }}</code>

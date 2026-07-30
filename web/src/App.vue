@@ -30,7 +30,7 @@ onMounted(async () => {
             class="px-2.5 py-1 rounded text-[12px] whitespace-nowrap"
             :class="route.name === 'dashboard' ? 'bg-ink-700 text-ink-100' : 'text-ink-400 hover:text-ink-100'"
           >
-            Vue d'ensemble
+            Overview
           </RouterLink>
           <span class="text-ink-700 px-1">·</span>
           <RouterLink
@@ -50,30 +50,30 @@ onMounted(async () => {
 
         <div class="ml-auto flex items-center gap-3 text-[11px] text-ink-400">
           <RouterLink
-            to="/outils"
+            to="/tools"
             class="hover:text-ink-100"
-            :class="route.name === 'outils' ? 'text-ink-100' : ''"
-            >outils</RouterLink
+            :class="route.name === 'tools' ? 'text-ink-100' : ''"
+            >tools</RouterLink
           >
           <RouterLink
             to="/config"
             class="hover:text-ink-100"
             :class="route.name === 'config' ? 'text-ink-100' : ''"
-            >IA connectées</RouterLink
+            >connected AI</RouterLink
           >
           <RouterLink
             v-if="route.params.slug"
             :to="`/p/${route.params.slug}`"
             class="hover:text-ink-100"
             :class="route.name === 'objectives' ? 'text-ink-100' : ''"
-            >objectifs</RouterLink
+            >objectives</RouterLink
           >
           <RouterLink
             v-if="route.params.slug"
-            :to="`/p/${route.params.slug}/analyse`"
+            :to="`/p/${route.params.slug}/analysis`"
             class="hover:text-ink-100"
-            :class="route.name === 'analyse' ? 'text-ink-100' : ''"
-            >analyse</RouterLink
+            :class="route.name === 'analysis' ? 'text-ink-100' : ''"
+            >analysis</RouterLink
           >
           <RouterLink
             v-if="route.params.slug"
@@ -87,14 +87,14 @@ onMounted(async () => {
             :to="`/p/${route.params.slug}/memory`"
             class="hover:text-ink-100"
             :class="route.name === 'memory' ? 'text-ink-100' : ''"
-            >mémoire</RouterLink
+            >memory</RouterLink
           >
           <RouterLink
             v-if="route.params.slug"
             :to="`/p/${route.params.slug}/permissions`"
             class="hover:text-ink-100"
             :class="route.name === 'permissions' ? 'text-ink-100' : ''"
-            >autorisations</RouterLink
+            >permissions</RouterLink
           >
         </div>
       </div>

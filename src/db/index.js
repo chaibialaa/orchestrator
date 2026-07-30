@@ -4,14 +4,14 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
 
-const ici = dirname(fileURLToPath(import.meta.url))
+const here = dirname(fileURLToPath(import.meta.url))
 
 /**
- * Un fichier, pas un serveur. La base vit dans ~/.orchestrator/ par défaut :
- * on la sauvegarde en la copiant, on la déplace en la déplaçant, et personne
- * n'a besoin d'installer quoi que ce soit pour lire ses propres données.
+ * A file, not a server. The database lives in ~/.orchestrator/ by default: you
+ * back it up by copying it, you move it by moving it, and nobody has to install
+ * anything to read their own data.
  */
-export function cheminBase() {
+export function dbPath() {
   return process.env.ORCHESTRATOR_DB ?? join(homedir(), '.orchestrator', 'orchestrator.db')
 }
 
@@ -20,86 +20,205 @@ let db = null
 export function base() {
   if (db) return db
 
-  const chemin = cheminBase()
-  mkdirSync(dirname(chemin), { recursive: true })
+  const path = dbPath()
+  mkdirSync(dirname(path), { recursive: true })
 
-  db = new Database(chemin)
+  db = new Database(path)
   db.pragma('journal_mode = WAL')
   db.pragma('foreign_keys = ON')
-  // Plusieurs processus écrivent en même temps — la boucle, le serveur, le
-  // découpeur de briefs. Sans attente, l'un d'eux se prend un SQLITE_BUSY.
+  // Several processes write at the same time — the loop, the server, the brief
+  // splitter. Without a wait, one of them takes a SQLITE_BUSY.
   db.pragma('busy_timeout = 5000')
 
-  db.exec(readFileSync(join(ici, 'schema.sql'), 'utf8'))
-  ajouterColonnesManquantes(db)
+  db.exec(readFileSync(join(here, 'schema.sql'), 'utf8'))
+  addMissingColumns(db)
 
   return db
 }
 
-/** Les colonnes JSON sont stockées en texte : on les rend telles qu'attendues. */
+/** JSON columns are stored as text: hand them back in the shape callers expect. */
 export const json = {
-  lire(v, defaut = null) {
-    if (v === null || v === undefined || v === '') return defaut
+  read(v, fallback = null) {
+    if (v === null || v === undefined || v === '') return fallback
     try {
       return JSON.parse(v)
     } catch {
-      return defaut
+      return fallback
     }
   },
-  ecrire(v) {
+  write(v) {
     return v === null || v === undefined ? null : JSON.stringify(v)
   },
 }
 
-/** L'heure, au format que la base stocke, en UTC — jamais l'heure locale. */
-export function maintenant() {
+/** The time, in the format the database stores, in UTC — never local time. */
+export function nowStamp() {
   return new Date().toISOString().replace('T', ' ').slice(0, 19)
 }
 
 /**
- * Le schéma se crée d'un bloc, mais une base existante ne se recrée pas. Les
- * colonnes ajoutées après coup se posent ici, une par une, sans jamais toucher
- * aux données : un utilisateur qui met à jour ne doit rien avoir à faire.
+ * The schema is created in one block, but an existing database is not recreated.
+ * Columns added afterwards land here, one by one, without ever touching the data:
+ * someone who updates should have nothing to do.
  */
-function ajouterColonnesManquantes(db) {
-  const ajouts = [
-    // Ce que l'agent sait FAIRE, au-delà d'exécuter ou juger : générer des
-    // images, de la 3D, un rendu. C'est ce qui permet à une mission de dire
-    // « pour les images, utilise celui-ci » au lieu de laisser deviner.
+function addMissingColumns(db) {
+  const additions = [
+    // What the agent can DO, beyond executing or judging: generate images, 3D, a
+    // rendering. That is what lets a mission say "for images, use this one"
+    // instead of leaving it to guesswork.
     ['agents', 'capabilities', "TEXT"],
-    // Le nom de la variable d'environnement qui porte son secret. La VALEUR
-    // reste sur la machine : un serveur hébergé ne détiendra jamais la clé
-    // RunPod de quelqu'un.
+    // The NAME of the environment variable that carries its secret. The VALUE
+    // stays on the machine: a hosted server will never hold anybody's RunPod key.
     ['agents', 'env_var', 'TEXT'],
     ['agents', 'endpoint', 'TEXT'],
-    // Quelle conversation pilote ce projet, et laquelle des IA connectées la
-    // tient. Figer une seule URL dans le code interdisait d'avoir un fil par
-    // chantier — ou d'utiliser un autre juge que ChatGPT.
+    // Which conversation drives this project, and which of the connected AIs
+    // holds it. Freezing one URL in the code made it impossible to have a thread
+    // per project — or to use a judge other than ChatGPT.
     ['projects', 'judge_agent', 'TEXT'],
     ['projects', 'judge_url', 'TEXT'],
-    // La continuité est un choix PAR OBJECTIF : elle a du sens sur une boucle
-    // d'itérations, aucun sur une étape indépendante. Jamais globale.
+    // Continuity is a PER-OBJECTIVE choice: it makes sense on a loop of
+    // iterations, none on an independent step. Never global.
     ['objectives', 'resume_mode', "TEXT NOT NULL DEFAULT 'new'"],
     ['objectives', 'resume_session', 'TEXT'],
-    // L'identifiant de la session du harnais, et celui dont elle hérite. Sans
-    // ça, une reprise transporte de l'état que personne ne peut voir : on ne
-    // saurait plus si l'ordre était mauvais ou l'exécution.
+    // The harness session id, and the one it inherits from. Without this, a
+    // resume carries state nobody can see: we could no longer tell whether the
+    // order was bad or the execution was.
     ['passages', 'session_id', 'TEXT'],
     ['passages', 'resumed_from', 'TEXT'],
-    // L'empreinte des mémoires au moment du relevé, et la dernière observée.
-    // Sans ça, un relevé vieux de trois jours s'affiche comme la vérité du
-    // moment alors que les fichiers ont changé dix fois depuis.
+    // The fingerprint of the memories at scan time, and the latest one observed.
+    // Without this, a three-day-old scan displays as the current truth while the
+    // files have changed ten times since.
     ['scans', 'fingerprint', 'TEXT'],
     ['scans', 'fingerprint_seen', 'TEXT'],
     ['scans', 'seen_at', 'TEXT'],
-    // Le nombre de preuves existantes au moment de l'arrêt. Comparer des
-    // horodatages à la seconde ne distingue pas deux écritures rapprochées ;
-    // un repère sur les identifiants, lui, ne ment pas.
+    // How many proofs existed at the moment of the halt. Comparing timestamps at
+    // one-second resolution cannot tell two close writes apart; a watermark on
+    // ids does not lie.
     ['halts', 'evidence_mark', 'INTEGER'],
+    // WHO the connected account belongs to. Derived from the token, never typed:
+    // a storage with no readable owner drops proofs somewhere nobody can name.
+    ['storages', 'account', 'TEXT'],
   ]
 
-  for (const [table, colonne, type] of ajouts) {
-    const existe = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === colonne)
-    if (!existe) db.exec(`ALTER TABLE ${table} ADD COLUMN ${colonne} ${type}`)
+  for (const [table, column, type] of additions) {
+    const exists = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)
+    if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+  }
+
+  renameLegacyColumns(db)
+  translateStoredKeys(db)
+}
+
+/**
+ * Columns renamed when the project switched to English. `CREATE TABLE IF NOT
+ * EXISTS` does not touch a table that exists: without this pass, the query would
+ * target `bytes` on a database that still has `octets`, and uploading proofs
+ * would fail the day someone used it — not before.
+ */
+function renameLegacyColumns(db) {
+  // The name on the LEFT is data, not an identifier: it is the historic French
+  // name we still look for on existing databases.
+  const renames = [['evidence_remotes', 'octets', 'bytes']]
+
+  for (const [table, from, to] of renames) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name)
+    if (cols.includes(from) && !cols.includes(to)) {
+      db.exec(`ALTER TABLE ${table} RENAME COLUMN ${from} TO ${to}`)
+    }
+  }
+
+  translateRoleValues(db)
+}
+
+/**
+ * An agent's role is a STORED VALUE, not an identifier: the code only recognises
+ * `judge` now, so a row left at `juge` would make the judge vanish from the
+ * screen without a single error.
+ *
+ * And a CHECK constraint cannot be altered: `CREATE TABLE IF NOT EXISTS` does not
+ * rewrite a table that exists, so the old constraint survives and refuses the new
+ * value. The only way through is to rebuild the table.
+ */
+function translateRoleValues(db) {
+  const existing = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agents'")
+    .get()?.sql
+
+  if (!existing || !existing.includes("'juge'")) return
+
+  // The target table comes from the SCHEMA, not from rewriting the old one.
+  // Deriving the new from the old by string surgery produced a constraint that
+  // accepted neither value: there is one source of truth, and it is schema.sql.
+  const schema = readFileSync(join(here, 'schema.sql'), 'utf8')
+  const target = /CREATE TABLE IF NOT EXISTS agents \([\s\S]*?\n\);/.exec(schema)?.[0]
+  if (!target) return
+
+  const oldColumns = db.prepare('PRAGMA table_info(agents)').all().map((c) => c.name)
+
+  db.exec('PRAGMA foreign_keys = OFF')
+  db.transaction(() => {
+    db.exec(target.replace('IF NOT EXISTS agents', 'agents_migrated'))
+
+    // We only copy columns present on both sides, and the conversion happens
+    // INSIDE the copy: afterwards, the new constraint would already refuse `juge`.
+    const shared = db
+      .prepare('PRAGMA table_info(agents_migrated)')
+      .all()
+      .map((c) => c.name)
+      .filter((c) => oldColumns.includes(c))
+
+    const source = shared
+      .map((c) => (c === 'role' ? "CASE WHEN role = 'juge' THEN 'judge' ELSE role END" : c))
+      .join(',')
+
+    db.exec(`INSERT INTO agents_migrated (${shared.join(',')}) SELECT ${source} FROM agents`)
+    db.exec('DROP TABLE agents')
+    db.exec('ALTER TABLE agents_migrated RENAME TO agents')
+  })()
+  db.exec('PRAGMA foreign_keys = ON')
+}
+
+/**
+ * The same keys, but inside JSON already written to the database. A memory scan
+ * carries `titre`/`contexte`/`projets`; the code now reads
+ * `title`/`context`/`projects`. Without a rewrite the screen renders EMPTY with
+ * no error at all — the worst possible case, and one we have already lived.
+ */
+function translateStoredKeys(db) {
+  // The keys on the LEFT are data — the French names actually written to the
+  // database. Translating them here, as an automatic rename did once, turns the
+  // migration into a no-op: it passes without fixing anything, and the failure
+  // shows up on somebody else's machine.
+  const KEYS = {
+    octets: 'bytes',
+    projects: 'projects',
+    nombre: 'count',
+    files: 'files',
+    nom: 'name',
+    titre: 'title',
+    contexte: 'context',
+    contraintes: 'constraints',
+    perime: 'stale',
+    sources_nombre: 'sources_count',
+    laisses_nombre: 'skipped_count',
+    releve_sous: 'written_to',
+  }
+
+  const translate = (value) => {
+    if (Array.isArray(value)) return value.map(translate)
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([k, v]) => [KEYS[k] ?? k, translate(v)]))
+    }
+    return value
+  }
+
+  const rows = db
+    .prepare("SELECT id, inventory, result FROM scans WHERE inventory LIKE '%projets%' OR result LIKE '%titre%'")
+    .all()
+
+  for (const r of rows) {
+    const inv = r.inventory ? JSON.stringify(translate(JSON.parse(r.inventory))) : null
+    const res = r.result ? JSON.stringify(translate(JSON.parse(r.result))) : null
+    db.prepare('UPDATE scans SET inventory = ?, result = ? WHERE id = ?').run(inv, res, r.id)
   }
 }

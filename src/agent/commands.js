@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Agent local Orchestrator — client mince.
+ * Orchestrator local agent — a thin client.
  *
- * Il n'exécute JAMAIS une commande reçue du serveur : seules les clés
- * déclarées dans .orchestrator.json (proofs.*) sont exécutables. C'est
- * cette règle, et elle seule, qui rendra une version hébergée défendable.
+ * It NEVER runs a command received from the server: only the keys declared in
+ * .orchestrator.json (proofs.*) are executable. That rule, and that rule alone,
+ * is what will make a hosted version defensible.
  */
 
 import { execFileSync } from 'node:child_process'
@@ -13,14 +13,14 @@ import { resolve, relative, basename, dirname, join } from 'node:path'
 import { homedir, hostname } from 'node:os'
 import { RULES, checkFile } from './rules.js'
 import { recentSessions, readSince, encodeCwd } from './watch.js'
-import { genererImage, ADAPTATEURS } from './images.js'
-import { inventorier, assembler, consigne, empreinte } from './memoires.js'
-import { attach, parseDirective, parseVerdict, parseFini, jsPost, attachFiles, waitForStable, confirmPosted, JS_LAST_ASSISTANT, JS_IS_STREAMING } from './relay.js'
+import { generateImage, ADAPTERS } from './images.js'
+import { inventoryMemories, assembleContext, memoryInstruction, memoryFingerprint } from './memories.js'
+import { attach, parseDirective, parseVerdict, parseDone, jsPost, attachFiles, waitForStable, confirmPosted, JS_LAST_ASSISTANT, JS_IS_STREAMING } from './relay.js'
 
 /**
- * Tarifs Claude en $/million de tokens : [entrée, sortie].
- * L'écriture de cache coûte ×1,25 (TTL 5 min) ou ×2 (TTL 1 h) le tarif
- * d'entrée ; la lecture de cache ×0,1.
+ * Claude pricing in $/million tokens: [input, output].
+ * Cache writes cost ×1.25 (5 min TTL) or ×2 (1 h TTL) of the input rate; cache
+ * reads ×0.1.
  */
 const PRICING = {
   'claude-fable-5': [10, 50],
@@ -36,7 +36,7 @@ const PRICING = {
   'claude-haiku-4-5': [1, 5],
 }
 
-/** Les identifiants portent parfois un suffixe (`[1m]`, date) : on préfixe. */
+/** Model ids sometimes carry a suffix (`[1m]`, a date): match on the prefix. */
 function priceFor(model) {
   const key = Object.keys(PRICING)
     .sort((a, b) => b.length - a.length)
@@ -44,10 +44,10 @@ function priceFor(model) {
   return key ? PRICING[key] : [0, 0]
 }
 
-/** Claude Code range ses transcripts par répertoire de travail encodé. */
+/** Claude Code files its transcripts by encoded working directory. */
 function defaultTranscriptDir() {
-  // Une seule source pour cette règle : elle vivait à deux endroits, l'un des
-  // deux a été corrigé et pas l'autre, et la panne est restée entière.
+  // One source for this rule: it lived in two places, one of them was fixed and
+  // the other was not, and the fault survived whole.
   const slug = encodeCwd(process.cwd())
   return resolve(homedir(), '.claude/projects', slug)
 }
@@ -71,18 +71,42 @@ function loadConfig() {
     sessionTimeoutMin: project.sessionTimeoutMin ?? null,
     codexPricing: project.codexPricing ?? {},
     binaries: { ...(global.binaries ?? {}), ...(project.binaries ?? {}) },
-    // Un secret laissé vide dans le fichier n'écrase pas celui de l'environnement :
-    // `{ "RUNPOD_API_KEY": "" }` effacerait la vraie clé au lancement de l'agent.
+    // A secret left empty in the file does not overwrite the one in the
+    // environment: `{ "RUNPOD_API_KEY": "" }` would erase the real key when the
+    // agent starts.
     secrets: Object.fromEntries(Object.entries(project.secrets ?? {}).filter(([, v]) => v !== '' && v != null)),
     deliverableDirs: project.deliverableDirs ?? null,
     deliverableIgnore: project.deliverableIgnore ?? null,
+    // Directories outside the repository that a mission is allowed to READ.
+    // Without them, the refusals have nothing to do with the tool list: the
+    // harness bounds its access to the working directory, and an `ls` on Unity's
+    // log is refused even when Bash is entirely allowed. Three passes were lost to
+    // this, blaming the permissions.
+    readDirs: project.readDirs ?? [],
+    unity: project.unity ?? null,
+  }
+}
+
+/**
+ * Is a Unity editor running? We look at the process, not at the MCP server: the
+ * server keeps answering after the editor has died, and that is exactly what made
+ * two sessions believe they could work.
+ */
+function editeurUnityVivant() {
+  try {
+    // Unity Hub carries the same name without the editor binary: target the full
+    // path, otherwise the Hub alone would be enough to say "all good".
+    execFileSync('pgrep', ['-f', 'Unity.app/Contents/MacOS/Unity'], { stdio: 'pipe' })
+    return true
+  } catch {
+    return false
   }
 }
 
 const config = loadConfig()
 
 async function call(method, path, body, { soft = false } = {}) {
-  const envoyer = () =>
+  const upload = () =>
     fetch(`${config.apiUrl}${path}`, {
       method,
       headers: {
@@ -93,29 +117,29 @@ async function call(method, path, body, { soft = false } = {}) {
       body: body ? JSON.stringify(body) : undefined,
     })
 
-  // Une passe dure des minutes ; entre deux appels, la connexion gardée en
-  // réserve meurt côté serveur et l'écriture suivante part dans le vide
-  // (EPIPE). Ça avait l'air d'un problème de taille — l'inventaire de 93 ko
-  // passait, le résultat de 83 ko échouait : c'était le silence, pas le poids.
+  // A pass lasts minutes; between two calls the kept-alive connection dies
+  // server-side and the next write goes nowhere (EPIPE). It looked like a size
+  // problem — a 93 kB inventory went through, an 83 kB result failed: it was the
+  // silence, not the weight.
   let res
   try {
-    res = await envoyer()
+    res = await upload()
   } catch (e) {
     const mort = ['EPIPE', 'ECONNRESET', 'UND_ERR_SOCKET'].some((c) => String(e?.cause?.code ?? e?.code ?? e?.message).includes(c))
     if (!mort) throw e
     await pause(300)
-    res = await envoyer()
+    res = await upload()
   }
 
   const data = await res.json().catch(() => ({}))
 
   if (!res.ok) {
-    // Un refus de la porte de preuve n'est pas une panne : c'est le produit.
-    // Il ne doit donc PAS tuer une boucle en cours — sinon un objectif qui
-    // refuse de conclure emporte tout le chapitre avec lui, y compris les
-    // autres étapes qui n'ont rien demandé.
+    // A refusal from the proof gate is not a failure: it is the product. So it
+    // must NOT kill a running loop — otherwise one objective that refuses to
+    // conclude takes the whole chapter with it, including the other steps that
+    // asked for nothing.
     if (data.gate) {
-      console.error(`\n  refus du gate — ${data.gate.reason}`)
+      console.error(`\n  gate refused — ${data.gate.reason}`)
       console.error(`  ${data.gate.detail}\n`)
       if (soft) return null
       if (process.env.ORCHESTRATOR_BOUCLE === '1') return { gate: data.gate, refus: true }
@@ -139,7 +163,7 @@ function git(...args) {
   }
 }
 
-/** L'état réel vient de git, jamais du rapport d'un agent. */
+/** The real state comes from git, never from an agent's report. */
 function head() {
   return git('rev-parse', 'HEAD')
 }
@@ -192,7 +216,7 @@ function writeState(state) {
   writeFileSync(STATE_FILE, JSON.stringify(state, null, 2))
 }
 
-/** Les hooks reçoivent leur charge utile en JSON sur stdin. */
+/** Hooks receive their payload as JSON on stdin. */
 async function readHookInput() {
   if (process.stdin.isTTY) return {}
   const chunks = []
@@ -206,8 +230,8 @@ async function readHookInput() {
 
 const commands = {
   /**
-   * Hook SessionStart : injecte la mémoire du projet dans le contexte et
-   * ouvre une tentative si un objectif est prenable. Rien à taper.
+   * SessionStart hook: injects the project memory into the context and opens an
+   * attempt if an objective is takeable. Nothing to type.
    */
   async 'session:start'() {
     const input = await readHookInput()
@@ -220,32 +244,32 @@ const commands = {
       .filter((o) => ['ready', 'in_progress'].includes(o.status) && !o.open_halts_count)
       .sort((a, b) => a.priority - b.priority)
 
-    const lines = [`# Mémoire ${recall.project.name}`, '']
+    const lines = [`# Memory — ${recall.project.name}`, '']
 
     for (const d of recall.decisions) {
       lines.push(`## ${d.title} (${d.decided_at.slice(0, 10)})`)
       lines.push(d.body)
-      if (d.paths?.length) lines.push(`Chemins concernés : ${d.paths.join(', ')}`)
+      if (d.paths?.length) lines.push(`Paths concerned: ${d.paths.join(', ')}`)
       lines.push('')
     }
 
     for (const r of recall.resources) {
       lines.push(`## Document — ${r.name}${r.summary ? ` : ${r.summary}` : ''}`)
       if (r.content) lines.push(r.content)
-      else lines.push(`Fichier : ${r.url}`)
+      else lines.push(`File: ${r.url}`)
       lines.push('')
     }
 
     let passageId = null
-    // Lancé par `orchestrator do` / `relay` : le parent gère déjà la
-    // tentative. On injecte le contexte, on n'en ouvre pas une seconde.
+    // Started by `orchestrator do` / `relay`: the parent already manages the
+    // attempt. We inject the context, we do not open a second one.
     const managed = process.env.ORCHESTRATOR_MANAGED === '1'
 
     if (takeable.length) {
       const objective = takeable[0]
-      lines.push(`## Objectif en cours — #${objective.id} ${objective.title}`)
+      lines.push(`## Objective in progress — #${objective.id} ${objective.title}`)
       lines.push(`Rayon de souffle : ${objective.blast_radius}`)
-      lines.push(`Preuve attendue : ${objective.proof_spec}`)
+      lines.push(`Proof required: ${objective.proof_spec}`)
 
       const passage = managed
         ? null
@@ -254,18 +278,18 @@ const commands = {
             git_before: head(),
           }).catch(() => null)
 
-      if (managed) lines.push('Tentative déjà ouverte par l’orchestrateur.')
+      if (managed) lines.push('Attempt already opened by the orchestrator.')
 
       if (passage?.id) {
         passageId = passage.id
         const state = readState()
         state[input.session_id ?? 'inconnu'] = { passageId, project: config.project }
         writeState(state)
-        lines.push(`Tentative #${passageId} ouverte — les preuves s'y rattachent.`)
+        lines.push(`Attempt #${passageId} opened — proofs attach to it.`)
       }
     } else {
-      lines.push('## Aucun objectif prenable')
-      lines.push('Tout est prouvé, arrêté, ou sans critère de preuve défini.')
+      lines.push('## No takeable objective')
+      lines.push('Everything is proven, halted, or has no proof criterion defined.')
     }
 
     console.log(
@@ -280,8 +304,8 @@ const commands = {
   },
 
   /**
-   * Hook SessionEnd : lit la consommation réelle, clôt la tentative.
-   * Le verdict se déduit des preuves, il ne se déclare pas.
+   * SessionEnd hook: reads the real usage, closes the attempt.
+   * The verdict is derived from the proofs, it is never declared.
    */
   async 'session:end'() {
     const input = await readHookInput()
@@ -307,12 +331,12 @@ const commands = {
 
     console.log(
       JSON.stringify({
-        systemMessage: `Orchestrator — tentative #${entry.passageId} close (${proven ? 'a fait avancer' : "n'a rien démontré"}).`,
+        systemMessage: `Orchestrator — attempt #${entry.passageId} closed (${proven ? 'moved it forward' : 'demonstrated nothing'}).`,
       }),
     )
   },
 
-  /** Hook PostToolUse sur `git commit` : recale l'état réel du dépôt. */
+  /** PostToolUse hook on `git commit`: resyncs the repository's real state. */
   async 'git:sync'() {
     const input = await readHookInput()
     const state = readState()
@@ -341,7 +365,7 @@ const commands = {
       console.log(`    ${d.body}`)
     }
 
-    if (!data.decisions.length && !data.requires_human) console.log('  aucune décision liée à ce chemin')
+    if (!data.decisions.length && !data.requires_human) console.log('  no decision attached to this path')
   },
 
   async 'passage:start'(objectiveId, harness) {
@@ -354,7 +378,7 @@ const commands = {
   },
 
   async 'passage:end'(passageId, verdict, ...summary) {
-    if (!passageId || !verdict) fail('usage: orchestrator passage:end <passageId> <advanced|no_progress|halted|failed> [résumé]')
+    if (!passageId || !verdict) fail('usage: orchestrator passage:end <passageId> <advanced|no_progress|halted|failed> [summary]')
     const passage = await call('PATCH', `/passages/${passageId}`, {
       verdict,
       git_after: head(),
@@ -365,23 +389,23 @@ const commands = {
 
   async evidence(passageId, type, verdict, ...label) {
     if (!passageId || !type || !verdict) {
-      fail('usage: orchestrator evidence <passageId> <test|e2e|screenshot|render|diff|invariant|manual> <pass|fail|inconclusive> <libellé>')
+      fail('usage: orchestrator evidence <passageId> <test|e2e|screenshot|render|diff|invariant|manual> <pass|fail|inconclusive> <label>')
     }
     const evidence = await call('POST', `/passages/${passageId}/evidences`, {
       type,
       verdict,
       label: label.join(' ') || type,
     })
-    console.log(`preuve ${evidence.id} — ${evidence.type}/${evidence.verdict}`)
+    console.log(`proof ${evidence.id} — ${evidence.type}/${evidence.verdict}`)
   },
 
-  /** Exécute une preuve DÉCLARÉE localement et publie son verdict. */
+  /** Runs a proof DECLARED locally and publishes its verdict. */
   async prove(passageId, key) {
-    if (!passageId || !key) fail(`usage: orchestrator prove <passageId> <${Object.keys(config.proofs).join('|') || 'clé'}>`)
+    if (!passageId || !key) fail(`usage: orchestrator prove <passageId> <${Object.keys(config.proofs).join('|') || 'key'}>`)
 
     const command = config.proofs[key]
     if (!command) {
-      fail(`Preuve « ${key} » non déclarée dans .orchestrator.json — refus d'exécuter une commande non déclarée.`)
+      fail(`Proof “${key}” is not declared in .orchestrator.json — refusing to run an undeclared command.`)
     }
 
     let verdict = 'pass'
@@ -397,23 +421,23 @@ const commands = {
       label: key,
       ref: command,
     })
-    console.log(`preuve « ${key} » → ${verdict}`)
+    console.log(`proof “${key}” → ${verdict}`)
     if (verdict === 'fail') process.exit(1)
   },
 
   /**
-   * Vérifie le diff réel : rayon de souffle d'abord, puis le pack de pièges.
-   * Sort en 2 si quelque chose doit arrêter la boucle.
+   * Checks the real diff: blast radius first, then the trap pack.
+   * Exits 2 if something must stop the loop.
    */
   async guard(from, to = 'HEAD') {
-    if (!from) fail('usage: orchestrator guard <sha-avant> [sha-après]')
+    if (!from) fail('usage: orchestrator guard <sha-before> [sha-after]')
 
     const paths = changedPaths(from, to)
     const hits = paths.filter((p) => config.blastRadius.some((g) => matchesGlob(p, g)))
     let stop = false
 
     if (hits.length) {
-      console.error(`\n  ARRÊT — rayon de souffle`)
+      console.error(`\n  STOP — blast radius`)
       hits.forEach((h) => console.error(`    ${h}`))
       stop = true
     }
@@ -424,7 +448,7 @@ const commands = {
       try {
         findings.push(...checkFile(p, readFileSync(p, 'utf8')))
       } catch {
-        // fichier binaire ou illisible : hors périmètre des règles
+        // binary or unreadable file: outside the rules' scope
       }
     }
 
@@ -432,7 +456,7 @@ const commands = {
     const warns = findings.filter((f) => f.severity === 'warn')
 
     if (halts.length) {
-      console.error(`\n  ARRÊT — ${halts.length} règle(s) du projet enfreinte(s)`)
+      console.error(`\n  STOP — ${halts.length} project rule(s) broken`)
       for (const f of halts) {
         console.error(`    ${f.path}:${f.line}  [${f.rule}]`)
         console.error(`      ${f.why}`)
@@ -456,13 +480,13 @@ const commands = {
     }
 
     console.log(
-      `${paths.length} fichiers modifiés — rayon de souffle propre, ${RULES.length} règles passées`,
+      `${paths.length} files modified — blast radius clean, ${RULES.length} rules checked`,
     )
   },
 
-  /** Passe le pack de règles sur des chemins donnés, hors contexte git. */
+  /** Runs the rule pack over given paths, outside any git context. */
   async lint(...paths) {
-    if (!paths.length) fail('usage: orchestrator lint <fichier…>')
+    if (!paths.length) fail('usage: orchestrator lint <file…>')
 
     const findings = []
     for (const p of paths) {
@@ -473,10 +497,10 @@ const commands = {
       findings.push(...checkFile(label, readFileSync(full, 'utf8')))
     }
 
-    if (!findings.length) return console.log(`aucune infraction — ${RULES.length} règles passées`)
+    if (!findings.length) return console.log(`no violation — ${RULES.length} rules checked`)
 
     for (const f of findings) {
-      console.log(`  ${f.severity === 'halt' ? 'ARRÊT' : 'à vérifier'}  ${f.path}:${f.line}  [${f.rule}]`)
+      console.log(`  ${f.severity === 'halt' ? 'STOP' : 'to check'}  ${f.path}:${f.line}  [${f.rule}]`)
       console.log(`    ${f.why}`)
       console.log(`    ${f.code}`)
     }
@@ -484,16 +508,16 @@ const commands = {
     process.exitCode = findings.some((f) => f.severity === 'halt') ? 2 : 0
   },
 
-  /** Dépose un fichier (< 5 Mo) dans la mémoire du projet. */
+  /** Drops a file (< 5 MB) into the project memory. */
   async remember(file, ...summary) {
-    if (!file) fail('usage: orchestrator remember <fichier> [résumé]')
+    if (!file) fail('usage: orchestrator remember <file> [summary]')
 
     const path = resolve(file)
-    if (!existsSync(path)) fail(`fichier introuvable : ${path}`)
+    if (!existsSync(path)) fail(`file not found: ${path}`)
 
     const bytes = statSync(path).size
     if (bytes > 5 * 1024 * 1024) {
-      fail(`${(bytes / 1024 / 1024).toFixed(1)} Mo — au-delà de 5 Mo, référence le fichier plutôt que de le mémoriser.`)
+      fail(`${(bytes / 1024 / 1024).toFixed(1)} MB — past 5 MB, reference the file rather than storing it.`)
     }
 
     const form = new FormData()
@@ -509,15 +533,15 @@ const commands = {
     const data = await res.json().catch(() => ({}))
     if (!res.ok) fail(data.message ?? `HTTP ${res.status}`)
 
-    console.log(`mémorisé — ${data.name} (${data.kind}, ${(data.size / 1024).toFixed(1)} ko)`)
+    console.log(`stored — ${data.name} (${data.kind}, ${(data.size / 1024).toFixed(1)} kB)`)
   },
 
-  /** Le paquet de contexte à charger au démarrage d'une session de travail. */
+  /** The context bundle to load when a work session starts. */
   async recall() {
     const data = await call('GET', `/projects/${config.project}/recall`)
 
     console.log(`\n# Contexte ${data.project.name}\n`)
-    console.log(`## Décisions (${data.decisions.length})\n`)
+    console.log(`## Decisions (${data.decisions.length})\n`)
     for (const d of data.decisions) {
       console.log(`### ${d.title}  — ${d.decided_at.slice(0, 10)}`)
       console.log(`${d.body}`)
@@ -530,15 +554,15 @@ const commands = {
       console.log(`### ${r.name}  (${r.kind}, ${(r.size / 1024).toFixed(1)} ko)`)
       if (r.summary) console.log(`${r.summary}`)
       if (r.content) console.log(`\n${r.content}`)
-      else console.log(`Fichier : ${r.url}`)
+      else console.log(`File: ${r.url}`)
       console.log('')
     }
   },
 
   /**
-   * Lit la consommation RÉELLE dans les transcripts du harnais et la publie.
-   * Aucune coopération de l'agent n'est requise : le harnais journalise déjà
-   * chaque requête avec son modèle, son horodatage et ses compteurs.
+   * Reads the REAL usage from the harness transcripts and publishes it. No
+   * cooperation from the agent is required: the harness already logs every request
+   * with its model, its timestamp and its counters.
    */
   async 'usage:scan'(passageId, transcriptDir) {
     if (!passageId) fail('usage: orchestrator usage:scan <passageId> [dossier-transcripts]')
@@ -550,7 +574,7 @@ const commands = {
     // Absence de transcripts : on ne sait pas mesurer, on ne bloque pas.
     const dir = transcriptDir ?? config.transcripts ?? defaultTranscriptDir()
     if (!existsSync(dir)) {
-      return console.error(`transcripts introuvables (${dir}) — consommation non mesurée`)
+      return console.error(`transcripts not found (${dir}) — usage not measured`)
     }
 
     const files = readdirSync(dir)
@@ -559,7 +583,7 @@ const commands = {
       .filter((f) => statSync(f).mtimeMs >= since)
 
     if (!files.length) {
-      return console.log('aucun transcript modifié depuis le début de la tentative')
+      return console.log('no transcript modified since the attempt began')
     }
 
     const totals = {}
@@ -587,7 +611,7 @@ const commands = {
         t.input += usage.input_tokens ?? 0
         t.output += usage.output_tokens ?? 0
         t.cacheRead += usage.cache_read_input_tokens ?? 0
-        // La création de cache se facture différemment selon sa durée de vie.
+        // Cache creation is billed differently depending on its lifetime.
         t.cache5m += usage.cache_creation?.ephemeral_5m_input_tokens ?? 0
         t.cache1h += usage.cache_creation?.ephemeral_1h_input_tokens ?? 0
         t.n += 1
@@ -595,7 +619,7 @@ const commands = {
       }
     }
 
-    if (!requests) return console.log('aucune requête trouvée dans la fenêtre de la tentative')
+    if (!requests) return console.log('no request found inside the attempt window')
 
     let tokens = 0
     let cost = 0
@@ -618,11 +642,11 @@ const commands = {
 
       console.log(`  ${model}`)
       console.log(
-        `    ${t.n} requêtes · ${modelTokens.toLocaleString('fr-FR')} tokens · $${modelCost.toFixed(3)}`,
+        `    ${t.n} requests · ${modelTokens.toLocaleString('en-US')} tokens · $${modelCost.toFixed(3)}`,
       )
       console.log(
-        `    entrée ${t.input.toLocaleString('fr-FR')} · sortie ${t.output.toLocaleString('fr-FR')} · ` +
-          `cache écrit ${(t.cache5m + t.cache1h).toLocaleString('fr-FR')} · cache lu ${t.cacheRead.toLocaleString('fr-FR')}`,
+        `    input ${t.input.toLocaleString('en-US')} · output ${t.output.toLocaleString('en-US')} · ` +
+          `cache written ${(t.cache5m + t.cache1h).toLocaleString('en-US')} · cache read ${t.cacheRead.toLocaleString('en-US')}`,
       )
     }
 
@@ -632,13 +656,13 @@ const commands = {
     })
 
     console.log(
-      `\n  publié → ${updated.tokens.toLocaleString('fr-FR')} tokens · $${updated.cost_usd} sur la tentative ${passageId}\n`,
+      `\n  published → ${updated.tokens.toLocaleString('en-US')} tokens · $${updated.cost_usd} on attempt ${passageId}\n`,
     )
   },
 
-  /** Consommation d'une demande, cumulée sur la tentative. */
+  /** One request's usage, accumulated on the attempt. */
   async usage(passageId, tokens, cost) {
-    if (!passageId || !tokens) fail('usage: orchestrator usage <passageId> <tokens> [coût $]')
+    if (!passageId || !tokens) fail('usage: orchestrator usage <passageId> <tokens> [cost $]')
     const passage = await call('POST', `/passages/${passageId}/usage`, {
       tokens: Number(tokens),
       cost_usd: cost ? Number(cost) : undefined,
@@ -647,8 +671,8 @@ const commands = {
   },
 
   /**
-   * L'état RÉEL des dépôts, dérivé de git seul.
-   * `git branch --contains` ment sur les squash : on compare par patch-id.
+   * The REAL state of the repositories, derived from git alone.
+   * `git branch --contains` lies about squashes: we compare by patch-id.
    */
   async inventory(root = process.cwd()) {
     const base = resolve(root)
@@ -656,7 +680,7 @@ const commands = {
       .filter((e) => e.isDirectory() && existsSync(resolve(base, e.name, '.git')))
       .map((e) => resolve(base, e.name))
 
-    if (!repos.length) return console.log(`aucun dépôt git sous ${base}`)
+    if (!repos.length) return console.log(`no git repository under ${base}`)
 
     const rows = []
 
@@ -680,8 +704,8 @@ const commands = {
         }
       }
 
-      // Commits locaux dont le CONTENU n'existe pas en amont.
-      // L'ascendance ment après un squash ou un rebase : on compare par patch-id.
+      // Local commits whose CONTENT does not exist upstream.
+      // Ancestry lies after a squash or a rebase: we compare by patch-id.
       let unpushed = []
       let alreadyUpstream = 0
 
@@ -720,15 +744,15 @@ const commands = {
     const inFlight = rows.filter((r) => r.dirty > 0 || r.unpushed.length > 0)
     const clean = rows.filter((r) => r.dirty === 0 && r.unpushed.length === 0)
 
-    console.log(`\n  ${rows.length} dépôts — ${inFlight.length} avec du travail en vol\n`)
+    console.log(`\n  ${rows.length} repositories — ${inFlight.length} with work in flight\n`)
 
     for (const r of inFlight) {
       const flags = []
-      if (r.dirty) flags.push(`${r.dirty} fichier(s) non commité(s)`)
+      if (r.dirty) flags.push(`${r.dirty} uncommitted file(s)`)
       if (r.unpushed.length) flags.push(`${r.unpushed.length} commit(s) NON POUSSÉ(S)`)
-      if (r.alreadyUpstream) flags.push(`${r.alreadyUpstream} déjà en amont (squash)`)
+      if (r.alreadyUpstream) flags.push(`${r.alreadyUpstream} already upstream (squash)`)
       if (r.behind) flags.push(`${r.behind} en retard`)
-      if (!r.upstream) flags.push('aucun amont')
+      if (!r.upstream) flags.push('no upstream')
 
       console.log(`  ${r.name}  [${r.branch}]`)
       console.log(`    ${flags.join(' · ')}`)
@@ -744,14 +768,14 @@ const commands = {
   },
 
   /**
-   * Exécute les sondes DÉCLARÉES localement et publie chaque mesure.
-   * Le serveur dit quoi mesurer par une clé ; il ne dit jamais comment.
+   * Runs the probes DECLARED locally and publishes each measurement.
+   * The server says what to measure by key; it never says how.
    */
   async 'invariants:check'() {
-    if (!config.project) fail('aucun projet dans .orchestrator.json')
+    if (!config.project) fail('no project in .orchestrator.json')
 
     const invariants = await call('GET', `/projects/${config.project}/invariants`)
-    if (!invariants.length) return console.log('aucun invariant déclaré')
+    if (!invariants.length) return console.log('no invariant declared')
 
     let breached = 0
 
@@ -759,7 +783,7 @@ const commands = {
       const probe = config.probes?.[inv.probe_key]
 
       if (!probe) {
-        console.log(`  ?  ${inv.name} — sonde « ${inv.probe_key} » non déclarée localement`)
+        console.log(`  ?  ${inv.name} — probe “${inv.probe_key}” not declared locally`)
         continue
       }
 
@@ -770,13 +794,13 @@ const commands = {
           stdio: ['ignore', 'pipe', 'ignore'],
         }).trim()
       } catch {
-        console.log(`  ?  ${inv.name} — la sonde a échoué`)
+        console.log(`  ?  ${inv.name} — the probe failed`)
         continue
       }
 
       const value = Number(raw.split('\n').pop())
       if (!Number.isFinite(value)) {
-        console.log(`  ?  ${inv.name} — la sonde n'a pas renvoyé un nombre : « ${raw.slice(0, 40)} »`)
+        console.log(`  ?  ${inv.name} — the probe did not return a count: “${raw.slice(0, 40)}”`)
         continue
       }
 
@@ -787,7 +811,7 @@ const commands = {
       if (!result.holds) {
         breached += 1
         if (result.halt) {
-          console.log(`     arrêt créé sur l'objectif #${result.halt.objective_id}`)
+          console.log(`     halt created on objective #${result.halt.objective_id}`)
         }
       }
     }
@@ -799,15 +823,15 @@ const commands = {
   },
 
   /**
-   * Le veilleur. Observe les sessions Claude et Codex, ouvre et clôt les
-   * tentatives tout seul. Aucun agent n'a besoin de penser à appeler.
+   * The watcher. Observes Claude and Codex sessions, opens and closes attempts by
+   * itself. No agent has to remember to call in.
    */
   async watch(intervalArg) {
     const interval = Number(intervalArg ?? 5) * 1000
     const idleMs = 90 * 1000
 
     const projects = (await call('GET', '/projects')).filter((p) => p.repo_path)
-    if (!projects.length) fail('aucun projet avec repo_path')
+    if (!projects.length) fail('no project has a repo_path')
 
     console.log(`\n  veilleur actif — ${projects.length} projets suivis, cycle ${interval / 1000}s`)
     for (const p of projects) console.log(`    ${p.slug}  ${p.repo_path}`)
@@ -816,8 +840,8 @@ const commands = {
     const tracked = new Map()
     let firstPass = true
 
-    // Codex donne le cwd en clair ; Claude ne donne qu'une forme encodée
-    // ambiguë à décoder — on compare donc les encodages, jamais l'inverse.
+    // Codex gives the cwd in the clear; Claude only gives an encoded form that is
+    // ambiguous to decode — so we compare encodings, never the reverse.
     const matchProject = (cwd, encodedCwd) => {
       if (cwd) {
         return projects.find((p) => cwd === p.repo_path || cwd.startsWith(p.repo_path + '/')) ?? null
@@ -840,9 +864,8 @@ const commands = {
       for (const s of recentSessions(since)) {
         let state = tracked.get(s.file)
 
-        // Première rencontre d'un fichier déjà existant : on se cale à la fin.
-        // Le veilleur n'enregistre que ce qui se produit après son démarrage,
-        // il ne refacture pas l'historique.
+        // First encounter with a pre-existing file: seek to the end. The watcher
+        // only records what happens after it starts; it does not re-bill history.
         if (!state) {
           let size = 0
           try {
@@ -868,7 +891,7 @@ const commands = {
         }
         state.project = project
 
-        // Ouverture : première activité observée sur un projet suivi.
+        // Opening: first activity observed on a tracked project.
         if (!state.passageId && (read.requests > 0 || read.codexTotal !== null)) {
           const objectives = await call('GET', `/projects/${project.slug}/objectives`)
           const target = objectives
@@ -876,7 +899,7 @@ const commands = {
             .sort((a, b) => a.priority - b.priority)[0]
 
           if (!target) {
-            console.log(`  ·  ${s.harness} actif sur ${project.slug} — aucun objectif prenable, non enregistré`)
+            console.log(`  ·  ${s.harness} active on ${project.slug} — no takeable objective, not recorded`)
             tracked.set(s.file, state)
             continue
           }
@@ -884,7 +907,7 @@ const commands = {
           const passage = await call('POST', `/objectives/${target.id}/passages`, {
             harness: s.harness,
             git_before: gitAt(project.repo_path, 'rev-parse', 'HEAD'),
-            summary: `Session ${s.harness} observée — ${basename(s.file)}`,
+            summary: `${s.harness} session observed — ${basename(s.file)}`,
           }).catch(() => null)
 
           if (!passage?.id) {
@@ -894,7 +917,7 @@ const commands = {
 
           state.passageId = passage.id
           state.objectiveId = target.id
-          console.log(`  →  tentative #${passage.id} ouverte — ${s.harness} sur ${project.slug} / objectif #${target.id}`)
+          console.log(`  →  attempt #${passage.id} opened — ${s.harness} on ${project.slug} / objective #${target.id}`)
         }
 
         // Consommation : Claude publie des deltas, Codex un cumul.
@@ -915,7 +938,7 @@ const commands = {
         tracked.set(s.file, state)
       }
 
-      // Clôture : tâche terminée ou silence prolongé.
+      // Closing: task finished or prolonged silence.
       for (const [file, state] of tracked) {
         if (!state.passageId) continue
         const quiet = state.lastAt && Date.now() - state.lastAt > idleMs
@@ -931,7 +954,7 @@ const commands = {
       const before = (await call('GET', `/passages/${state.passageId}`).catch(() => null))?.git_before
       const after = gitAt(repo, 'rev-parse', 'HEAD')
 
-      // Le pack de règles décide, pas l'agent.
+      // The rule pack decides, not the agent.
       let findings = []
       if (before && after && before !== after) {
         const changed = (gitAt(repo, 'diff', '--name-only', `${before}..${after}`) ?? '')
@@ -970,7 +993,7 @@ const commands = {
       }).catch(() => {})
 
       console.log(
-        `  ←  tentative #${state.passageId} close — ${halts.length ? `ARRÊT (${halts.length} règle(s))` : proven ? 'a fait avancer' : "n'a rien démontré"}  [${basename(file)}]`,
+        `  ←  attempt #${state.passageId} closed — ${halts.length ? `STOP (${halts.length} rule(s))` : proven ? 'moved it forward' : 'demonstrated nothing'}  [${basename(file)}]`,
       )
     }
 
@@ -981,10 +1004,10 @@ const commands = {
   },
 
   /**
-   * Le relais : GPT décide, un harnais exécute, le résultat repart chez GPT.
-   * Tourne jusqu'au blocage — plus de consigne, ou une garde qui refuse.
+   * The relay: GPT decides, a harness executes, the result goes back to GPT.
+   * Runs until it blocks — no more instruction, or a guard that refuses.
    *
-   * Par défaut il n'écrit RIEN dans la conversation : `--post` requis.
+   * By default it writes NOTHING into the conversation: `--post` required.
    */
   async relay(...argv) {
     const opts = parseFlags(argv)
@@ -992,32 +1015,37 @@ const commands = {
     const max = Number(opts.max ?? 5)
     const willPost = Boolean(opts.post)
 
-    if (!config.project) fail('aucun projet : lancer le relais depuis un dépôt avec .orchestrator.json')
+    if (!config.project) fail('no project: run the relay from a repository that has .orchestrator.json')
 
     const page = await attach(match).catch((e) => {
       fail(e.message)
     })
 
-    console.log(`\n  relais branché sur ${page.url.slice(0, 80)}`)
-    console.log(`  projet ${config.project} · ${max} tours max · ${willPost ? 'EXÉCUTION + ÉCRITURE ACTIVES' : 'lecture seule — rien ne sera exécuté ni posté (--post pour agir)'}\n`)
+    // Which instructions this run has already executed. `chapter` has its own;
+    // `relay` referenced that one without declaring it, and crashed on the first
+    // directive. A pre-existing fault, in a command nobody had exercised.
+    const instructionsDone = new Set()
+
+    console.log(`\n  relay attached to ${page.url.slice(0, 80)}`)
+    console.log(`  project ${config.project} · ${max} turns max · ${willPost ? 'EXECUTION AND WRITING ACTIVE' : 'read only — nothing will be executed or posted (--post to act)'}\n`)
 
     let lastSeen = null
 
     for (let turn = 1; turn <= max; turn++) {
-      // 1. Attendre que GPT ait fini d'écrire — on se fie au texte qui
-      //    cesse de bouger, pas au libellé d'un bouton traduit.
+      // 1. Wait for GPT to finish writing — we trust the text going still, not
+      //    the label on a translated button.
       const message = await waitForStable(page)
 
       if (!message || message === lastSeen) {
-        console.log(`  tour ${turn} — rien de neuf côté GPT. Arrêt.`)
+        console.log(`  turn ${turn} — nothing new from GPT. Stopping.`)
         break
       }
       lastSeen = message
 
-      // La conversation peut prononcer un verdict avant de donner la suite.
-      // On vise l'objectif dont on attend le verdict quand on vient d'en
-      // demander un : un verdict sur un autre objectif ne répond pas à la
-      // question posée, et l'enregistrer brouille les deux.
+      // The conversation may pronounce a verdict before giving what comes next.
+      // We target the objective whose verdict we are waiting on when we have just
+      // asked for one: a verdict on another objective does not answer the question
+      // asked, and recording it muddles both.
       const verdict = parseVerdict(message)
       if (verdict) {
         const r = await call(
@@ -1028,78 +1056,68 @@ const commands = {
         )
         if (r) {
           console.log(
-            `  verdict de la conversation — #${verdict.id} ${verdict.decision === 'accept' ? 'validé' : 'refusé'}`,
+            `  verdict from the conversation — #${verdict.id} ${verdict.decision === 'accept' ? 'accepted' : 'rejected'}`,
           )
-          // Une preuve vient d'être acceptée : le compteur d'improductivité
-          // n'a plus lieu d'être. Sans ça, la boucle s'arrête pour « rien de
-          // prouvé » sur le tour même où elle vient de prouver quelque chose,
-          // parce que le recomptage n'arrive qu'au tour suivant.
-          if (verdict.decision === 'accept') {
-            depenseDepuisProgres = 0
-            jetonsSansProgres = 0
-            sterile = 0
-            prouvesAvant = null
-          }
         }
       }
 
-      const fini = parseFini(message)
+      const fini = parseDone(message)
       if (fini && !parseDirective(message)) {
         console.log(
-          `\n  FIN DÉCLARÉE par le juge${fini.id ? ` sur #${fini.id}` : ''}` +
-            `${fini.raison ? ` — ${fini.raison}` : ''}\n`,
+          `\n  END DECLARED by the judge${fini.id ? ` sur #${fini.id}` : ''}` +
+            `${fini.reason ? ` — ${fini.reason}` : ''}\n`,
         )
         break
       }
 
       const directive = parseDirective(message)
       if (!directive) {
-        console.log(`  tour ${turn} — aucune consigne @codex: / @claude: dans la réponse. Arrêt.`)
+        console.log(`  turn ${turn} — no @codex: / @claude: instruction in the reply. Stopping.`)
         console.log(`  dernier message : ${message.slice(0, 200)}…\n`)
         break
       }
 
-      console.log(`  tour ${turn} — GPT → ${directive.harness}`)
+      console.log(`  turn ${turn} — GPT → ${directive.harness}`)
       console.log(`    « ${directive.task.slice(0, 160)}${directive.task.length > 160 ? '…' : ''} »`)
 
-      // 2. Exécuter dans le harnais désigné, sous les gardes habituelles.
-      //    Sans --post, on n'exécute PAS : une sonde annoncée « lecture seule »
-      //    qui lance une vraie session dépense de l'argent et, pire, entre en
-      //    concurrence avec la boucle sur les mêmes ressources.
+      // 2. Execute in the named harness, under the usual guards.
+      //    Without --post we do NOT execute: a probe announced as "read only" that
+      //    starts a real session spends money and, worse, competes with the loop
+      //    over the same resources.
       if (!willPost) {
-        console.log(`\n    ── lecture seule : rien n'a été exécuté ──`)
-        console.log(`    ${directive.harness} recevrait ${directive.task.length} caractères de mission.`)
-        console.log(`    Relancer avec --post pour exécuter et rendre compte.\n`)
+        console.log(`\n    ── read only: nothing was executed ──`)
+        console.log(`    ${directive.harness} would receive ${directive.task.length} characters of mission.`)
+        console.log(`    Run again with --post to execute and report back.\n`)
         break
       }
 
-      consignesFaites.add(`${directive.harness}:${directive.task.slice(0, 200)}`)
+      instructionsDone.add(`${directive.harness}:${directive.task.slice(0, 200)}`)
       const outcome = await runHarness(directive.harness, directive.task)
 
       console.log(
-        `    → ${outcome.verdict}${outcome.halts.length ? ` — ${outcome.halts.length} règle(s) enfreinte(s)` : ''}`,
+        `    → ${outcome.verdict}${outcome.halts.length ? ` — ${outcome.halts.length} rule(s) broken` : ''}`,
       )
 
-      // 3. Rendre compte à GPT.
+      // 3. Report back to GPT.
       const report = buildReport(turn, directive, outcome)
 
       if (!willPost) {
-        console.log(`\n    ── ce qui serait posté ──\n${indent(report)}\n`)
+        console.log(`\n    ── what would be posted ──\n${indent(report)}\n`)
       } else {
         const posted = await page.evaluate(jsPost(report)).catch(() => undefined)
 
-        // Le retour peut se perdre si la page bouge : on constate plutôt.
+        // The return value can be lost if the page moves: observe instead.
         const landed = await confirmPosted(page, report)
 
         if (!landed) {
           console.error(`    !  publication impossible : ${posted ?? 'sans retour, et message absent'}`)
           break
         }
-        console.log(`    ↑ posté chez GPT`)
+        console.log(`    ↑ posted to GPT`)
       }
 
       if (outcome.stop) {
-        console.log(`\n  BLOCAGE — ${outcome.stopReason}. Le relais s'arrête.\n`)
+        console.log(`\n  BLOCKED — ${outcome.stopReason}. The relay stops.\n`)
         break
       }
 
@@ -1110,13 +1128,12 @@ const commands = {
   },
 
   /**
-   * Le bloc de contexte à coller dans la conversation qui pilote.
-   * Dérivé de l'état réel : il ne peut pas mentir sur ce qui bloque.
+   * The context block to paste into the driving conversation.
+   * Derived from the real state: it cannot lie about what is blocking.
    */
   /**
-   * Poste l'état complet dans la conversation qui pilote. C'est le seul
-   * moyen de lui transmettre les règles de forme : la boucle, elle, ne
-   * poste que des comptes rendus.
+   * Posts the full state into the driving conversation. That is the only way to
+   * hand it the formatting rules: the loop itself only posts reports.
    */
   async 'brief:post'(...argv) {
     const opts = parseFlags(argv)
@@ -1129,21 +1146,21 @@ const commands = {
     console.log = vrai
 
     const texte = capture.join('\n')
-    console.log(`\n  relais branché sur ${page.url.slice(0, 80)}`)
+    console.log(`\n  relay attached to ${page.url.slice(0, 80)}`)
 
     if (!opts.post) {
-      console.log('  lecture seule — ajouter --post pour écrire\n')
+      console.log('  read only — add --post to write\n')
       console.log(texte)
       return
     }
 
     await page.evaluate(jsPost(texte))
     const ok = await confirmPosted(page, texte).catch(() => false)
-    console.log(ok ? '  ↑ état posté dans la conversation\n' : '  ⚠ envoi non confirmé — vérifie la page\n')
+    console.log(ok ? '  ↑ state posted into the conversation\n' : '  ⚠ send not confirmed — check the page\n')
   },
 
   async brief(...argv) {
-    if (!config.project) fail('aucun projet dans .orchestrator.json')
+    if (!config.project) fail('no project in .orchestrator.json')
 
     const opts = parseFlags(argv)
     const all = await call('GET', `/projects/${config.project}/objectives`)
@@ -1160,19 +1177,19 @@ const commands = {
     const out = []
     const w = (s = '') => out.push(s)
 
-    w(`## État Orchestrator — projet ${recall.project.name}`)
+    w(`## Orchestrator state — project ${recall.project.name}`)
     w()
 
-    const arretes = objectives.filter((o) => o.status === 'blocked')
+    const stopped = objectives.filter((o) => o.status === 'blocked')
 
-    // Un arrêt absorbable n'attend personne : la boucle le lève elle-même.
-    // L'annoncer comme « décision humaine » gèle un objectif prenable.
+    // An absorbable halt waits for nobody: the loop clears it itself. Announcing
+    // it as a "human decision" freezes an objective that could be taken.
     const blocked = []
-    const absorbables = []
-    for (const o of arretes) {
+    const absorbable = []
+    for (const o of stopped) {
       const full = await call('GET', `/objectives/${o.id}`)
-      const ouverts = (full.halts ?? []).filter((x) => !x.resolved_at)
-      ;(ouverts.some((h) => HUMAN_HALTS.includes(h.reason)) ? blocked : absorbables).push({ ...o, ouverts })
+      const openHaltsOf = (full.halts ?? []).filter((x) => !x.resolved_at)
+      ;(openHaltsOf.some((h) => HUMAN_HALTS.includes(h.reason)) ? blocked : absorbable).push({ ...o, openHaltsOf })
     }
     const takeable = objectives
       .filter((o) => ['ready', 'in_progress'].includes(o.status) && !o.open_halts_count)
@@ -1180,21 +1197,21 @@ const commands = {
     const draft = objectives.filter((o) => o.status === 'draft')
 
     if (blocked.length) {
-      w('### En attente d’une décision humaine — aucun agent ne peut passer outre')
+      w('### Waiting on a human decision — no agent can go around this')
       for (const o of blocked) {
         w(`- **#${o.id} ${o.title}** — ${BLAST_FR[o.blast_radius] ?? o.blast_radius}`)
-        for (const h of o.ouverts) {
+        for (const h of o.openHaltsOf) {
           w(`  - ${HALT_FR[h.reason] ?? h.reason} : ${(h.detail ?? '').replace(/\n/g, ' ')}`)
         }
       }
       w()
     }
 
-    if (absorbables.length) {
-      w('### Arrêtés sur un motif que la boucle lève elle-même — reste prenable')
-      for (const o of absorbables) {
+    if (absorbable.length) {
+      w('### Halted on a reason the loop clears itself — still takeable')
+      for (const o of absorbable) {
         w(`- **#${o.id} ${o.title}**`)
-        for (const h of o.ouverts) {
+        for (const h of o.openHaltsOf) {
           w(`  - ${HALT_FR[h.reason] ?? h.reason} : ${(h.detail ?? '').replace(/\n/g, ' ')}`)
         }
       }
@@ -1202,22 +1219,22 @@ const commands = {
     }
 
     if (takeable.length) {
-      w('### Prenable maintenant')
+      w('### Takeable now')
       for (const o of takeable) {
         w(`- **#${o.id} ${o.title}** — ${BLAST_FR[o.blast_radius] ?? o.blast_radius}`)
-        if (o.proof_spec) w(`  - preuve exigée : ${o.proof_spec}`)
+        if (o.proof_spec) w(`  - proof required: ${o.proof_spec}`)
       }
       w()
     }
 
     if (draft.length) {
-      w('### Non prenable — il manque le critère de preuve')
+      w('### Not takeable — the proof criterion is missing')
       for (const o of draft) w(`- #${o.id} ${o.title}`)
       w()
     }
 
     if (recall.decisions.length) {
-      w('### Contraintes déjà apprises — ne pas les redécouvrir')
+      w('### Constraints already learned — do not rediscover them')
       for (const d of recall.decisions) {
         w(`- **${d.title}** — ${d.body.replace(/\n/g, ' ')}`)
       }
@@ -1225,102 +1242,102 @@ const commands = {
     }
 
     if (config.blastRadius.length) {
-      w('### Rayon de souffle — un diff qui touche ça arrête la boucle')
+      w('### Blast radius — a diff that touches this stops the loop')
       w(config.blastRadius.map((g) => `\`${g}\``).join(' · '))
       w()
     }
 
     if (invariants.length) {
-      w('### Mesures de production')
+      w('### Production measurements')
       for (const i of invariants) {
         const state =
           i.last_status === 'breached'
-            ? `FRANCHI — mesuré ${trimNum(i.last_value)}`
+            ? `BREACHED — measured ${trimNumber(i.last_value)}`
             : i.last_status === 'ok'
-              ? `ok — mesuré ${trimNum(i.last_value)}`
-              : 'jamais mesuré'
-        w(`- ${i.name} ${signOf(i.comparison)} ${trimNum(i.threshold)} ${i.unit ?? ''} → ${state}`)
+              ? `ok — measured ${trimNumber(i.last_value)}`
+              : 'never measured'
+        w(`- ${i.name} ${signOf(i.comparison)} ${trimNumber(i.threshold)} ${i.unit ?? ''} → ${state}`)
         if (i.last_status === 'breached' && i.description) w(`  - ${i.description}`)
       }
       w()
     }
 
-    const boite = await call('GET', '/toolbox', null, { soft: true })
-    if (boite && Object.keys(boite).length) {
-      w('### Les outils dont dispose l’exécutant')
-      w('Nomme-les dans la mission quand elle en a besoin — sans ça, il improvise.')
-      for (const [capacite, outils] of Object.entries(boite)) {
+    const inbox = await call('GET', '/toolbox', null, { soft: true })
+    if (inbox && Object.keys(inbox).length) {
+      w('### The tools available to the executor')
+      w('Name them in the mission when it needs them — without that, it improvises.')
+      for (const [capacite, outils] of Object.entries(inbox)) {
         const dispo = outils.filter((o) => o.joignable !== 'absent')
         if (!dispo.length) continue
         w(`- **${capacite}** : ${dispo.map((o) => {
           const acces = o.reach === 'api'
-            ? `par API${o.env_var ? `, clé dans \`$${o.env_var}\`` : ''}`
+            ? `by API${o.env_var ? `, key in \`$${o.env_var}\`` : ''}`
             : o.reach === 'browser'
-              ? `via le navigateur (${o.settings?.match ?? 'onglet dédié'})`
-              : 'en local'
+              ? `through the browser (${o.settings?.match ?? 'dedicated tab'})`
+              : 'locally'
           return `${o.label} — ${acces}`
         }).join(' · ')}`)
         const premier = dispo[0]
-        if (premier.settings?.note) w(`  - à savoir : ${premier.settings.note}`)
+        if (premier.settings?.note) w(`  - worth knowing: ${premier.settings.note}`)
       }
       w()
     }
 
-    w('### Comment répondre')
-    w('Réponds comme tu l’as toujours fait : verdict motivé, lecture visuelle, mode de')
-    w('travail, puis la mission complète. Ne raccourcis rien — ce n’est pas un canal de')
-    w('chat, c’est un ordre de production.')
+    w('### How to answer')
+    w('Answer exactly as you always have: a reasoned verdict, a reading of the images, the')
+    w('working mode, then the full mission. Shorten nothing — this is not a chat channel,')
+    w('it is a production order.')
     w()
-    w('**Trois marqueurs, chacun seul sur sa ligne.** Ils ne sont pas de la décoration :')
-    w('un outil lit ta réponse et n’a pas le droit de deviner. Une phrase comme « le')
-    w('chapitre est terminé » ou « tout semble satisfait » ne se distingue pas d’un')
-    w('commentaire, et la boucle tourne à vide.')
+    w('**Three markers, each alone on its line.** They are not decoration: a tool reads')
+    w('your reply and is not allowed to guess. A sentence like "the chapter is finished"')
+    w('or "everything looks satisfied" is indistinguishable from a comment, and the loop')
+    w('spins on nothing.')
     w()
     w('```')
-    w('@verdict: #14 validé          ← ou « refusé ». Ton jugement, sans ambiguïté.')
-    w('@fini: #11 raison             ← seulement s’il n’y a plus rien à produire.')
-    w('@claude:                      ← ou @codex:, suivi de la mission complète.')
+    w('@verdict: #14 accepted        ← or "rejected". Your judgement, unambiguous.')
+    w('@fini: #11 reason            ← only when there is nothing left to produce.')
+    w('@claude:                     ← or @codex:, followed by the full mission.')
     w('```')
     w()
-    w('Pose `@verdict` dès que tu juges quelque chose, **avant** tes explications.')
-    w('Pose `@fini` uniquement quand tu ne donnes aucune mission derrière.')
+    w('Put `@verdict` down the moment you judge something, **before** your explanations.')
+    w('Put `@fini` down only when you give no mission after it.')
     w()
     w('```')
     w('@claude:')
-    w('<la mission complète — autant de lignes, de sections et de séparateurs qu’il')
-    w(' faut : lectures obligatoires, hiérarchie documentaire, interdictions,')
-    w(' objectif, composition, format de boucle, barème, gate, livrables. Tout ce')
-    w(' qui suit le marqueur est transmis mot pour mot au harnais, et rien d’autre')
-    w(' ne lui parvient : ce qui n’est pas dans ce bloc n’existe pas pour lui.>')
+    w('<the full mission — as many lines, sections and separators as it takes: required')
+    w(' reading, documentary hierarchy, prohibitions, objective, composition, loop')
+    w(' format, scoring, gate, deliverables. Everything after the marker is passed to')
+    w(' the harness word for word, and nothing else reaches it: what is not inside this')
+    w(' block does not exist for it.>')
     w('```')
     w()
-    w('`@codex:` pour l’autre harnais. Cite le numéro d’objectif visé (`#12`) dans la')
-    w('mission — c’est ce qui la rattache au bon objectif.')
+    w('`@codex:` for the other harness. Cite the target objective number (`#12`) inside')
+    w('the mission — that is what attaches it to the right objective.')
     w()
-    w('Sans marqueur, la boucle s’arrête — c’est voulu.')
-    w('Une consigne qui vise un objectif bloqué ou sans critère de preuve sera refusée par l’outil.')
+    w('Without a marker, the loop stops — that is deliberate.')
+    w('An instruction aimed at a halted objective, or one with no proof criterion, will be refused by the tool.')
 
     console.log(out.join('\n'))
   },
 
   /**
-   * Exécute une consigne dans un harnais, encadrée par une tentative et
-   * les gardes, et rend le compte rendu prêt à coller dans la conversation
-   * qui pilote. C'est l'étape 3 de la boucle, sans navigateur.
+   * Runs an instruction in a harness, framed by an attempt and the guards, and
+   * returns the report ready to paste into the driving conversation. This is step 3
+   * of the loop, without a browser.
    */
   async do(harness, ...rest) {
     if (!['codex', 'claude'].includes(harness)) {
-      fail('usage: orchestrator do <codex|claude> [--probe] "<consigne>"')
+      fail('usage: orchestrator do <codex|claude> [--probe] "<memoryInstruction>"')
     }
 
-    // Une sonde de diagnostic n'est pas une tentative : elle ne s'attache
-    // à aucun objectif et ne compte dans aucun garde-fou.
+    // A diagnostic probe is not an attempt: it attaches to no objective and counts
+    // in no guardrail.
     const probe = rest.includes('--probe')
     const task = rest.filter((a) => a !== '--probe').join(' ').trim()
-    if (!task) fail('consigne vide')
+    if (!task) fail('empty instruction')
 
     if (probe) {
-      console.log(`\n  ${harness} — sonde (hors objectif)\n`)
+      console.log(`\n  ${harness} — probe (no objective)\n`)
       const [bin, args] =
         harness === 'codex'
           ? [harnessBin('codex'), ['exec', '--skip-git-repo-check', '--sandbox', 'read-only', task]]
@@ -1343,15 +1360,15 @@ const commands = {
       return
     }
 
-    console.log(`\n  ${harness} — consigne reçue`)
+    console.log(`\n  ${harness} — instruction received`)
     console.log(`  « ${task.slice(0, 200)}${task.length > 200 ? '…' : ''} »\n`)
 
     const outcome = await runHarness(harness, task)
 
     console.log(`  verdict : ${outcome.verdict}`)
-    if (outcome.stopReason) console.log(`  ARRÊT : ${outcome.stopReason}`)
+    if (outcome.stopReason) console.log(`  STOP: ${outcome.stopReason}`)
     console.log('')
-    console.log('  ── compte rendu à coller dans la conversation ──')
+    console.log('  ── report to paste into the conversation ──')
     console.log('')
     console.log(buildReport(1, { harness, task }, outcome))
     console.log('')
@@ -1360,17 +1377,17 @@ const commands = {
   },
 
   /**
-   * Projette les autorisations décidées dans l'outil vers la configuration
-   * du harnais. La décision se prend une fois, elle s'applique partout.
+   * Writes the permissions decided in the tool into the harness configuration.
+   * The decision is made once, it applies everywhere.
    */
   async 'permissions:sync'(harness = 'claude') {
-    if (!config.project) fail('aucun projet dans .orchestrator.json')
+    if (!config.project) fail('no project in .orchestrator.json')
 
     const eff = await call('GET', `/projects/${config.project}/permissions/effective/${harness}`)
     const file = resolve(process.cwd(), '.claude/settings.json')
 
     if (harness !== 'claude') {
-      console.log(`projection ${harness} : pas encore implémentée`)
+      console.log(`writing ${harness} config: not implemented yet`)
       return
     }
 
@@ -1379,7 +1396,7 @@ const commands = {
       try {
         settings = JSON.parse(readFileSync(file, 'utf8'))
       } catch {
-        fail(`${file} est illisible — je ne l'écrase pas`)
+        fail(`${file} is unreadable — not overwriting it`)
       }
     }
 
@@ -1393,13 +1410,13 @@ const commands = {
     mkdirSync(dirname(file), { recursive: true })
     writeFileSync(file, JSON.stringify(settings, null, 2) + '\n')
 
-    console.log(`  ${eff.allow.length} autorisés · ${eff.deny.length} refusés · ${eff.ask.length} à trancher`)
-    console.log(`  écrit dans ${relative(process.cwd(), file)}`)
+    console.log(`  ${eff.allow.length} allowed · ${eff.deny.length} refused · ${eff.ask.length} undecided`)
+    console.log(`  written to ${relative(process.cwd(), file)}`)
   },
 
   /** Remonte dans l'outil les outils qu'une session s'est vu refuser. */
   async 'permissions:collect'(transcriptArg) {
-    if (!config.project) fail('aucun projet dans .orchestrator.json')
+    if (!config.project) fail('no project in .orchestrator.json')
 
     const dir = config.transcripts ?? defaultTranscriptDir()
     const file =
@@ -1411,7 +1428,7 @@ const commands = {
             .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0]
         : null)
 
-    if (!file || !existsSync(file)) return console.log('aucun transcript à dépouiller')
+    if (!file || !existsSync(file)) return console.log('no transcript to comb through')
 
     const found = new Set()
     for (const line of readFileSync(file, 'utf8').split('\n')) {
@@ -1420,39 +1437,39 @@ const commands = {
       if (m) found.add(m[1].trim())
     }
 
-    if (!found.size) return console.log('aucun refus de permission dans ce transcript')
+    if (!found.size) return console.log('no permission refusal in this transcript')
 
     const res = await call('POST', `/projects/${config.project}/permissions/requested`, {
       patterns: [...found],
       harness: 'claude',
     })
 
-    console.log(`  ${res.length} outil(s) remontés :`)
+    console.log(`  ${res.length} tool(s) reported:`)
     for (const p of res) console.log(`    ${p.decision === 'ask' ? 'À TRANCHER' : p.decision}  ${p.pattern}`)
   },
 
   /**
-   * Ferme un chapitre : tourne jusqu'à ce que l'objectif parent soit prouvé,
-   * en absorbant les problèmes que la boucle sait traiter et en ne s'arrêtant
-   * QUE sur ce qui réclame vraiment une décision humaine.
+   * Closes a chapter: runs until the parent objective is proven, absorbing the
+   * problems the loop knows how to handle and stopping ONLY on what genuinely
+   * calls for a human decision.
    */
   /**
-   * Découpe un brief libre en chapitre + étapes prouvables. L'agent local fait
-   * l'appel — le serveur ne lance jamais rien lui-même — et rend une
-   * PROPOSITION : c'est l'humain qui l'applique depuis l'écran, ou pas.
+   * Breaks a free-form brief into a chapter plus provable steps. The local agent
+   * makes the call — the server never starts anything itself — and returns a
+   * PROPOSAL: a human applies it from the screen, or does not.
    *
-   * usage : orchestrator plan [--watch] [--every 8]
+   * usage: orchestrator plan [--watch] [--every 8]
    */
   async plan(...argv) {
     const opts = parseFlags(argv)
-    if (!config.project) fail('aucun projet : lancer depuis un dépôt avec .orchestrator.json')
+    if (!config.project) fail('no project: run this from a repository that has .orchestrator.json')
 
-    const boucle = Boolean(opts.watch)
-    const pause_s = Number(opts.every ?? 8) * 1000
+    const looping = Boolean(opts.watch)
+    const pauseMs = Number(opts.every ?? 8) * 1000
 
     console.log(
-      `\n  découpage de briefs — projet ${config.project}` +
-        (boucle ? ` · en veille, vérifie toutes les ${pause_s / 1000} s` : ' · une passe') +
+      `\n  brief breakdown — project ${config.project}` +
+        (looping ? ` · watching, checks every ${pauseMs / 1000} s` : ' · one pass') +
         '\n',
     )
 
@@ -1461,108 +1478,108 @@ const commands = {
       const brief = pris?.brief
 
       if (!brief) {
-        if (!boucle) {
-          console.log('  aucun brief en attente.\n')
+        if (!looping) {
+          console.log('  no brief waiting.\n')
           return
         }
-        await pause(pause_s)
+        await pause(pauseMs)
         continue
       }
 
-      console.log(`  brief #${brief.id} — ${brief.body.length} caractères`)
+      console.log(`  brief #${brief.id} — ${brief.body.length} characters`)
 
-      // Le découpage doit connaître les contraintes déjà tranchées, sinon il
-      // propose des critères que le projet a déjà écartés.
+      // The breakdown has to know the constraints already settled, otherwise it
+      // proposes criteria the project has already ruled out.
       const recall = await call('GET', `/projects/${config.project}/recall`, null, { soft: true })
-      const contraintes = (recall?.decisions ?? [])
+      const constraints = (recall?.decisions ?? [])
         .slice(0, 8)
         .map((d) => `- ${d.title} : ${String(d.body).slice(0, 240)}`)
         .join('\n')
-      const preuves = Object.entries(config.proofs ?? {})
+      const proofs = Object.entries(config.proofs ?? {})
         .map(([k, v]) => `- ${k} : ${v}`)
         .join('\n')
 
-      const consigne = [
-        "Découpe la demande ci-dessous en UN chapitre et ses étapes d'exécution.",
+      const memoryInstruction = [
+        'Break the request below into ONE chapter and its execution steps.',
         '',
-        "Règles de découpage :",
-        "- chaque étape doit être achevable en une seule session d'agent ;",
-        "- chaque étape porte un critère de preuve VÉRIFIABLE, écrit comme une condition, pas comme une intention. Une commande qui passe, un nombre qui franchit un seuil, une capture qui montre quelque chose de nommé. Jamais « c'est propre » ni « ça marche mieux » ;",
-        "- les étapes sont dans l'ordre où elles doivent être exécutées ;",
-        "- entre 2 et 12 étapes. Si la demande n'en justifie qu'une, n'en invente pas ;",
-        "- blast_radius : cosmetic (visuel), feature (fonction visible), api (données ou interface partagée), critical (argent, paie, production).",
-        preuves ? `\nCommandes de preuve déclarées par ce projet — réutilise-les telles quelles quand elles conviennent :\n${preuves}` : '',
-        contraintes ? `\nContraintes déjà tranchées sur ce projet — ne les contredis pas :\n${contraintes}` : '',
+        'Rules for the breakdown:',
+        '- every step must be completable in a single agent session;',
+        '- every step carries a VERIFIABLE proof criterion, written as a condition, not as an intention. A command that passes, a number crossing a threshold, a screenshot showing something named. Never "it is clean" or "it works better";',
+        '- the steps are in the order they must be executed;',
+        '- between 2 and 12 steps. If the request only justifies one, do not invent more;',
+        '- blast_radius: cosmetic (visual), feature (visible function), api (data or shared interface), critical (money, payroll, production).',
+        proofs ? `\nProof commands declared by this project — reuse them as they are when they fit:\n${proofs}` : '',
+        constraints ? `\nConstraints already settled on this project — do not contradict them:\n${constraints}` : '',
         '',
         '--- LA DEMANDE ---',
         brief.body,
         '--- FIN ---',
         '',
-        'Réponds UNIQUEMENT par un objet JSON, sans texte autour, sans bloc de code :',
+        'Reply ONLY with a JSON object, with no text around it and no code fence:',
         '{"chapter":"…","intent":"…","steps":[{"title":"…","proof_spec":"…","blast_radius":"feature"}]}',
       ]
         .filter(Boolean)
         .join('\n')
 
-      let brut = ''
+      let raw = ''
       try {
-        // Découper n'exige aucun outil : on refuse tout accès au dépôt pour
-        // que la passe reste courte, bon marché et sans effet de bord.
-        brut = execFileSync(
+        // Breaking a brief down needs no tools: we refuse all repository access so
+        // the pass stays short, cheap and side-effect free.
+        raw = execFileSync(
           'claude',
-          ['-p', consigne, '--disallowed-tools', 'Bash', 'Write', 'Edit', 'NotebookEdit'],
+          ['-p', memoryInstruction, '--disallowed-tools', 'Bash', 'Write', 'Edit', 'NotebookEdit'],
           {
             cwd: process.cwd(),
             encoding: 'utf8',
             maxBuffer: 16 * 1024 * 1024,
-            // Les secrets des services tiers vivent sur CETTE machine et n'entrent
-      // dans le processus que le temps de la session. Le serveur ne les a
-      // jamais eus : il ne connaît que le NOM de la variable attendue.
+            // Third-party service secrets live on THIS machine and only enter the
+      // process for the duration of the session. The server never had them: it
+      // only knows the NAME of the expected variable.
       env: { ...process.env, ...(config.secrets ?? {}), ...config.env, ORCHESTRATOR_MANAGED: '1' },
             stdio: ['ignore', 'pipe', 'pipe'],
           },
         )
       } catch (e) {
-        console.error(`    échec du harnais : ${e.message}`)
+        console.error(`    harness failed: ${e.message}`)
         await call('PATCH', `/briefs/${brief.id}/propose`, { error: e.message.slice(0, 900) }, { soft: true })
         continue
       }
 
-      const proposition = extraireJson(brut)
+      const proposal = extraireJson(raw)
 
-      if (!proposition?.chapter || !Array.isArray(proposition.steps) || !proposition.steps.length) {
-        console.error("    réponse inexploitable : pas de découpage JSON lisible")
+      if (!proposal?.chapter || !Array.isArray(proposal.steps) || !proposal.steps.length) {
+        console.error('    unusable reply: no readable JSON breakdown')
         await call(
           'PATCH',
           `/briefs/${brief.id}/propose`,
-          { error: `Réponse inexploitable du harnais.\n\n${brut.slice(0, 900)}` },
+          { error: `Unusable reply from the harness.\n\n${raw.slice(0, 900)}` },
           { soft: true },
         )
         continue
       }
 
-      const r = await call('PATCH', `/briefs/${brief.id}/propose`, { proposal: proposition }, { soft: true })
+      const r = await call('PATCH', `/briefs/${brief.id}/propose`, { proposal: proposal }, { soft: true })
       console.log(
         r
-          ? `    → ${proposition.steps.length} étape(s) proposée(s) · « ${proposition.chapter} »`
-          : `    → le serveur a refusé la proposition`,
+          ? `    → ${proposal.steps.length} step(s) proposed · “${proposal.chapter}”`
+          : `    → the server refused the proposal`,
       )
-      const sans = proposition.steps.filter((e) => !e.proof_spec).length
-      if (sans) console.log(`    ${sans} étape(s) sans critère de preuve — elles resteront à préciser.`)
-    } while (boucle)
+      const sans = proposal.steps.filter((e) => !e.proof_spec).length
+      if (sans) console.log(`    ${sans} step(s) with no proof criterion — they will stay undefined.`)
+    } while (looping)
   },
 
   /**
-   * Constate ce qui est réellement joignable DEPUIS CETTE MACHINE et le
-   * remonte. La joignabilité ne se coche pas dans un formulaire : un binaire
-   * absent ou un Chrome fermé ne se déclarent pas, ils se constatent.
+   * Observes what is actually reachable FROM THIS MACHINE and reports it.
+   * Reachability is not a checkbox on a form: a missing binary or a closed Chrome
+   * are not declared, they are observed.
    *
-   * usage : orchestrator agents:check
+   * usage: orchestrator agents:check
    */
   async 'agents:check'() {
     const agents = await call('GET', '/agents')
     const machine = hostname()
-    const resultats = []
+    const results = []
 
     for (const a of agents) {
       let status = 'unknown'
@@ -1570,28 +1587,28 @@ const commands = {
 
       if (!a.enabled) {
         status = 'unknown'
-        detail = 'désactivé — non vérifié'
+        detail = 'disabled — not checked'
       } else if (a.reach === 'cli') {
-        // On ne cherche QUE des binaires que cette machine déclare connaître.
-        // Sonder au nom de l'agent trouvait n'importe quoi : « gpt » résolvait
-        // vers /usr/sbin/gpt, l'outil de partitionnement de macOS, et l'écran
-        // annonçait fièrement un harnais joignable qui n'existe pas.
+        // We look ONLY for binaries this machine declares it knows. Probing by the
+        // agent's name found anything at all: "gpt" resolved to /usr/sbin/gpt,
+        // macOS's partitioning tool, and the screen proudly announced a reachable
+        // harness that does not exist.
         const connus = { ...(config.binaries ?? {}), claude: harnessBin('claude'), codex: harnessBin('codex') }
         const bin = connus[a.name]
 
         if (!bin) {
           status = 'unknown'
-          detail = `aucun binaire déclaré pour « ${a.name} » — ajoute-le dans binaries de .orchestrator.json`
+          detail = `no binary declared for “${a.name}” — add it under binaries in .orchestrator.json`
         } else {
           try {
-            const chemin = execFileSync(
+            const path = execFileSync(
               '/bin/sh',
               ['-c', `command -v ${JSON.stringify(bin)} 2>/dev/null || { test -x ${JSON.stringify(bin)} && echo ${JSON.stringify(bin)}; }`],
               { encoding: 'utf8' },
             ).trim()
-            if (chemin) {
+            if (path) {
               status = 'ok'
-              detail = chemin.split('\n')[0].slice(0, 200)
+              detail = path.split('\n')[0].slice(0, 200)
             } else {
               status = 'absent'
               detail = `introuvable : ${bin}`
@@ -1606,53 +1623,60 @@ const commands = {
         const match = a.settings?.match ?? 'chatgpt.com'
         try {
           const res = await fetch(`http://127.0.0.1:${port}/json`, { signal: AbortSignal.timeout(2500) })
-          const onglets = await res.json()
-          const cible = onglets.find((t) => t.type === 'page' && String(t.url).includes(match))
-          if (cible) {
+          const tabs = await res.json()
+          const target = tabs.find((t) => t.type === 'page' && String(t.url).includes(match))
+          if (target) {
             status = 'ok'
-            detail = String(cible.url).slice(0, 200)
+            detail = String(target.url).slice(0, 200)
           } else {
             status = 'refused'
             detail = `navigateur joignable sur ${port}, mais aucun onglet ${match}`
           }
         } catch {
           status = 'absent'
-          detail = `aucun navigateur en écoute sur le port ${port}`
+          detail = `no browser listening on port ${port}`
         }
       } else if (a.reach === 'api') {
-        // Une clé vit côté serveur : cette machine ne peut rien en dire.
+        // A key lives server-side: this machine can say nothing about it.
         status = a.has_key ? 'unknown' : 'absent'
-        detail = a.has_key ? 'clé posée — vérifiable seulement côté serveur' : 'aucune clé posée'
+        detail = a.has_key ? 'key set — only verifiable server-side' : 'no key set'
       }
 
-      resultats.push({ name: a.name, status, detail })
-      const marque = { ok: '●', absent: '○', refused: '◐', unknown: '·' }[status]
-      console.log(`  ${marque} ${a.label.padEnd(32)} ${status.padEnd(8)} ${detail ?? ''}`)
+      results.push({ name: a.name, status, detail })
+      const mark = { ok: '●', absent: '○', refused: '◐', unknown: '·' }[status]
+      console.log(`  ${mark} ${a.label.padEnd(32)} ${status.padEnd(8)} ${detail ?? ''}`)
     }
 
-    await call('POST', '/agents/checkin', { machine, resultats }, { soft: true })
-    console.log(`\n  relevé transmis depuis ${machine}\n`)
+    await call('POST', '/agents/checkin', { machine, results }, { soft: true })
+    console.log(`\n  scan sent from ${machine}\n`)
   },
 
   /**
-   * Génère une image par une interface web et la pose sur le disque.
-   * usage : orchestrator image "<prompt>" [--outil nano-banana] [--out chemin.png]
+   * Generates an image through a web interface and writes it to disk.
+   * usage: orchestrator image "<prompt>" [--tool nano-banana] [--out path.png]
    */
   async image(...argv) {
     const opts = parseFlags(argv)
-    const prompt = argv.filter((a) => !a.startsWith('--') && argv[argv.indexOf(a) - 1]?.replace('--', '') !== 'outil' && argv[argv.indexOf(a) - 1]?.replace('--', '') !== 'out').join(' ').trim()
+    const prompt = argv
+      .filter(
+        (a) =>
+          !a.startsWith('--') &&
+          !['tool', 'out'].includes(argv[argv.indexOf(a) - 1]?.replace('--', '')),
+      )
+      .join(' ')
+      .trim()
 
     if (!prompt) {
-      console.log(`usage: orchestrator image "<prompt>" [--outil ${Object.keys(ADAPTATEURS).join('|')}] [--out fichier.png]`)
+      console.log(`usage: orchestrator image "<prompt>" [--tool ${Object.keys(ADAPTERS).join('|')}] [--out file.png]`)
       return
     }
 
-    const outil = opts.outil ?? 'nano-banana'
-    console.log(`\n  ${ADAPTATEURS[outil]?.label ?? outil} — demande envoyée, j'attends l'image…\n`)
+    const tool = opts.tool ?? opts.outil ?? 'nano-banana'
+    console.log(`\n  ${ADAPTERS[tool]?.label ?? tool} — request sent, waiting for the image…\n`)
 
     try {
-      const r = await genererImage({ outil, prompt, sortie: opts.out })
-      console.log(`  ✔ ${r.chemin} — ${r.largeur}×${r.hauteur}, ${(r.octets / 1024).toFixed(0)} ko\n`)
+      const r = await generateImage({ tool, prompt, out: opts.out })
+      console.log(`  ✔ ${r.path} — ${r.width}×${r.height}, ${(r.bytes / 1024).toFixed(0)} kB\n`)
     } catch (e) {
       console.error(`  ✖ ${e.message}\n`)
       process.exitCode = 1
@@ -1660,187 +1684,187 @@ const commands = {
   },
 
   /**
-   * Relève et distille les mémoires d'IA de la machine, projet par projet.
-   * L'inventaire est gratuit et s'affiche avant tout envoi ; la distillation
-   * ne part qu'ensuite, et rend une PROPOSITION que l'humain applique ou non.
+   * Scans and distils the machine's AI memories, project by project. The inventory
+   * is free and is shown before anything is sent; distilling only runs afterwards,
+   * and returns a PROPOSAL a human applies or does not.
    *
-   * usage : orchestrator memory:scan [--watch] [--depots a,b] [--analyser]
+   * usage: orchestrator memory:scan [--watch] [--repos a,b] [--analyse]
    */
   async 'memory:scan'(...argv) {
     const opts = parseFlags(argv)
-    const boucle = Boolean(opts.watch)
+    const looping = Boolean(opts.watch)
 
-    const depots = (opts.depots ? String(opts.depots).split(',') : [])
+    const repos = (opts.repos ? String(opts.repos).split(',') : [])
       .map((d) => resolve(d.trim()))
       .filter(Boolean)
 
-    // Sans dépôts nommés, on prend ceux que l'outil suit déjà : eux au moins
-    // sont déclarés quelque part, on ne part pas fouiller le disque.
-    if (!depots.length) {
-      const projets = await call('GET', '/projects', null, { soft: true })
-      for (const p of projets ?? []) if (p.repo_path) depots.push(p.repo_path)
+    // With no repositories named, we take the ones the tool already tracks: those
+    // at least are declared somewhere, and we do not go rummaging through the disk.
+    if (!repos.length) {
+      const projects = await call('GET', '/projects', null, { soft: true })
+      for (const p of projects ?? []) if (p.repo_path) repos.push(p.repo_path)
     }
 
     do {
-      const pris = boucle
+      const pris = looping
         ? (await call('POST', '/scans/claim', { machine: hostname() }, { soft: true }))?.scan
         : { id: null }
 
-      if (boucle && !pris) {
+      if (looping && !pris) {
         await pause(Number(opts.every ?? 8) * 1000)
         continue
       }
 
-      console.log(`\n  relevé des mémoires — ${depots.length} dépôt(s) déclaré(s)\n`)
-      const inv = inventorier(depots)
+      console.log(`\n  memory scan — ${repos.length} declared repository(ies)\n`)
+      const inv = inventoryMemories(repos)
 
-      console.log(`  ${inv.total} fichier(s) · ${(inv.octets / 1024).toFixed(0)} ko`)
-      for (const [projet, p] of Object.entries(inv.projets)) {
-        console.log(`    ${projet.padEnd(26)} ${String(p.nombre).padStart(4)} fichiers · ${(p.octets / 1024).toFixed(0)} ko`)
+      console.log(`  ${inv.total} fichier(s) · ${(inv.bytes / 1024).toFixed(0)} ko`)
+      for (const [project, p] of Object.entries(inv.projects)) {
+        console.log(`    ${project.padEnd(26)} ${String(p.count).padStart(4)} fichiers · ${(p.bytes / 1024).toFixed(0)} ko`)
       }
 
       if (pris?.id) {
         await call(
           'PATCH',
           `/scans/${pris.id}`,
-          { inventory: inv, status: 'inventoried', fingerprint: empreinte(inv) },
+          { inventory: inv, status: 'inventoried', fingerprint: memoryFingerprint(inv) },
           { soft: true },
         )
       }
 
       if (!opts.analyser) {
-        console.log(`\n  inventaire seul. Relance avec --analyser pour distiller (un appel de modèle par projet).\n`)
-        if (!boucle) return
+        console.log(`\n  inventory only. Run again with --analyse to distil (one model call per project).\n`)
+        if (!looping) return
         continue
       }
 
-      const resultats = {}
+      const results = {}
 
-      for (const [projet, p] of Object.entries(inv.projets)) {
-        if (projet === 'inconnu' || p.nombre < 2) continue
+      for (const [project, p] of Object.entries(inv.projects)) {
+        if (project === 'inconnu' || p.count < 2) continue
 
-        const { corps, pris: lus, laisses, octets } = assembler(p.fichiers)
+        const { body, taken: read, skipped, bytes } = assembleContext(p.files)
         console.log(
-          `\n  ${projet} — ${lus.length} fichier(s) lus, ${(octets / 1024).toFixed(0)} ko` +
-            (laisses.length ? ` · ${laisses.length} laissé(s) de côté, trop volumineux` : ''),
+          `\n  ${project} — ${read.length} file(s) read, ${(bytes / 1024).toFixed(0)} ko` +
+            (skipped.length ? ` · ${skipped.length} set aside, too large` : ''),
         )
 
-        let brut
+        let raw
         try {
-          brut = execFileSync(
+          raw = execFileSync(
             'claude',
-            ['-p', consigne(projet, corps), '--disallowed-tools', 'Bash', 'Write', 'Edit'],
+            ['-p', memoryInstruction(project, body), '--disallowed-tools', 'Bash', 'Write', 'Edit'],
             { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, env: { ...process.env, ORCHESTRATOR_MANAGED: '1' } },
           )
         } catch (e) {
-          console.error(`    échec : ${String(e.message).slice(0, 160)}`)
-          resultats[projet] = { erreur: String(e.message).slice(0, 400), sources: lus, laisses }
+          console.error(`    failed: ${String(e.message).slice(0, 160)}`)
+          results[project] = { error: String(e.message).slice(0, 400), sources: read, skipped }
           continue
         }
 
-        const distille = extraireJson(brut)
-        if (!Array.isArray(distille?.projets) || !distille.projets.length) {
-          console.error(`    réponse inexploitable`)
-          resultats[projet] = { erreur: 'réponse inexploitable', sources: lus, laisses }
+        const distille = extraireJson(raw)
+        if (!Array.isArray(distille?.projects) || !distille.projects.length) {
+          console.error(`    unusable reply`)
+          results[project] = { error: 'unusable reply', sources: read, skipped }
           continue
         }
 
-        // Une racine partagée rend plusieurs projets : on les range séparément
-        // plutôt que d'écraser l'un par l'autre.
-        for (const sous of distille.projets) {
-          const cle = sous.nom?.trim() || projet
-          // Les listes de chemins se répètent pour chaque sous-projet d'une même
-          // racine : 594 chemins × 10 projets ont fait sauter l'envoi. On garde
-          // les comptes, qui sont ce qu'on affiche, et un échantillon lisible.
-          resultats[cle] = {
-            ...sous,
-            releve_sous: projet,
-            sources_nombre: lus.length,
-            sources: lus.slice(0, 30),
-            laisses_nombre: laisses.length,
+        // A shared root yields several projects: file them separately rather than
+        // letting one overwrite the other.
+        for (const block of distille.projects) {
+          const key = block.name?.trim() || project
+          // Path lists repeat for every sub-project under the same root: 594 paths
+          // × 10 projects blew the request up. We keep the counts, which is what we
+          // display, plus a readable sample.
+          results[key] = {
+            ...block,
+            written_to: project,
+            sources_count: read.length,
+            sources: read.slice(0, 30),
+            skipped_count: skipped.length,
           }
           console.log(
-            `    → ${cle} : ${(sous.contraintes ?? []).length} contrainte(s)` +
-              `${(sous.contradictions ?? []).length ? `, ${sous.contradictions.length} contradiction(s)` : ''}` +
-              `${(sous.perime ?? []).length ? `, ${sous.perime.length} périmé(s)` : ''}`,
+            `    → ${key} : ${(block.constraints ?? []).length} contrainte(s)` +
+              `${(block.contradictions ?? []).length ? `, ${block.contradictions.length} contradiction(s)` : ''}` +
+              `${(block.stale ?? []).length ? `, ${block.stale.length} stale` : ''}`,
           )
         }
       }
 
-      // La distillation coûte de l'argent : elle est écrite sur disque AVANT
-      // d'être envoyée. Un échec de transport ne doit jamais effacer un travail
-      // déjà payé — c'est arrivé, et il a fallu tout refaire.
-      const secours = join(homedir(), '.orchestrator', `memoires-${Date.now()}.json`)
-      mkdirSync(dirname(secours), { recursive: true })
-      writeFileSync(secours, JSON.stringify({ inventaire: inv, resultats }, null, 2))
+      // Distilling costs money: it is written to disk BEFORE being sent. A
+      // transport failure must never erase work already paid for — that happened,
+      // and it all had to be redone.
+      const fallbackFile = join(homedir(), '.orchestrator', `memoires-${Date.now()}.json`)
+      mkdirSync(dirname(fallbackFile), { recursive: true })
+      writeFileSync(fallbackFile, JSON.stringify({ inventaire: inv, results }, null, 2))
 
-      let envoye = false
+      let sent = false
       if (pris?.id) {
-        envoye = Boolean(
-          await call('PATCH', `/scans/${pris.id}`, { result: resultats, status: 'analysed' }, { soft: true }),
+        sent = Boolean(
+          await call('PATCH', `/scans/${pris.id}`, { result: results, status: 'analysed' }, { soft: true }),
         )
       }
 
-      console.log(`\n  ${Object.keys(resultats).length} projet(s) distillé(s)`)
-      console.log(envoye ? `  → visibles dans la vue d'ensemble.` : `  → l'envoi a échoué, tout est dans ${secours}`)
+      console.log(`\n  ${Object.keys(results).length} project(s) distilled`)
+      console.log(sent ? `  → visible in the overview.` : `  → the upload failed, everything is in ${fallbackFile}`)
       console.log()
-    } while (boucle)
+    } while (looping)
   },
 
   /**
-   * Veille sur les mémoires : compare leur état à l'empreinte du dernier
-   * relevé et le signale quand elles ont bougé. Un relevé qui vieillit sans
-   * le dire est pire qu'aucun relevé — on croit lire l'état du moment.
+   * Watches the memories: compares their state to the last scan's fingerprint and
+   * says so when they have moved. A scan that ages without saying so is worse than
+   * no scan — you believe you are reading the present.
    *
-   * usage : orchestrator memory:watch [--every 300]
+   * usage: orchestrator memory:watch [--every 300]
    */
   async 'memory:watch'(...argv) {
     const opts = parseFlags(argv)
-    const pause_s = Number(opts.every ?? 300) * 1000
+    const pauseMs = Number(opts.every ?? 300) * 1000
 
-    const projets = await call('GET', '/projects', null, { soft: true })
-    const depots = (projets ?? []).map((p) => p.repo_path).filter(Boolean)
+    const projects = await call('GET', '/projects', null, { soft: true })
+    const repos = (projects ?? []).map((p) => p.repo_path).filter(Boolean)
 
-    console.log(`\n  veille sur les mémoires — ${depots.length} dépôt(s), toutes les ${pause_s / 1000} s\n`)
+    console.log(`\n  watching the memories — ${repos.length} repository(ies), every ${pauseMs / 1000} s\n`)
 
     let dernierSignale = null
 
     for (;;) {
       const scans = await call('GET', '/scans', null, { soft: true })
-      const dernier = (scans ?? []).find((s) => s.fingerprint)
+      const latest = (scans ?? []).find((s) => s.fingerprint)
 
-      if (!dernier) {
-        console.log(`  aucun relevé avec empreinte — lance d'abord « orchestrator memory:scan »`)
+      if (!latest) {
+        console.log(`  no scan with a fingerprint — run “orchestrator memory:scan” first`)
         if (!opts.every) return
-        await pause(pause_s)
+        await pause(pauseMs)
         continue
       }
 
-      const actuelle = empreinte(inventorier(depots))
-      const bouge = actuelle !== dernier.fingerprint
+      const current = memoryFingerprint(inventoryMemories(repos))
+      const moved = current !== latest.fingerprint
 
       await call(
         'PATCH',
-        `/scans/${dernier.id}`,
-        { fingerprint_seen: actuelle, seen_at: new Date().toISOString() },
+        `/scans/${latest.id}`,
+        { fingerprint_seen: current, seen_at: new Date().toISOString() },
         { soft: true },
       )
 
-      if (bouge && actuelle !== dernierSignale) {
-        dernierSignale = actuelle
-        console.log(`  ${new Date().toLocaleTimeString('fr-FR')} — les mémoires ont changé depuis le relevé #${dernier.id}`)
-      } else if (!bouge) {
+      if (moved && current !== dernierSignale) {
+        dernierSignale = current
+        console.log(`  ${new Date().toLocaleTimeString('en-GB')} — the memories have changed since scan #${latest.id}`)
+      } else if (!moved) {
         dernierSignale = null
       }
 
       if (!opts.every) return
-      await pause(pause_s)
+      await pause(pauseMs)
     }
   },
 
   async chapter(...argv) {
-    // Dans une boucle, un refus du gate est une information à traiter, pas une
-    // raison de mourir : c'est même exactement ce qu'on cherche à produire.
+    // Inside a loop, a gate refusal is information to act on, not a reason to die:
+    // it is in fact exactly what we are trying to produce.
     process.env.ORCHESTRATOR_BOUCLE = '1'
     const opts = parseFlags(argv)
     const chapterId = Number(opts.objective ?? opts.chapter)
@@ -1848,26 +1872,26 @@ const commands = {
 
     let budget = Number(opts.budget ?? 0)
     let maxTurns = Number(opts['max-turns'] ?? 12)
-    // Le vrai garde-fou : ce qu'on tolère de dépenser SANS qu'un objectif
-    // avance. Ni les dollars ni le nombre de tours ne mesurent l'avancement ;
-    // celui-ci le fait. Un tour cher qui prouve un objectif est bon marché.
-    let budgetSansProgres = Number(opts['budget-sans-progres'] ?? 40)
+    // The real guardrail: what we tolerate spending WITHOUT an objective moving
+    // forward. Neither dollars nor turn counts measure progress; this one does. An
+    // expensive turn that proves an objective is cheap.
+    let budgetWithoutProgress = Number(opts['budget-sans-progres'] ?? 40)
 
-    // Le workflow déclaré prime sur mes valeurs par défaut : c'est lui qui
-    // dit ce qui arrête, ce qu'on absorbe, et jusqu'où on va. Les options en
-    // ligne de commande restent prioritaires — elles sont explicites.
+    // The declared workflow beats these defaults: it is what says where to stop,
+    // what to absorb, and how far to go. Command-line options still win — they are
+    // explicit.
     const workflows = await call('GET', `/projects/${config.project}/workflows`, null, { soft: true })
     const wf = (workflows ?? []).find((w) => w.active && (!opts.workflow || w.name === opts.workflow))
 
     let stopReasons = HUMAN_HALTS
-    let toursSteriles = 3
+    let sterileTurns = 3
 
     if (wf) {
       stopReasons = wf.stop_when?.halts ?? HUMAN_HALTS
-      toursSteriles = wf.stop_when?.tours_steriles ?? 3
+      sterileTurns = wf.stop_when?.tours_steriles ?? 3
       if (!opts.budget && wf.stop_when?.budget) budget = Number(wf.stop_when.budget)
       if (!opts['budget-sans-progres'] && wf.stop_when?.budget_sans_progres) {
-        budgetSansProgres = Number(wf.stop_when.budget_sans_progres)
+        budgetWithoutProgress = Number(wf.stop_when.budget_sans_progres)
       }
       if (!opts['max-turns'] && wf.stop_when?.max_turns) maxTurns = Number(wf.stop_when.max_turns)
 
@@ -1875,136 +1899,135 @@ const commands = {
       for (const [i, e] of (wf.steps ?? []).entries()) {
         console.log(`    ${i + 1}. ${e.label ?? e.do}`)
       }
-      console.log(`    s'arrête sur : ${stopReasons.join(', ')}`)
+      console.log(`    stops on: ${stopReasons.join(', ')}`)
       console.log(`    absorbe      : ${(wf.absorb ?? []).join(', ') || '—'}`)
     }
     const willPost = Boolean(opts.post)
 
-    // La conversation qui pilote est déclarée par le projet, plus figée dans
-    // le code : un chantier peut avoir son propre fil, et le juge peut être
-    // une autre IA que ChatGPT.
-    const projet = (await call('GET', '/projects', null, { soft: true }))?.find(
+    // The driving conversation is declared by the project, no longer frozen in the
+    // code: a project can have its own thread, and the judge can be an AI other
+    // than ChatGPT.
+    const project = (await call('GET', '/projects', null, { soft: true }))?.find(
       (p) => p.slug === config.project,
     )
-    const match = opts.gpt ?? projet?.judge_url ?? 'chatgpt.com'
-    if (projet?.judge_url) {
-      console.log(`  juge : ${projet.judge_agent ?? 'gpt'} — ${projet.judge_url.slice(0, 72)}`)
+    const match = opts.gpt ?? project?.judge_url ?? 'chatgpt.com'
+    if (project?.judge_url) {
+      console.log(`  judge: ${project.judge_agent ?? 'gpt'} — ${project.judge_url.slice(0, 72)}`)
     }
 
-    if (!config.project) fail('aucun projet : lancer depuis un dépôt avec .orchestrator.json')
+    if (!config.project) fail('no project: run this from a repository that has .orchestrator.json')
 
     const page = await attach(match).catch((e) => fail(e.message))
 
     console.log(
-      `\n  chapitre #${chapterId} · ${maxTurns} tours max${budget ? ` · budget $${budget}` : ' · budget libre'}` +
-        ` · arrêt à $${budgetSansProgres} sans progrès · ${willPost ? 'EXÉCUTION ACTIVE' : 'lecture seule — rien ne sera exécuté'}\n`,
+      `\n  chapter #${chapterId} · ${maxTurns} turns max${budget ? ` · budget $${budget}` : ' · free budget'}` +
+        ` · stops at $${budgetWithoutProgress} without progress · ${willPost ? 'EXECUTION ACTIVE' : 'read only — nothing will be executed'}\n`,
     )
 
     let lastSeen = null
     let spent = 0
     let consecutiveEmpty = 0
     let sterile = 0
-    let depenseDepuisProgres = 0
-    let jetonsSansProgres = 0
-    // 60 M de jetons sans preuve : l'ordre de grandeur d'une passe Claude
-    // coûteuse, donc une borne qui laisse travailler sans laisser dériver.
+    let spentSinceProgress = 0
+    let tokensWithoutProgress = 0
+    // 60 M tokens with no proof: the order of magnitude of an expensive Claude
+    // pass, so a bound that lets work happen without letting it drift.
     const plafondJetons = Number(opts['plafond-jetons'] ?? 60_000_000)
-    let prouvesAvant = null
+    let provenBefore = null
     let demandeFaite = false
-    const consignesFaites = new Set()
+    const instructionsDone = new Set()
 
     for (let turn = 1; turn <= maxTurns; turn++) {
       // 1. Le chapitre est-il clos ?
       const chapter = await call('GET', `/objectives/${chapterId}`)
 
-      // Un objectif prouvé depuis le dernier tour : le compteur repart.
-      const prouves = (chapter.children ?? []).filter((c) => c.status === 'proven').length
-      if (prouvesAvant !== null && prouves > prouvesAvant) {
-        console.log(`  (+${prouves - prouvesAvant} objectif(s) prouvé(s) — compteur d'improductivité remis à zéro)`)
-        depenseDepuisProgres = 0
+      // An objective proven since the last turn: the counter resets.
+      const proven = (chapter.children ?? []).filter((c) => c.status === 'proven').length
+      if (provenBefore !== null && proven > provenBefore) {
+        console.log(`  (+${proven - provenBefore} objective(s) proven — unproductivity counter reset)`)
+        spentSinceProgress = 0
         sterile = 0
-        jetonsSansProgres = 0
+        tokensWithoutProgress = 0
       }
-      prouvesAvant = prouves
+      provenBefore = proven
 
       if (chapter.status === 'proven') {
-        console.log(`\n  CHAPITRE CLOS — #${chapterId} est prouvé.\n`)
+        console.log(`\n  CHAPTER CLOSED — #${chapterId} is proven.\n`)
         break
       }
 
-      // Tout le travail est fait mais le verdict revient à l'humain : la
-      // boucle a terminé sa part. Continuer serait tourner à vide.
-      const enfants = chapter.children ?? []
-      const restants = enfants.filter((c) => !['proven', 'abandoned'].includes(c.status))
+      // All the work is done but the verdict belongs to a human: the loop has
+      // finished its part. Continuing would be spinning.
+      const children = chapter.children ?? []
+      const restants = children.filter((c) => !['proven', 'abandoned'].includes(c.status))
 
-      if (enfants.length && !restants.length) {
-        const juge = projet?.gate_judge ?? 'gpt'
+      if (children.length && !restants.length) {
+        const judge = project?.gate_judge ?? 'gpt'
         const gate = chapter.gate ?? {}
 
-        // Toutes les parties prouvées ne veut pas dire que le chapitre a
-        // franchi SON gate : il a son propre critère. Si le gate réclame du
-        // travail, demander un verdict ferait tourner la boucle en rond —
-        // le juge valide, le gate refuse, on recommence.
+        // Every part proven does not mean the chapter has passed ITS gate: it has
+        // a criterion of its own. If the gate is asking for work, requesting a
+        // verdict would send the loop in circles — the judge accepts, the gate
+        // refuses, round again.
         if (!gate.ok && !gate.ready && willPost && !demandeFaite) {
           demandeFaite = true
-          console.log(`\n  Les ${enfants.length} sous-objectifs sont prouvés, mais le chapitre ne conclut pas :`)
+          console.log(`\n  All ${children.length} sub-objectives are proven, but the chapter does not conclude:`)
           console.log(`  ${gate.detail ?? gate.reason}\n`)
 
           await page
             .evaluate(
               jsPost(
-                `Les ${enfants.length} sous-objectifs du chapitre **#${chapterId} ${chapter.title}** sont prouvés, ` +
-                  `mais le chapitre lui-même ne peut pas conclure :\n\n> ${gate.detail ?? gate.reason}\n\n` +
-                  `Ce qui devait être vrai pour le conclure :\n> ${chapter.proof_spec ?? '(non énoncé)'}\n\n` +
-                  `Ce n'est donc pas un verdict qu'il faut, c'est **du travail sur le chapitre lui-même**. ` +
+                `The ${children.length} sub-objectives of chapter **#${chapterId} ${chapter.title}** are proven, ` +
+                  `but the chapter itself cannot conclude:\n\n> ${gate.detail ?? gate.reason}\n\n` +
+                  `What had to be true to conclude it:\n> ${chapter.proof_spec ?? '(not stated)'}\n\n` +
+                  `So a verdict is not what is needed, **work on the chapter itself** is. ` +
                   `Donne la mission qui le rendra concluable, comme d'habitude.`,
               ),
             )
             .catch(() => {})
 
-          // On NE saute PAS la suite du tour : c'est elle qui lit la réponse
-          // et exécute la mission. Un `continue` ici reposait la question sans
-          // jamais écouter — la boucle se parlait à elle-même.
+          // We do NOT skip the rest of the turn: that is the part which reads the
+          // reply and executes the mission. A `continue` here asked the question
+          // again without ever listening — the loop was talking to itself.
           await pause(5000)
         }
 
-        // Le chapitre a besoin de travail : on laisse le tour se dérouler
-        // normalement plutôt que de conclure ou de rendre la main.
+        // The chapter needs work: let the turn run normally rather than concluding
+        // or handing back.
         if (!gate.ok && !gate.ready) {
           // rien : on tombe dans la lecture du message, plus bas
         } else {
 
-        // Renvoyer la main à l'humain quand le juge du projet est la
-        // conversation n'a aucun sens : la boucle sait à qui demander, et
-        // s'arrêter là laissait un chapitre fini traîner des jours.
-        if (juge !== 'human' && willPost) {
-          console.log(`\n  TRAVAIL TERMINÉ — les ${enfants.length} sous-objectifs sont prouvés.`)
-          console.log(`  Je vais chercher le verdict du chapitre auprès du juge.\n`)
+        // Handing back to a human when the project's judge IS the conversation
+        // makes no sense: the loop knows who to ask, and stopping there left a
+        // finished chapter lying around for days.
+        if (judge !== 'human' && willPost) {
+          console.log(`\n  WORK FINISHED — all ${children.length} sub-objectives are proven.`)
+          console.log(`  Fetching the chapter's verdict from the judge.\n`)
 
-          const preuves = (chapter.evidences ?? []).length
+          const proofs = (chapter.evidences ?? []).length
           await page
             .evaluate(
               jsPost(
-                `Les ${enfants.length} sous-objectifs du chapitre **#${chapterId} ${chapter.title}** sont tous prouvés :\n` +
-                  enfants.map((e) => `- #${e.id} ${e.title}`).join('\n') +
-                  `\n\nCe qui devait être vrai pour conclure le chapitre :\n> ${chapter.proof_spec ?? '(non énoncé)'}` +
-                  `\n\n${preuves} preuve(s) sont rattachées au chapitre lui-même.` +
-                  `\n\n**Prononce le verdict du CHAPITRE**, pas de ses étapes : écris « #${chapterId} est validé » ou « #${chapterId} refusé ».` +
-                  ` S'il est refusé, donne la mission de reprise comme d'habitude.`,
+                `All ${children.length} sub-objectives of chapter **#${chapterId} ${chapter.title}** are proven:\n` +
+                  children.map((e) => `- #${e.id} ${e.title}`).join('\n') +
+                  `\n\nWhat had to be true to conclude the chapter:\n> ${chapter.proof_spec ?? '(not stated)'}` +
+                  `\n\n${proofs} proof(s) are attached to the chapter itself.` +
+                  `\n\n**Pronounce the CHAPTER's verdict**, not its steps': write "@verdict: #${chapterId} accepted" or "@verdict: #${chapterId} rejected".` +
+                  ` If it is rejected, give the follow-up mission as usual.`,
               ),
             )
             .catch(() => {})
 
-          // On attend son verdict comme n'importe quel autre : c'est la même
-          // boucle, pas un cas particulier.
+          // We wait for its verdict like any other: same loop, not a special case.
           const reponse = await waitForStable(page)
           const v = reponse ? parseVerdict(reponse) : null
 
           if (v && Number(v.id) === Number(chapterId)) {
             const r = await call('POST', `/objectives/${chapterId}/verdict/${v.decision}/gpt`, null, { soft: true })
             console.log(
-              `  verdict du chapitre — #${chapterId} ${v.decision === 'accept' ? 'validé' : 'refusé'}` +
-                (r?.status === 'proven' ? ' · CHAPITRE CLOS' : ''),
+              `  chapter verdict — #${chapterId} ${v.decision === 'accept' ? 'accepted' : 'rejected'}` +
+                (r?.status === 'proven' ? ' · CHAPTER CLOSED' : ''),
             )
             if (v.decision === 'reject') {
               lastSeen = reponse
@@ -2016,8 +2039,8 @@ const commands = {
           break
         }
 
-        console.log(`\n  TRAVAIL TERMINÉ — les ${enfants.length} sous-objectifs sont prouvés.`)
-        console.log(`  Le verdict du chapitre revient à toi : ce projet exige un juge humain.\n`)
+        console.log(`\n  WORK FINISHED — all ${children.length} sub-objectives are proven.`)
+        console.log(`  The chapter's verdict is yours: this project requires a human judge.\n`)
         break
         }
       }
@@ -2026,7 +2049,7 @@ const commands = {
         (h) => !h.resolved_at && stopReasons.includes(h.reason),
       )
       if (humanHalt) {
-        console.log(`\n  ARRÊT — ${humanHalt.reason} sur le chapitre. Une décision humaine est requise.`)
+        console.log(`\n  STOP — ${humanHalt.reason} on the chapter. A human decision is required.`)
         console.log(`  ${humanHalt.detail}\n`)
         break
       }
@@ -2034,44 +2057,43 @@ const commands = {
       // 2. Ce que dit GPT.
       const message = await waitForStable(page)
 
-      // Un message INCHANGÉ n'est pas un silence : il peut porter une mission
-      // qu'on n'a jamais exécutée. Atlas s'est arrêté sur « GPT ne répond
-      // plus » alors que sa dernière réponse contenait la mission de
-      // consolidation, simplement parce qu'elle avait déjà été LUE. Ce qui
-      // compte n'est pas si le texte a changé, c'est si sa consigne a été
-      // honorée.
+      // An UNCHANGED message is not silence: it may carry a mission that was never
+      // executed. Atlas stopped on "GPT is not answering any more" while its last
+      // reply contained the consolidation mission, simply because it had already
+      // been READ. What counts is not whether the text changed, it is whether its
+      // instruction was honoured.
       const consigneVue = message ? parseDirective(message) : null
-      const empreinte = consigneVue ? `${consigneVue.harness}:${consigneVue.task.slice(0, 200)}` : null
-      const dejaFaite = empreinte ? consignesFaites.has(empreinte) : false
+      const memoryFingerprint = consigneVue ? `${consigneVue.harness}:${consigneVue.task.slice(0, 200)}` : null
+      const dejaFaite = memoryFingerprint ? instructionsDone.has(memoryFingerprint) : false
 
-      if (!message || (message === lastSeen && (!empreinte || dejaFaite))) {
+      if (!message || (message === lastSeen && (!memoryFingerprint || dejaFaite))) {
         consecutiveEmpty += 1
         if (consecutiveEmpty >= 2) {
           console.log(
             `\n  ARRÊT — ${
               dejaFaite
-                ? 'la conversation répète une consigne déjà exécutée sans en donner de nouvelle.'
-                : 'GPT ne répond plus après deux attentes.'
+                ? 'the conversation is repeating an instruction already executed without giving a new one.'
+                : 'GPT stopped answering after two waits.'
             }\n`,
           )
           break
         }
-        console.log(`  tour ${turn} — rien de neuf, nouvelle attente`)
+        console.log(`  turn ${turn} — nothing new, waiting again`)
         await pause(8000)
         continue
       }
 
-      if (message === lastSeen && empreinte && !dejaFaite) {
-        console.log(`  tour ${turn} — même message, mais sa consigne n'a jamais été exécutée`)
+      if (message === lastSeen && memoryFingerprint && !dejaFaite) {
+        console.log(`  turn ${turn} — same message, but its instruction was never executed`)
       }
 
       consecutiveEmpty = 0
       lastSeen = message
 
-      // La conversation peut prononcer un verdict avant de donner la suite.
-      // On vise l'objectif dont on attend le verdict quand on vient d'en
-      // demander un : un verdict sur un autre objectif ne répond pas à la
-      // question posée, et l'enregistrer brouille les deux.
+      // The conversation may pronounce a verdict before giving what comes next.
+      // We target the objective whose verdict we are waiting on when we have just
+      // asked for one: a verdict on another objective does not answer the question
+      // asked, and recording it muddles both.
       const verdict = parseVerdict(message)
       if (verdict) {
         const r = await call(
@@ -2082,37 +2104,37 @@ const commands = {
         )
         if (r) {
           console.log(
-            `  verdict de la conversation — #${verdict.id} ${verdict.decision === 'accept' ? 'validé' : 'refusé'}`,
+            `  verdict from the conversation — #${verdict.id} ${verdict.decision === 'accept' ? 'accepted' : 'rejected'}`,
           )
-          // Une preuve vient d'être acceptée : le compteur d'improductivité
-          // n'a plus lieu d'être. Sans ça, la boucle s'arrête pour « rien de
-          // prouvé » sur le tour même où elle vient de prouver quelque chose,
-          // parce que le recomptage n'arrive qu'au tour suivant.
+          // A proof has just been accepted: the unproductivity counter no longer
+          // has any reason to exist. Without this, the loop stops for "nothing
+          // proven" on the very turn where it just proved something, because the
+          // recount only happens on the next one.
           if (verdict.decision === 'accept') {
-            depenseDepuisProgres = 0
-            jetonsSansProgres = 0
+            spentSinceProgress = 0
+            tokensWithoutProgress = 0
             sterile = 0
-            prouvesAvant = null
+            provenBefore = null
           }
         }
       }
 
-      const fini = parseFini(message)
+      const fini = parseDone(message)
       if (fini && !parseDirective(message)) {
         console.log(
-          `\n  FIN DÉCLARÉE par le juge${fini.id ? ` sur #${fini.id}` : ''}` +
-            `${fini.raison ? ` — ${fini.raison}` : ''}\n`,
+          `\n  END DECLARED by the judge${fini.id ? ` sur #${fini.id}` : ''}` +
+            `${fini.reason ? ` — ${fini.reason}` : ''}\n`,
         )
         break
       }
 
       const directive = parseDirective(message)
       if (!directive) {
-        console.log(`  tour ${turn} — aucune consigne dans la réponse. Je redemande.`)
+        console.log(`  turn ${turn} — no instruction in the reply. Asking again.`)
         if (willPost) {
           await page.evaluate(
             jsPost(
-              'Pas de consigne exploitable dans ta réponse. Termine par `@claude:` ou `@codex:` seul sur sa ligne, suivi de la mission complète citant le numéro d’objectif visé — tout ce qui suit ce marqueur est transmis mot pour mot au harnais. Ou dis explicitement que le chapitre est terminé.',
+              'No usable instruction in your reply. End with `@claude:` or `@codex:` alone on its line, followed by the full mission citing the target objective number — everything after that marker is passed to the harness word for word. Or say explicitly that the chapter is finished.',
             ),
           )
         }
@@ -2120,30 +2142,29 @@ const commands = {
         continue
       }
 
-      // Un tour coûte de l'ordre de $15-25 : si le reste du budget ne peut
-      // pas l'absorber, mieux vaut s'arrêter que de le couper en plein vol.
-      // Sans tarif connu pour un harnais, le budget en dollars ne le voit pas :
-      // sur Blockrise, tout le travail utile venait de Codex et le garde-fou
-      // n'aurait jamais déclenché. On borne alors sur les JETONS, qui sont
-      // toujours mesurables. Un chiffre inventé serait pire ; pas de garde-fou
-      // du tout aussi.
-      if (jetonsSansProgres >= plafondJetons) {
+      // A turn costs on the order of $15-25: if what is left of the budget cannot
+      // absorb one, better to stop than to cut it off mid-flight.
+      // With no known rate for a harness, a dollar budget cannot see it: on
+      // Blockrise all the useful work came from Codex and the guardrail would never
+      // have fired. So we bound on TOKENS, which are always measurable. An invented
+      // figure would be worse; so would no guardrail at all.
+      if (tokensWithoutProgress >= plafondJetons) {
         console.log(
-          `\n  ARRÊT — ${(jetonsSansProgres / 1e6).toFixed(1)} M de jetons consommés sans qu'un objectif soit prouvé.` +
-            `\n  Le coût en dollars n'est pas mesurable pour ce harnais ; la borne porte donc sur les jetons.\n`,
+          `\n  STOP — ${(tokensWithoutProgress / 1e6).toFixed(1)} M tokens consumed without a single objective being proven.` +
+            `\n  Dollar cost is not measurable for this harness, so the bound is on tokens.\n`,
         )
         break
       }
 
-      if (depenseDepuisProgres >= budgetSansProgres) {
+      if (spentSinceProgress >= budgetWithoutProgress) {
         console.log(
-          `\n  ARRÊT — $${depenseDepuisProgres.toFixed(2)} dépensés sans qu'un seul objectif soit prouvé.\n  Ce n'est plus une question de moyens : l'approche ne converge pas.\n`,
+          `\n  STOP — $${spentSinceProgress.toFixed(2)} spent without a single objective being proven.\n  This is no longer a question of means: the approach is not converging.\n`,
         )
         if (willPost) {
           await page
             .evaluate(
               jsPost(
-                `$${depenseDepuisProgres.toFixed(2)} dépensés sans qu'aucun objectif ne soit prouvé. La boucle s'arrête : ce n'est pas un manque de budget, c'est que l'approche ne converge pas. Il faut revoir la méthode, le critère de preuve, ou découper autrement.`,
+                `$${spentSinceProgress.toFixed(2)} spent without any objective being proven. The loop stops: this is not a lack of budget, it is that the approach is not converging. The method, the proof criterion, or the breakdown has to change.`,
               ),
             )
             .catch(() => {})
@@ -2151,14 +2172,14 @@ const commands = {
         break
       }
 
-      const reste = budget ? budget - spent : Infinity
-      if (budget && reste < 15) {
-        console.log(`\n  ARRÊT — il reste $${reste.toFixed(2)}, insuffisant pour un tour. Dépensé $${spent.toFixed(2)}.\n`)
+      const remaining = budget ? budget - spent : Infinity
+      if (budget && remaining < 15) {
+        console.log(`\n  STOP — $${remaining.toFixed(2)} left, not enough for a turn. Spent $${spent.toFixed(2)}.\n`)
         if (willPost) {
           await page
             .evaluate(
               jsPost(
-                `Budget presque épuisé : $${spent.toFixed(2)} dépensés sur $${budget}. Il ne reste pas de quoi mener un tour complet, la boucle s'arrête ici plutôt que d'interrompre une session en plein travail.`,
+                `Budget nearly exhausted: $${spent.toFixed(2)} spent of $${budget}. There is not enough left to run a full turn, so the loop stops here rather than cutting a session off mid-work.`,
               ),
             )
             .catch(() => {})
@@ -2166,41 +2187,57 @@ const commands = {
         break
       }
 
-      console.log(`  tour ${turn} — ${directive.harness}${budget ? ` · reste $${reste.toFixed(2)}` : ''}`)
+      // The Unity editor is a dependency we cannot satisfy ourselves — and its
+      // absence is expensive: two passes discovered it AFTER the fact, for $79 and
+      // zero files. One second of checking beats a session report that concludes
+      // "please open Unity".
+      if (config.unity?.instance && !editeurUnityVivant()) {
+        console.log(`\n  STOP — no Unity editor alive, and the mission requires one.`)
+        console.log(`  Open the project in Unity, then run again: nothing was spent.\n`)
+        await call('POST', `/objectives/${chapterId}/halts`, {
+          reason: 'human_request',
+          detail:
+            `The mission requires the Unity instance “${config.unity.instance}” and no editor is running. ` +
+            'Nobody but you can open it.',
+        }).catch(() => {})
+        break
+      }
 
-      // 3. Exécuter — jamais sans --post, même défaut que le relais : un mode
-      //    annoncé « lecture seule » ne doit lancer aucune session réelle.
+      console.log(`  turn ${turn} — ${directive.harness}${budget ? ` · $${remaining.toFixed(2)} left` : ''}`)
+
+      // 3. Execute — never without --post, same default as the relay: a mode
+      //    announced as "read only" must start no real session.
       if (!willPost) {
-        console.log(`\n  lecture seule — rien n'a été exécuté.`)
-        console.log(`  ${directive.harness} recevrait ${directive.task.length} caractères de mission sur #${(directive.task.match(/#(\d+)/) ?? [])[1] ?? '?'}.`)
-        console.log(`  Relancer avec --post pour exécuter.\n`)
+        console.log(`\n  read only — nothing was executed.`)
+        console.log(`  ${directive.harness} would receive ${directive.task.length} characters of mission on #${(directive.task.match(/#(\d+)/) ?? [])[1] ?? '?'}.`)
+        console.log(`  Run again with --post to execute.\n`)
         break
       }
 
-      consignesFaites.add(`${directive.harness}:${directive.task.slice(0, 200)}`)
+      instructionsDone.add(`${directive.harness}:${directive.task.slice(0, 200)}`)
       const outcome = await runHarness(directive.harness, directive.task)
       const passage = outcome.passageId
         ? await call('GET', `/passages/${outcome.passageId}`).catch(() => null)
         : null
       const coutTour = Number(passage?.cost_usd ?? 0)
       spent += coutTour
-      depenseDepuisProgres += coutTour
-      jetonsSansProgres += Number(passage?.tokens ?? 0)
+      spentSinceProgress += coutTour
+      tokensWithoutProgress += Number(passage?.tokens ?? 0)
 
       console.log(
-        `    → ${outcome.verdict}${outcome.denied?.length ? ` · ${outcome.denied.length} outil(s) refusés` : ''} · cumulé $${spent.toFixed(2)}`,
+        `    → ${outcome.verdict}${outcome.denied?.length ? ` · ${outcome.denied.length} tool(s) refused` : ''} · total $${spent.toFixed(2)}`,
       )
 
-      // Absorber un piétinement est utile une fois ou deux — GPT change
-      // d'angle. Au-delà, insister coûte sans rien apporter : c'est le
-      // moment de changer d'approche, pas de recommencer.
-      // Plafond d'usage atteint : ce n'est pas un echec de la tache, c'est
-      // une attente. On dort jusqu'a la reprise plutot que de bruler des tours.
+      // Absorbing a stall is useful once or twice — GPT changes angle. Past that,
+      // insisting costs without adding anything: that is the moment to change
+      // approach, not to start over.
+      // Usage ceiling reached: that is not a task failure, it is a wait. We sleep
+      // until the reset rather than burning turns.
       if (outcome.limitReset) {
-        const attente = outcome.limitReset - Date.now()
-        const minutes = Math.ceil(attente / 60000)
+        const pendingAuth = outcome.limitReset - Date.now()
+        const minutes = Math.ceil(pendingAuth / 60000)
 
-        if (attente > 0 && attente < 6 * 3600 * 1000) {
+        if (pendingAuth > 0 && pendingAuth < 6 * 3600 * 1000) {
           console.log(`\n  PLAFOND D'USAGE — reprise dans ${minutes} min. La boucle attend.\n`)
           if (willPost) {
             await page
@@ -2211,27 +2248,27 @@ const commands = {
               )
               .catch(() => {})
           }
-          await pause(attente + 30000)
+          await pause(pendingAuth + 30000)
           lastSeen = null
           turn -= 1
           continue
         }
       }
 
-      // Un tour qui a écrit des fichiers n'est pas stérile, même si git ne les
-      // suit pas encore. Ne regarder que `changed` rendait invisibles les 63
-      // fichiers neufs produits par Codex, et la boucle s'arrêtait sur
-      // « aucun fichier ne bouge » au moment même où le travail sortait.
+      // A turn that wrote files is not sterile, even if git does not track them
+      // yet. Looking only at `changed` made the 63 new files Codex produced
+      // invisible, and the loop stopped on "no file is moving" at the very moment
+      // the work was coming out.
       const aBouge = Boolean(outcome.changed?.length || outcome.produits?.length)
       sterile = aBouge ? 0 : sterile + 1
 
-      if (sterile >= toursSteriles) {
-        console.log(`\n  ARRÊT — ${toursSteriles} tours sans qu’un seul fichier bouge. Ce n’est plus un problème à absorber.\n`)
+      if (sterile >= sterileTurns) {
+        console.log(`\n  STOP — ${sterileTurns} turns without a single file moving. This is no longer a problem to absorb.\n`)
         if (willPost) {
           await page
             .evaluate(
               jsPost(
-                'Trois tours consécutifs sans qu’aucun fichier ne bouge. La boucle s’arrête : ce n’est plus un obstacle ponctuel, c’est l’approche qui ne prend pas. Il faut une décision humaine — changer de méthode, revoir le critère de preuve, ou renoncer à cet objectif.',
+                'Three consecutive turns without a single file moving. The loop stops: this is no longer a one-off obstacle, it is the approach failing to take. A human decision is needed — change method, revisit the proof criterion, or give this objective up.',
               ),
             )
             .catch(() => {})
@@ -2239,16 +2276,16 @@ const commands = {
         break
       }
 
-      // 4. Rendre compte, quoi qu'il arrive.
-      // Joindre les rendus AVANT le texte : la conversation doit voir avant
-      // de juger, sinon elle prononce sur la parole de l'exécutant.
+      // 4. Report back, whatever happened.
+      // Attach the renderings BEFORE the text: the conversation has to see before
+      // it judges, otherwise it rules on the executor's word.
       let joints = 0
       if (willPost && outcome.produits?.length) {
-        const charger = (c, type) => {
+        const load = (c, type) => {
           try {
             const abs = resolve(process.cwd(), c)
             if (statSync(abs).size > 2 * 1024 * 1024) return null
-            return { nom: basename(c), type, b64: readFileSync(abs).toString('base64') }
+            return { name: basename(c), type, b64: readFileSync(abs).toString('base64') }
           } catch {
             return null
           }
@@ -2257,17 +2294,17 @@ const commands = {
         const images = outcome.produits
           .filter((c) => /\.(png|jpe?g|webp)$/i.test(c))
           .slice(0, 4)
-          .map((c) => charger(c, /\.png$/i.test(c) ? 'image/png' : 'image/jpeg'))
+          .map((c) => load(c, /\.png$/i.test(c) ? 'image/png' : 'image/jpeg'))
           .filter(Boolean)
 
-        // Les livrables TEXTE aussi : un chapitre dont la preuve est un
-        // registre Markdown ou un manifeste JSON ne peut pas être jugé sur le
-        // récit de la session. Le juge doit lire les fichiers, pas leur nom.
+        // TEXT deliverables too: a chapter whose proof is a Markdown register or a
+        // JSON manifest cannot be judged on the session's account. The judge has to
+        // read the files, not their names.
         const textes = outcome.produits
           .filter((c) => /\.(md|json|csv|txt|svg)$/i.test(c))
           .slice(0, 6)
           .map((c) =>
-            charger(
+            load(
               c,
               /\.json$/i.test(c) ? 'application/json' : /\.svg$/i.test(c) ? 'image/svg+xml' : 'text/markdown',
             ),
@@ -2279,7 +2316,7 @@ const commands = {
           joints = await attachFiles(page, aJoindre).catch(() => 0)
           if (joints) {
             console.log(
-              `    ${joints} pièce(s) jointe(s)` +
+              `    ${joints} attachment(s)` +
                 (images.length ? ` · ${images.length} rendu(s)` : '') +
                 (textes.length ? ` · ${textes.length} document(s)` : ''),
             )
@@ -2291,28 +2328,28 @@ const commands = {
       if (willPost) {
         await page.evaluate(jsPost(report)).catch(() => {})
         const landed = await confirmPosted(page, report)
-        console.log(landed ? '    ↑ posté' : '    !  publication non confirmée')
+        console.log(landed ? '    ↑ posted' : '    !  posting not confirmed')
         if (!landed) break
       } else {
         console.log(`\n${indent(report)}\n`)
       }
 
-      // 5. Ce qui arrête vraiment.
+      // 5. What actually stops it.
       if (budget && spent >= budget) {
-        console.log(`\n  ARRÊT — budget de $${budget} atteint (dépensé $${spent.toFixed(2)}).\n`)
+        console.log(`\n  STOP — budget of $${budget} reached (spent $${spent.toFixed(2)}).\n`)
         if (willPost) {
           await page.evaluate(
-            jsPost(`Budget de $${budget} atteint après ${turn} tours. La boucle s’arrête ici, le chapitre n’est pas clos.`),
+            jsPost(`Budget of $${budget} reached after ${turn} turns. The loop stops here; the chapter is not closed.`),
           )
         }
         break
       }
 
-      // Un refus dont la cause est « cet objectif attend une décision »
-      // n'est pas absorbable : c'est précisément une décision qui manque.
+      // A refusal whose cause is "this objective is waiting on a decision" is not
+      // absorbable: a decision is precisely what is missing.
       const needsHuman =
         stopReasons.includes(outcome.haltReason) ||
-        /décision humaine|critère de preuve|n’existe pas/.test(outcome.stopReason ?? '')
+        /human decision|proof criterion|does not exist/.test(outcome.stopReason ?? '')
 
       if (outcome.stop && needsHuman) {
         console.log(`\n  ARRÊT — ${outcome.stopReason}\n`)
@@ -2320,7 +2357,7 @@ const commands = {
           await page
             .evaluate(
               jsPost(
-                `La boucle s’arrête : ${outcome.stopReason}. Il faut une décision de l’humain avant de continuer — soit lever l’arrêt, soit préciser le critère de preuve, soit viser un autre objectif.`,
+                `The loop stops: ${outcome.stopReason}. A human decision is needed before going on — either clear the halt, or state the proof criterion, or aim at another objective.`,
               ),
             )
             .catch(() => {})
@@ -2329,9 +2366,9 @@ const commands = {
       }
 
       if (outcome.stop) {
-        // Une règle enfreinte ou un piétinement : la boucle le signale à GPT
-        // et continue — c'est un problème qu'elle sait traiter.
-        console.log(`    (problème absorbé : ${outcome.stopReason})`)
+        // A broken rule or a stall: the loop reports it to GPT and carries on — it
+        // is a problem it knows how to handle.
+        console.log(`    (problem absorbed: ${outcome.stopReason})`)
         await resolveHalts(outcome.objectiveId)
       }
 
@@ -2342,9 +2379,9 @@ const commands = {
   },
 
   async halt(objectiveId, reason, ...detail) {
-    if (!objectiveId || !reason) fail('usage: orchestrator halt <objectiveId> <motif> [détail]')
+    if (!objectiveId || !reason) fail('usage: orchestrator halt <objectiveId> <reason> [detail]')
     await call('POST', `/objectives/${objectiveId}/halts`, { reason, detail: detail.join(' ') || null })
-    console.log(`arrêt enregistré — ${reason}`)
+    console.log(`halt recorded — ${reason}`)
   },
 
   async next() {
@@ -2353,7 +2390,7 @@ const commands = {
       .filter((o) => ['ready', 'in_progress'].includes(o.status) && !o.open_halts_count)
       .sort((a, b) => a.priority - b.priority)
 
-    if (!ready.length) return console.log('aucun objectif disponible — tout est prouvé, bloqué ou sans preuve définie')
+    if (!ready.length) return console.log('no objective available — everything is proven, blocked, or has no proof defined')
 
     const o = ready[0]
     console.log(`#${o.id}  [${o.blast_radius}]  ${o.title}`)
@@ -2368,21 +2405,21 @@ function fail(message) {
 
 const pause = (ms) => new Promise((r) => setTimeout(r, ms))
 
-/** decimal(20,4) arrive avec ses zéros de queue. */
-const trimNum = (v) => (v === null || v === undefined ? '—' : String(Number(v)))
+/** decimal(20,4) arrives with its trailing zeros. */
+const trimNumber = (v) => (v === null || v === undefined ? '—' : String(Number(v)))
 const signOf = (c) => ({ lte: '≤', lt: '<', gte: '≥', gt: '>', eq: '=' })[c] ?? c
 
-/** Le vocabulaire technique reste dans la base ; ce qui sort parle français. */
+/** Technical vocabulary stays in the database; what comes out reads plainly. */
 const BLAST_FR = {
   cosmetic: 'sans risque',
-  feature: 'risque limité',
-  api: 'touche à une ressource partagée',
+  feature: 'limited risk',
+  api: 'touches a shared resource',
   critical: 'critique',
 }
 /**
- * Récupère le premier objet JSON d'une réponse. Les modèles encadrent volontiers
- * leur JSON de prose ou de balises de code : refuser pour ça gaspillerait
- * l'appel, alors qu'on sait où couper.
+ * Pulls the first JSON object out of a reply. Models happily wrap their JSON in
+ * prose or code fences: refusing over that would waste the call, when we know
+ * exactly where to cut.
  */
 function extraireJson(texte) {
   const t = String(texte ?? '').replace(/```(?:json)?/gi, '')
@@ -2412,15 +2449,15 @@ function extraireJson(texte) {
 }
 
 const HALT_FR = {
-  no_provable_criterion: 'on ne sait pas comment le vérifier',
-  blast_radius: 'trop risqué pour décider seul',
-  piege_rule: 'une règle du projet est enfreinte',
-  invariant_regression: 'une mesure de production s’est dégradée',
-  no_new_proof: 'plusieurs essais, rien de démontré',
+  no_provable_criterion: 'nobody knows how to verify it',
+  blast_radius: 'too risky to decide alone',
+  piege_rule: 'a project rule is broken',
+  invariant_regression: 'a production measurement degraded',
+  no_new_proof: 'several attempts, nothing demonstrated',
   budget: 'budget atteint',
-  human_request: 'arrêt demandé',
-  verdict_rejected: 'refusé au verdict, à reprendre',
-  children_open: 'des sous-objectifs sont encore ouverts',
+  human_request: 'stop requested',
+  verdict_rejected: 'rejected at verdict, to be redone',
+  children_open: 'sub-objectives are still open',
   error: 'erreur technique',
 }
 const indent = (text) => text.split('\n').map((l) => `    │ ${l}`).join('\n')
@@ -2443,13 +2480,13 @@ function parseFlags(argv) {
 }
 
 /**
- * Les motifs d'arrêt qui exigent VRAIMENT un humain. Les autres, la boucle
- * les signale à la conversation qui pilote et continue : c'est la différence
- * entre « je bute » et « je ne peux pas décider ».
+ * The halt reasons that REALLY need a human. The others, the loop reports to the
+ * driving conversation and carries on: that is the difference between "I am stuck"
+ * and "I cannot decide".
  */
 const HUMAN_HALTS = ['blast_radius', 'no_provable_criterion', 'invariant_regression', 'budget', 'human_request']
 
-/** Lève les arrêts que la boucle sait traiter, pour ne pas se bloquer elle-même. */
+/** Clears the halts the loop knows how to handle, so it does not block itself. */
 async function resolveHalts(objectiveId) {
   if (!objectiveId) return
   const o = await call('GET', `/objectives/${objectiveId}`, null, { soft: true }).catch(() => null)
@@ -2460,12 +2497,12 @@ async function resolveHalts(objectiveId) {
 }
 
 /**
- * Le binaire d'un harnais n'est JAMAIS un chemin en dur : il dépend de la
- * machine. Dans l'ordre — la variable d'environnement, puis `binaries` de
- * .orchestrator.json, et à défaut le PATH tranche.
+ * A harness binary is NEVER a hard-coded path: it depends on the machine. In
+ * order — the environment variable, then `binaries` in .orchestrator.json, and
+ * failing that the PATH decides.
  *
- *   ORCHESTRATOR_CODEX_BIN=/chemin/vers/codex
- *   "binaries": { "codex": "/chemin/vers/codex" }
+ *   ORCHESTRATOR_CODEX_BIN=/path/to/codex
+ *   "binaries": { "codex": "/path/to/codex" }
  */
 function harnessBin(harness) {
   return process.env[`ORCHESTRATOR_${harness.toUpperCase()}_BIN`] ?? config.binaries?.[harness] ?? harness
@@ -2485,7 +2522,7 @@ function latestClaudeTranscript(sinceMs) {
   )
 }
 
-/** Codex range ses rollouts par année/mois/jour — il faut descendre. */
+/** Codex files its rollouts by year/month/day — you have to walk down. */
 function latestCodexRollout(sinceMs) {
   if (!existsSync(CODEX_SESSIONS)) return null
   const found = []
@@ -2512,8 +2549,8 @@ function latestCodexRollout(sinceMs) {
 
   walk(CODEX_SESSIONS, 0)
 
-  // Le bon rollout est celui dont le cwd est ce projet, pas le plus récent
-  // en date : d'autres sessions Codex tournent ailleurs en parallèle.
+  // The right rollout is the one whose cwd is this project, not the most recent by
+  // date: other Codex sessions run elsewhere in parallel.
   const here = process.cwd()
   for (const f of found.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)) {
     for (const line of readFileSync(f, 'utf8').split('\n').slice(0, 5)) {
@@ -2530,10 +2567,10 @@ function latestCodexRollout(sinceMs) {
 }
 
 /**
- * Tarifs Codex en $/million : [entrée, sortie, cache lu].
- * Renseignables dans .orchestrator.json → codexPricing. Sans tarif connu,
- * on compte les tokens et on n'invente pas de coût — un chiffre faux dans
- * un garde-fou budgétaire est pire que pas de chiffre du tout.
+ * Codex pricing in $/million: [input, output, cache read].
+ * Set them in .orchestrator.json → codexPricing. With no known rate we count the
+ * tokens and invent no cost — a wrong figure inside a budget guardrail is worse
+ * than no figure at all.
  */
 function codexPricing(model) {
   const table = config.codexPricing ?? {}
@@ -2570,17 +2607,19 @@ function codexDiagnostics(file) {
 }
 
 /**
- * Une session peut échouer sans rien casser : refusée sur ses outils, elle
- * consomme et n'écrit rien. Le compte rendu doit dire pourquoi, sinon il
- * annonce « aucun fichier modifié » et fait arbitrer sur une fausse prémisse.
+ * A session can fail without breaking anything: refused on its tools, it consumes
+ * and writes nothing. The report has to say why, otherwise it announces "no file
+ * modified" and makes someone rule on a false premise.
  */
-/** « resets 2:10pm » → l'heure de reprise, en millisecondes epoch. */
+/** "resets 2:10pm" → the reset time, in epoch milliseconds. */
 export function parseLimitReset(text) {
+  // Both spellings: the harness message is English, but a French locale writes
+  // « réinitialise ». Losing either one loses the reset time entirely.
   const m = /(?:resets|réinitialis\w*)\s+(\d{1,2})[:h](\d{2})\s*(am|pm)?/i.exec(text ?? '')
   if (!m) {
-    // Plafond annoncé sans heure de reprise : on ne sait pas quand ça revient,
-    // mais on sait que ce n'est pas la tâche qui a échoué. Une heure d'attente
-    // vaut mieux que de compter ça comme une tentative stérile.
+    // Ceiling announced with no reset time: we do not know when it comes back, but
+    // we do know the task is not what failed. One hour of waiting beats counting it
+    // as a sterile attempt.
     return /(?:session|usage|rate)\s+limit|limite d'usage|plafond atteint/i.test(text ?? '')
       ? Date.now() + 3600 * 1000
       : null
@@ -2604,8 +2643,8 @@ function sessionDiagnostics(sinceMs, harness = 'claude') {
 
   if (!file) return { denied: [], lastMessage: null, tools: {}, sessionId: null }
 
-  // Le nom du transcript EST l'identifiant de session. On le dérive, on ne le
-  // demande à personne : un agent ne peut pas oublier de déclarer ce qu'on lit.
+  // The transcript's name IS the session id. We derive it, we ask nobody for it:
+  // an agent cannot forget to declare what we read ourselves.
   const sessionId = basename(file).replace(/\.jsonl$/, '')
 
   if (harness === 'codex') return { ...codexDiagnostics(file), sessionId }
@@ -2641,15 +2680,14 @@ function sessionDiagnostics(sinceMs, harness = 'claude') {
 }
 
 /**
- * Lance un harnais sur une tâche, encadré par une tentative, et laisse les
- * gardes trancher. Le harnais n'a rien à déclarer : tout est dérivé.
+ * Starts a harness on a task, framed by an attempt, and lets the guards decide.
+ * The harness has nothing to declare: everything is derived.
  */
 async function runHarness(harness, task) {
   const objectives = await call('GET', `/projects/${config.project}/objectives`)
 
-  // La consigne désigne un objectif par son numéro : on l'honore.
-  // Sans numéro, on retombe sur la priorité — mais on ne devine jamais
-  // à la place d'une désignation explicite.
+  // The instruction names an objective by number: we honour it. With no number we
+  // fall back on priority — but we never guess in place of an explicit choice.
   const named = task.match(/#(\d+)/)
   let target
 
@@ -2659,41 +2697,41 @@ async function runHarness(harness, task) {
 
     if (!o) {
       return {
-        verdict: 'refusé',
+        verdict: 'refused',
         halts: [],
         stop: true,
-        stopReason: `la consigne désigne l’objectif #${id}, qui n’existe pas dans ce projet`,
+        stopReason: `the instruction names objective #${id}, which does not exist in this project`,
         output: '',
       }
     }
-    // Refuser seulement sur un arrêt qui EXIGE un humain. Les autres motifs
-    // sont absorbables : la boucle les lève et poursuit. Sinon un simple
-    // piétinement gèle l'objectif aussi sûrement qu'une décision manquante.
+    // Refuse only on a halt that REQUIRES a human. The other reasons are
+    // absorbable: the loop clears them and carries on. Otherwise a plain stall
+    // freezes the objective as surely as a missing decision.
     const full = await call('GET', `/objectives/${id}`, null, { soft: true })
     const openHalts = (full?.halts ?? []).filter((h) => !h.resolved_at)
     const blocking = openHalts.filter((h) => HUMAN_HALTS.includes(h.reason))
 
     if (blocking.length) {
       return {
-        verdict: 'refusé',
+        verdict: 'refused',
         halts: [],
         stop: true,
         haltReason: blocking[0].reason,
-        stopReason: `l’objectif #${id} attend une décision humaine — ${blocking[0].reason} : ${(blocking[0].detail ?? '').slice(0, 160)}`,
+        stopReason: `objective #${id} is waiting on a human decision — ${blocking[0].reason}: ${(blocking[0].detail ?? '').slice(0, 160)}`,
         output: '',
       }
     }
 
     if (openHalts.length) {
-      console.log(`  (${openHalts.length} arrêt(s) absorbable(s) levé(s) sur #${id})`)
+      console.log(`  (${openHalts.length} absorbable halt(s) cleared on #${id})`)
       await resolveHalts(id)
     }
     if (!o.proof_spec) {
       return {
-        verdict: 'refusé',
+        verdict: 'refused',
         halts: [],
         stop: true,
-        stopReason: `l’objectif #${id} n’a pas de critère de preuve : on ne saurait pas dire quand c’est fini`,
+        stopReason: `objective #${id} has no proof criterion: nobody could say when it is finished`,
         output: '',
       }
     }
@@ -2706,53 +2744,69 @@ async function runHarness(harness, task) {
 
   if (!target) {
     return {
-      verdict: 'refusé',
+      verdict: 'refused',
       halts: [],
       stop: true,
-      stopReason: 'aucun objectif prenable (tout est prouvé, arrêté, ou sans critère de preuve)',
+      stopReason: 'no takeable objective (everything is proven, halted, or has no proof criterion)',
       output: '',
     }
   }
 
-  console.log(`  objectif ciblé : #${target.id} ${target.title}`)
+  console.log(`  objective targeted: #${target.id} ${target.title}`)
 
-  // Continuité : reprendre une session garde le cache chaud et fait gagner
-  // beaucoup — mais elle transporte de l'état que personne ne voit. On ne la
-  // prend donc QUE si l'objectif la demande, et on l'annonce.
+  // Continuity: resuming a session keeps the cache warm and saves a great deal —
+  // but it carries state nobody can see. So we only take it if the objective asks
+  // for it, and we say so.
   const mode = target.resume_mode ?? 'new'
   const reprise =
     mode === 'named' ? target.resume_session : mode === 'last' ? target.last_session : null
 
   if (mode !== 'new' && !reprise) {
-    console.log(`  continuité demandée (${mode}) mais aucune session à reprendre — session neuve`)
+    console.log(`  continuity requested (${mode}) but no session to resume — fresh session`)
   } else if (reprise) {
-    console.log(`  reprise de la session ${String(reprise).slice(0, 8)} — la mission n'est pas toute l'histoire`)
+    console.log(`  resuming session ${String(reprise).slice(0, 8)} — the mission is not the whole story`)
   }
 
   const passage = await call('POST', `/objectives/${target.id}/passages`, {
     harness,
     resumed_from: reprise ?? null,
     git_before: head(),
-    // Le résumé sert d'étiquette ; la mission intégrale est ce qui a
-    // réellement été transmis au harnais — c'est elle qu'on doit pouvoir
-    // relire pour juger si l'ordre était bon ou l'exécution mauvaise.
+    // The summary serves as a label; the whole mission is what was actually handed
+    // to the harness — that is what has to be rereadable in order to judge whether
+    // the order was good or the execution bad.
     summary: task.split('\n').find((l) => l.trim())?.slice(0, 200) ?? task.slice(0, 200),
     mission: task,
   })
 
-  // Une session non interactive ne peut rien demander : on lui passe
-  // explicitement ce que l'espace Autorisations a tranché. Les refus
-  // restent refusés — ils priment sur les autorisations.
-  const perms = await call(
-    'GET',
-    `/projects/${config.project}/permissions/effective/${harness}`,
-  ).catch(() => ({ allow: [], deny: [] }))
+  // A non-interactive session cannot ask for anything: we hand it explicitly what
+  // the Permissions screen decided. Refusals stay refused — they beat allowances.
+  // A read failure must NOT read as "no permissions". The silent fallback that
+  // used to be here sent a session off with an empty list: it worked without being
+  // able to do anything, it billed, and the report blamed the permissions when it
+  // was the API that had not answered — a plain server restart was enough to cause
+  // it.
+  let perms
+  try {
+    perms = await call('GET', `/projects/${config.project}/permissions/effective/${harness}`)
+  } catch (e) {
+    throw new Error(
+      `Permissions unreadable (${String(e.message).slice(0, 100)}) — pass cancelled. ` +
+        'Starting a session without its list means paying for a refusal on every tool.',
+    )
+  }
+
+  if (!perms.allow?.length) {
+    throw new Error(
+      `No tool allowed for “${harness}” on this project — pass cancelled. ` +
+        'In a non-interactive session a tool off the list is refused without asking: nothing could succeed.',
+    )
+  }
 
   const before = head()
   const startedAt = Date.now()
 
-  // L'arbre de travail est peut-être déjà sale : on photographie son état
-  // avant, sinon on impute à la session ce qu'un autre a laissé traîner.
+  // The working tree may already be dirty: photograph its state first, otherwise
+  // we charge the session for what somebody else left lying around.
   const dirtyBefore = new Set(
     (git('status', '--porcelain') ?? '')
       .split('\n')
@@ -2766,30 +2820,34 @@ async function runHarness(harness, task) {
 
   try {
     const [bin, args] =
-      // `workspace-write` et pas davantage : Codex écrit dans le dépôt,
-      // jamais ailleurs. Le rayon de souffle tranche ensuite sur le diff.
+      // `workspace-write` and no more: Codex writes into the repository, never
+      // outside it. The blast radius then rules on the diff.
       harness === 'codex'
         ? [
             harnessBin('codex'),
-            // En mode non interactif, TOUT appel d'outil MCP est refusé faute
-            // d'approbation — vérifié : approval_policy=never, trust_level
-            // trusted et projet de confiance échouent tous les trois. Le seul
-            // drapeau qui débloque retire aussi le bac à sable. Décision prise
-            // en connaissance de cause : sans lui, Codex ne peut pas toucher
-            // Unity sans un humain devant l'écran, donc pas d'autopilote.
+            // In non-interactive mode, EVERY MCP tool call is refused for want of
+            // approval — verified: approval_policy=never, trust_level trusted and a
+            // trusted project all three fail. The only flag that unblocks it also
+            // removes the sandbox. Decision taken knowingly: without it, Codex
+            // cannot touch Unity without a human at the screen, so no autopilot.
             reprise
               ? ['exec', 'resume', String(reprise), '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', task]
               : ['exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', task],
           ]
         : [
             harnessBin('claude'),
-            // La consigne EN TÊTE : --allowed-tools et --disallowed-tools
-            // sont variadiques et avaleraient le texte placé après eux.
+            // The instruction FIRST: --allowed-tools and --disallowed-tools are
+            // variadic and would swallow any text placed after them.
             [
               '-p',
               task,
               // La reprise vient AVANT les listes d'outils, qui sont variadiques.
               ...(reprise ? ['--resume', String(reprise)] : []),
+              // One `--add-dir` per directory: this is what was missing when a
+              // refusal said "may only list files in the working directory" while
+              // the tool was allowed. Allowing a tool and allowing a path are two
+              // different things.
+              ...config.readDirs.flatMap((d) => ['--add-dir', d]),
               ...(perms.allow?.length ? ['--allowed-tools', ...perms.allow] : []),
               ...(perms.deny?.length ? ['--disallowed-tools', ...perms.deny] : []),
             ],
@@ -2798,29 +2856,29 @@ async function runHarness(harness, task) {
     output = execFileSync(bin, args, {
       encoding: 'utf8',
       cwd: process.cwd(),
-      // Les variables du projet lèvent les ambiguïtés que personne
-      // n'est là pour trancher — l'instance Unity, par exemple.
-      // Les secrets des services tiers vivent sur CETTE machine et n'entrent
-      // dans le processus que le temps de la session. Le serveur ne les a
-      // jamais eus : il ne connaît que le NOM de la variable attendue.
+      // The project's variables settle the ambiguities nobody is there to settle —
+      // the Unity instance, for instance.
+      // Third-party service secrets live on THIS machine and only enter the process
+      // for the duration of the session. The server never had them: it only knows
+      // the NAME of the expected variable.
       env: { ...process.env, ...(config.secrets ?? {}), ...config.env, ORCHESTRATOR_MANAGED: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
       maxBuffer: 32 * 1024 * 1024,
-      // Aucun délai par défaut : une session finit quand elle a fini. Un
-      // délai arbitraire tue le travail en cours et facture tout pour rien.
-      // Le vrai garde-fou est le budget, qui borne la dépense — pas la durée.
+      // No default timeout: a session ends when it has ended. An arbitrary timeout
+      // kills work in progress and bills all of it for nothing. The real guardrail
+      // is the budget, which bounds the spend — not the duration.
       ...(config.sessionTimeoutMin ? { timeout: config.sessionTimeoutMin * 60 * 1000 } : {}),
     })
   } catch (e) {
     crashed = true
-    // ETIMEDOUT / SIGTERM : c'est NOUS qui avons coupé, pas la session.
+    // ETIMEDOUT / SIGTERM: WE cut it off, not the session.
     timedOut = e.killed === true || e.signal === 'SIGTERM' || e.code === 'ETIMEDOUT'
     output = `${e.stdout ?? ''}\n${e.stderr ?? ''}`.trim() || String(e.message)
   }
 
   const after = head()
 
-  // Gardes : rayon de souffle puis pack de règles, sur le diff réel.
+  // Guards: blast radius then rule pack, on the real diff.
   const committed = before && after && before !== after ? changedPaths(before, after) : []
 
   const dirtyNow = (git('status', '--porcelain') ?? '')
@@ -2847,7 +2905,7 @@ async function runHarness(harness, task) {
 
   const diag = sessionDiagnostics(startedAt, harness)
 
-  // Une session privée de ses outils n'a pas échoué : elle a été empêchée.
+  // A session stripped of its tools did not fail: it was prevented.
   const remontables = diag.denied.filter((d) => /^[A-Za-z0-9_()*.\- ]+$/.test(d))
 
   if (remontables.length) {
@@ -2868,7 +2926,7 @@ async function runHarness(harness, task) {
   if (blast.length) {
     stop = true
     haltReason = 'blast_radius'
-    stopReason = `rayon de souffle touché : ${blast.join(', ')}`
+    stopReason = `blast radius touched: ${blast.join(', ')}`
     await call('POST', `/objectives/${target.id}/halts`, {
       reason: 'blast_radius',
       passage_id: passage.id,
@@ -2877,7 +2935,7 @@ async function runHarness(harness, task) {
   } else if (halts.length) {
     stop = true
     haltReason = 'piege_rule'
-    stopReason = `${halts.length} règle(s) du projet enfreinte(s)`
+    stopReason = `${halts.length} project rule(s) broken`
     await call('POST', `/objectives/${target.id}/halts`, {
       reason: 'piege_rule',
       passage_id: passage.id,
@@ -2885,16 +2943,16 @@ async function runHarness(harness, task) {
     }, { soft: true }).catch(() => {})
   }
 
-  // Une session coupée par le timeout n'a pas échoué : elle a été
-  // interrompue. Si elle a produit, on garde le travail.
+  // A session cut off by the timeout did not fail: it was interrupted. If it
+  // produced something, we keep the work.
   const resultats = extraireResultats(diag.lastMessage)
 
-  // Un livrable se DÉRIVE, il ne se déclare pas. Citer un chemin ne prouve
-  // rien : une session qui écrit « GAME_VISION.md n'a pas été modifié » cite
-  // le fichier sans l'avoir produit. Seule la date de dernière écriture le
-  // dit, et elle ne se raconte pas. On balaie donc les dossiers de livrables
-  // à la recherche de ce qui a réellement bougé PENDANT la session, et on ne
-  // retient des chemins cités que ceux qui passent le même test.
+  // A deliverable is DERIVED, it is not declared. Citing a path proves nothing: a
+  // session that writes "GAME_VISION.md was not modified" cites the file without
+  // having produced it. Only the last write time says so, and that cannot be
+  // narrated. So we sweep the deliverable folders looking for what actually moved
+  // DURING the session, and of the cited paths we keep only those that pass the
+  // same test.
   const dansLaFenetre = (chemin) => {
     try {
       const t = statSync(chemin).mtimeMs
@@ -2904,17 +2962,17 @@ async function runHarness(harness, task) {
     }
   }
 
-  // Un livrable peut atterrir n'importe où : limiter le balayage à Review/ et
-  // Docs/ a fait rater six captures écrites dans ArtSource/. On balaie donc
-  // tout le dépôt, en écartant ce qu'aucune session ne produit délibérément —
-  // caches d'outils, dépendances, et le journal de la boucle elle-même.
+  // A deliverable can land anywhere: limiting the sweep to Review/ and Docs/ made
+  // us miss six screenshots written into ArtSource/. So we sweep the whole
+  // repository, setting aside what no session deliberately produces — tool caches,
+  // dependencies, and the loop's own log.
   const IGNORES = new Set(
     config.deliverableIgnore ?? [
       '.git', 'node_modules', 'Library', 'Temp', 'Logs', 'obj', 'Build', 'Builds',
       'UserSettings', 'vendor', 'dist', '.venv', '__pycache__',
     ],
   )
-  const journalBoucle = basename(process.env.ORCHESTRATOR_LOG ?? 'orchestrator-chapitre-11.log')
+  const journalBoucle = basename(process.env.ORCHESTRATOR_LOG ?? 'orchestrator-chapter-11.log')
 
   const balayer = (dossier, sortie = []) => {
     let entrees
@@ -2969,7 +3027,7 @@ async function runHarness(harness, task) {
           ? 'advanced'
           : 'no_progress'
 
-  // Les tokens se lisent dans les traces du harnais, ils ne se déclarent pas.
+  // Tokens are read from the harness traces, they are not declared.
   if (harness === 'codex') {
     if (diag.tokens) {
       await call(
@@ -2983,14 +3041,14 @@ async function runHarness(harness, task) {
         `  ${diag.model ?? 'codex'} — ${diag.tokens.toLocaleString('fr-FR')} tokens` +
           (diag.pricingKnown
             ? ` · $${diag.cost.toFixed(3)}`
-            : ' · coût inconnu (tarif absent de .orchestrator.json → codexPricing)'),
+            : ' · cost unknown (no rate in .orchestrator.json → codexPricing)'),
       )
     }
   } else {
     await commands['usage:scan'](passage.id).catch(() => {})
   }
 
-  // Empêchée : elle n'a pas essayé. Ne compte pas comme un piétinement.
+  // Prevented: it did not try. Does not count as a stall.
   const prevented =
     (diag.denied.length > 0 || Boolean(diag.limitReset)) && changed.length === 0
 
@@ -3003,23 +3061,23 @@ async function runHarness(harness, task) {
         ? "Plafond d'usage du harnais atteint"
         : diag.denied.slice(0, 10).join(', ')
       : timedOut
-        ? `Interrompue par le délai de ${config.sessionTimeoutMin} min, elle travaillait encore`
+        ? `Cut off by the ${config.sessionTimeoutMin} min timeout, it was still working`
         : null,
     said: diag.lastMessage ? diag.lastMessage.slice(-6000) : null,
     tools_used: diag.tools ?? null,
     session_id: diag.sessionId ?? null,
   }, { soft: true }).catch(() => {})
 
-  // Enregistrer ce que la session a réellement produit, comme preuve.
-  for (const chemin of produits.slice(0, 8)) {
-    const type = /\.(png|jpg)$/i.test(chemin) ? 'render' : 'diff'
+  // Record what the session actually produced, as proof.
+  for (const produced of produits.slice(0, 8)) {
+    const type = /\.(png|jpg)$/i.test(produced) ? 'render' : 'diff'
     await call(
       'POST',
       `/passages/${passage.id}/evidences`,
       {
         type,
-        label: `Livrable produit — ${basename(chemin)}`,
-        ref: chemin,
+        label: `Deliverable produced — ${basename(produced)}`,
+        ref: produced,
         verdict: resultats.atteint ? 'pass' : 'inconclusive',
       },
       { soft: true },
@@ -3033,7 +3091,7 @@ async function runHarness(harness, task) {
       {
         type: 'manual',
         label: `${sc.quoi} : ${sc.obtenu}/${sc.total}`,
-        ref: 'Score annoncé par la session',
+        ref: 'Score announced by the session',
         verdict: resultats.atteint ? 'pass' : 'inconclusive',
       },
       { soft: true },
@@ -3065,22 +3123,21 @@ async function runHarness(harness, task) {
 }
 
 /**
- * Une session qui atteint un critère le DIT. Le diff git ne le dit pas :
- * les captures ne sont pas suivies, la scène peut n'être pas encore
- * sauvegardée, et Unity réimporte des assets sans rapport. Mesurer le
- * mouvement des fichiers pour juger du travail est un mauvais indicateur
- * dans les deux sens — il rate le succès et signale du bruit.
+ * A session that meets a criterion SAYS so. The git diff does not: screenshots are
+ * untracked, the scene may not be saved yet, and Unity reimports unrelated assets.
+ * Measuring file movement to judge the work is a bad indicator in both directions
+ * — it misses success and reports noise.
  */
 function extraireResultats(said) {
   if (!said) return { scores: [], chemins: [], atteint: false }
 
-  // Un score est annoncé, pas déduit d'un chiffre croisé dans un tableau.
-  // Il faut le mot « score » ou une mise en gras, et un libellé cohérent.
+  // A score is announced, not inferred from a number spotted in a table. It takes
+  // the word "score" or some bold emphasis, plus a coherent label.
   const scores = []
   for (const ligne of said.split('\n')) {
-    if (/^\s*\|/.test(ligne)) continue // ligne de tableau : données, pas verdict
+    if (/^\s*\|/.test(ligne)) continue // table row: data, not a verdict
 
-    const m = /(?:score|poste|total|plan|critère|note)[^\n:]{0,50}?[:—-]?\s*\**\s*(\d{1,3})\s*\/\s*(\d{1,3})/i.exec(ligne)
+    const m = /(?:score|poste|total|plan|critère|criterion|note|mark)[^\n:]{0,50}?[:—-]?\s*\**\s*(\d{1,3})\s*\/\s*(\d{1,3})/i.exec(ligne)
     if (!m) continue
 
     const obtenu = Number(m[1])
@@ -3100,24 +3157,27 @@ function extraireResultats(said) {
   const chemins = [...said.matchAll(/`?((?:Review|Docs|Assets)\/[\w./-]+\.(?:png|jpg|md|json|unity))`?/g)]
     .map((m) => m[1])
 
-  const atteint = /objectif atteint|critère (?:est )?(?:rempli|satisfait)|plancher (?:atteint|tenu)|gate (?:atteint|passé)/i.test(said)
+  const atteint = /objectif atteint|critère (?:est )?(?:rempli|satisfait)|plancher (?:atteint|tenu)|gate (?:atteint|passé)|objective met|criterion (?:is )?(?:met|satisfied)|floor (?:met|held)|gate (?:reached|passed)/i.test(said)
 
   return { scores, chemins: [...new Set(chemins)], atteint }
 }
 
 function buildReport(turn, directive, outcome) {
   const lines = [
-    `## Tour ${turn} — objectif #${outcome.objectiveId ?? '?'}`,
+    `## Turn ${turn} — objective #${outcome.objectiveId ?? '?'}`,
     '',
-    `**Harnais** ${directive.harness} · **verdict de l’outil** ${outcome.verdict}` +
-      (outcome.cout ? ` · **coût** $${outcome.cout.toFixed(2)}` : ''),
+    // NO cost and NO token count here, deliberately. Neither helps judge whether
+    // the criterion is met, and both bias the judgement: a judge shown $50 already
+    // spent feels pressure to accept it. Spending is the human's business — it is
+    // derived from the traces and shown on the dashboard, never argued to the judge.
+    `**Harness** ${directive.harness} · **tool verdict** ${outcome.verdict}`,
     '',
-    `**Ce qui devait être vrai** ${outcome.proofSpec ?? '(non spécifié)'}`,
+    `**What had to be true** ${outcome.proofSpec ?? '(not specified)'}`,
     '',
   ]
 
   if (outcome.resultats?.scores?.length) {
-    lines.push('**Scores relevés**')
+    lines.push('**Scores recorded**')
     for (const sc of outcome.resultats.scores.slice(0, 6)) {
       lines.push(`- ${sc.quoi} : ${sc.obtenu}/${sc.total}`)
     }
@@ -3126,66 +3186,66 @@ function buildReport(turn, directive, outcome) {
 
   if (outcome.produits?.length) {
     const total = outcome.produits.length
-    lines.push(`**Livrables produits** — ${total} fichier${total > 1 ? 's' : ''}`)
+    lines.push(`**Deliverables produced** — ${total} file${total > 1 ? 's' : ''}`)
     for (const c of outcome.produits.slice(0, 12)) lines.push(`- ${c}`)
-    if (total > 12) lines.push(`- … et ${total - 12} autre(s), non listés ici`)
+    if (total > 12) lines.push(`- … and ${total - 12} more, not listed here`)
     if (outcome.joints) {
       const images = outcome.produits.filter((c) => /\.(png|jpe?g|webp)$/i.test(c)).length
       lines.push(
         '',
-        `Les ${outcome.joints} pièces les plus récentes sont jointes à ce message` +
+        `The ${outcome.joints} most recent attachments are on this message` +
           (images > outcome.joints ? ` (sur ${images} produits)` : '') +
-          ` — juge sur l’image, pas sur le score annoncé.`,
+          ` — judge on the image, not on the announced score.`,
       )
     }
     lines.push('')
   }
 
   if (outcome.changed?.length) {
-    lines.push(`Fichiers suivis modifiés (${outcome.changed.length}) : ${outcome.changed.slice(0, 12).join(', ')}${outcome.changed.length > 12 ? '…' : ''}`)
+    lines.push(`Tracked files modified (${outcome.changed.length}): ${outcome.changed.slice(0, 12).join(', ')}${outcome.changed.length > 12 ? '…' : ''}`)
   } else if (!outcome.produits?.length) {
     lines.push(
       outcome.limitReset
-        ? "Aucun fichier modifié — la session n'a pas pu travailler, voir le plafond ci-dessous."
-        : 'Aucun fichier modifié, aucun livrable produit.',
+        ? 'No file modified — the session could not work, see the ceiling below.'
+        : 'No file modified, no deliverable produced.',
     )
   }
 
   if (outcome.limitReset) {
     lines.push(
       '',
-      "PLAFOND D'USAGE — le harnais a refusé la session avant qu'elle ne commence. Ce n'est **pas** un échec de la tâche et ce n'est pas un motif de refus : rien n'a été tenté. Ne change pas d'approche pour cette raison, et ne prononce pas de verdict sur ce tour. La boucle attend la reprise et rejouera la même consigne.",
+      'USAGE CEILING — the harness refused the session before it began. This is **not** a task failure and it is not grounds for rejection: nothing was attempted. Do not change approach because of it, and do not pronounce a verdict on this turn. The loop waits for the reset and will replay the same instruction.',
     )
   }
 
   if (outcome.blast?.length) {
-    lines.push('', `ARRÊT — rayon de souffle : ${outcome.blast.join(', ')}. Rien n'a été validé, une décision humaine est requise.`)
+    lines.push('', `STOP — blast radius: ${outcome.blast.join(', ')}. Nothing was accepted, a human decision is required.`)
   }
 
   if (outcome.halts?.length) {
-    lines.push('', 'ARRÊT — règles du projet enfreintes :')
+    lines.push('', 'STOP — project rules broken:')
     for (const f of outcome.halts.slice(0, 6)) lines.push(`- ${f.path}:${f.line} — ${f.why}`)
   }
 
   if (outcome.timedOut) {
     lines.push(
       '',
-      'INTERROMPUE — la session a atteint le délai maximum alors qu’elle travaillait encore. Ce n’est pas un échec de la tâche : le travail déjà produit est conservé, mais il est incomplet.',
+      'INTERRUPTED — the session hit the maximum timeout while it was still working. This is not a task failure: the work already produced is kept, but it is incomplete.',
     )
   }
 
   if (outcome.denied?.length) {
     lines.push(
       '',
-      `EMPÊCHÉE — ${outcome.denied.length} outil(s) refusés à la session. Elle n’a pas échoué, elle n’a pas pu agir :`,
+      `PREVENTED — ${outcome.denied.length} tool(s) refused to the session. It did not fail, it could not act:`,
     )
     for (const d of outcome.denied.slice(0, 8)) lines.push(`- ${d}`)
-    lines.push('Ces refus sont remontés dans l’espace Autorisations pour être tranchés.')
+    lines.push('These refusals are surfaced in the Permissions screen to be decided.')
   }
 
   if (outcome.lastMessage) {
-    // Le rapport de la session EST le livrable structuré : la doctrine du
-    // projet en fixe le plan. Le tronquer revient à jeter ce qu'on a payé.
+    // The session report IS the structured deliverable: the project's doctrine sets
+    // its outline. Truncating it means throwing away what we paid for.
     lines.push('', '---', '', '### Rapport de la session', '', outcome.lastMessage.slice(-9000))
   } else {
     const tail = (outcome.output ?? '').trim().split('\n').slice(-25).join('\n')
@@ -3197,21 +3257,21 @@ function buildReport(turn, directive, outcome) {
       '',
       '---',
       '',
-      "**Rien à trancher sur ce tour.** La boucle attend la reprise du harnais et rejouera la même consigne. Tu peux profiter de l'attente pour préciser la mission si tu la juges perfectible, mais ne prononce pas de verdict.",
+      '**Nothing to decide on this turn.** The loop is waiting for the harness to reset and will replay the same instruction. You can use the wait to sharpen the mission if you think it can be improved, but do not pronounce a verdict.',
     )
   } else if (!outcome.stop) {
     lines.push(
       '',
       '---',
       '',
-      `**À toi.** Prononce-toi sur #${outcome.objectiveId ?? '?'} — écris « #${outcome.objectiveId} est validé » ou « #${outcome.objectiveId} refusé » — puis donne la mission suivante, complète et structurée comme d’habitude, introduite par \`@claude:\` ou \`@codex:\` seul sur sa ligne et citant le numéro d’objectif visé. Tout ce qui suit ce marqueur est transmis mot pour mot au harnais, et rien d’autre ne lui parvient. Sans marqueur, la boucle s’arrête.`,
+      `**Over to you.** Rule on #${outcome.objectiveId ?? '?'} — write "@verdict: #${outcome.objectiveId} accepted" or "@verdict: #${outcome.objectiveId} rejected" — then give the next mission, complete and structured as usual, introduced by \`@claude:\` or \`@codex:\` alone on its line and citing the target objective number. Everything after that marker is passed to the harness word for word, and nothing else reaches it. Without a marker, the loop stops.`,
     )
   }
 
   return lines.join('\n')
 }
 
-// Ce fichier n'est plus un point d'entrée : le CLI unique du paquet appelle
-// ces commandes. C'est ce qui permet à `orchestrator serve` et à
-// `orchestrator chapter` d'être la même commande installée une seule fois.
+// This file is no longer an entry point: the package's single CLI calls these
+// commands. That is what lets `orchestrator serve` and `orchestrator chapter` be
+// the same command, installed once.
 export { commands }

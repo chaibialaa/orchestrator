@@ -7,7 +7,7 @@ import { join } from 'node:path'
 process.env.ORCHESTRATOR_DB = join(mkdtempSync(join(tmpdir(), 'orch-')), 'test.db')
 
 const { base } = await import('../src/db/index.js')
-const { evaluer, peutDemarrer, pietine, exigeDuVisuel } = await import('../src/gate.js')
+const { evaluateGate, canStart, isStalling, requiresVisual } = await import('../src/gate.js')
 
 const db = base()
 db.prepare("INSERT INTO projects (id,slug,name,gate_judge) VALUES (1,'p','P','gpt')").run()
@@ -41,71 +41,71 @@ const preuve = (oid, champs = {}) =>
     )
     .run({ oid, passage_id: null, type: 'test', verdict: 'pass', payload: null, ...champs })
 
-test('sans critère, rien ne peut conclure ni démarrer', () => {
+test('with no criterion, nothing can conclude or start', () => {
   const o = objectif({ proof_spec: null })
-  assert.equal(evaluer(o).reason, 'no_provable_criterion')
-  assert.equal(peutDemarrer(o).reason, 'no_provable_criterion')
+  assert.equal(evaluateGate(o).reason, 'no_provable_criterion')
+  assert.equal(canStart(o).reason, 'no_provable_criterion')
 })
 
 test('un chapitre ne conclut pas avant ses parties', () => {
   const chap = objectif()
   objectif({ parent_id: chap })
   verdict(chap)
-  assert.equal(evaluer(chap).reason, 'children_open')
+  assert.equal(evaluateGate(chap).reason, 'children_open')
 })
 
 test('sans preuve pass, il manque une preuve — pas un verdict', () => {
   const o = objectif()
-  assert.equal(evaluer(o).reason, 'no_new_proof')
+  assert.equal(evaluateGate(o).reason, 'no_new_proof')
 })
 
-test('un critère visuel refuse de conclure sans image', () => {
+test('a visual criterion refuses to conclude without an image', () => {
   const o = objectif({ proof_spec: 'une capture par format montre le plan A' })
   verdict(o)
-  const g = evaluer(o)
+  const g = evaluateGate(o)
   assert.equal(g.ok, false)
-  assert.match(g.detail, /aucune image/)
+  assert.match(g.detail, /no image is attached/)
 
   preuve(o, { type: 'render' })
-  assert.equal(evaluer(o).ok, true)
+  assert.equal(evaluateGate(o).ok, true)
 })
 
-test('un rayon de souffle élevé exige une preuve du réel', () => {
+test('a high blast radius requires proof from the real world', () => {
   const o = objectif({ blast_radius: 'critical' })
   preuve(o, { type: 'test' })
   verdict(o)
-  assert.equal(evaluer(o).reason, 'blast_radius')
+  assert.equal(evaluateGate(o).reason, 'blast_radius')
   preuve(o, { type: 'e2e' })
-  assert.equal(evaluer(o).ok, true)
+  assert.equal(evaluateGate(o).ok, true)
 })
 
-test('tout est là mais le juge n’a pas parlé : prêt, pas échoué', () => {
+test('everything is here but the judge has not spoken: ready, not failed', () => {
   const o = objectif()
   preuve(o)
-  const g = evaluer(o)
+  const g = evaluateGate(o)
   assert.equal(g.ok, false)
   assert.equal(g.reason, 'awaiting_verdict')
-  assert.equal(g.ready, true, 'un objectif qui attend un verdict est PRÊT, pas en échec')
+  assert.equal(g.ready, true, 'an objective awaiting a verdict is READY, not failed')
 })
 
-test('un arrêt ouvert empêche de conclure', () => {
+test('an open halt prevents concluding', () => {
   const o = objectif()
   preuve(o, { type: 'test' })
   verdict(o)
-  assert.equal(evaluer(o).ok, true)
+  assert.equal(evaluateGate(o).ok, true)
   db.prepare("INSERT INTO halts (objective_id,reason) VALUES (?,'human_request')").run(o)
-  assert.equal(evaluer(o).ok, false)
+  assert.equal(evaluateGate(o).ok, false)
 })
 
-test('un arrêt absorbable ne bloque pas le démarrage', () => {
+test('an absorbable halt does not block starting', () => {
   const o = objectif()
   db.prepare("INSERT INTO halts (objective_id,reason) VALUES (?,'no_new_proof')").run(o)
-  assert.equal(peutDemarrer(o).ok, true, 'la boucle lève elle-même ce motif')
+  assert.equal(canStart(o).ok, true, 'the loop clears this reason itself')
   db.prepare("INSERT INTO halts (objective_id,reason) VALUES (?,'blast_radius')").run(o)
-  assert.equal(peutDemarrer(o).ok, false)
+  assert.equal(canStart(o).ok, false)
 })
 
-test('une tentative empêchée ne compte pas comme un piétinement', () => {
+test('a prevented attempt does not count as stalling', () => {
   const o = objectif()
   const p = (prevented) =>
     db
@@ -115,37 +115,37 @@ test('une tentative empêchée ne compte pas comme un piétinement', () => {
       .run(o, prevented)
   p(1)
   p(1)
-  assert.equal(pietine(o), false, 'deux tentatives empêchées ne sont pas deux échecs')
+  assert.equal(isStalling(o), false, 'two prevented attempts are not two failures')
   p(0)
   p(0)
-  assert.equal(pietine(o), true)
+  assert.equal(isStalling(o), true)
 })
 
-test('la détection du visuel', () => {
-  assert.ok(exigeDuVisuel('une capture par format'))
-  assert.ok(exigeDuVisuel('Ruiz reste lisible'))
-  assert.ok(exigeDuVisuel('le plan C est crédible'))
-  assert.equal(exigeDuVisuel('php artisan test passe au vert'), false)
+test('visual detection', () => {
+  assert.ok(requiresVisual('une capture par format'))
+  assert.ok(requiresVisual('Ruiz reste lisible'))
+  assert.ok(requiresVisual('le plan C est crédible'))
+  assert.equal(requiresVisual('php artisan test passe au vert'), false)
 })
 
 test('un refus suivi d’une acceptation ne conclut pas sans preuve neuve', () => {
   const o = objectif()
   preuve(o, { type: 'test' })
   verdict(o)
-  assert.equal(evaluer(o).ok, true, 'départ : il pouvait conclure')
+  assert.equal(evaluateGate(o).ok, true, 'to begin with, it could conclude')
 
-  // Le juge se dédit…
-  const marque = db.prepare('SELECT COALESCE(MAX(id),0) m FROM evidences WHERE objective_id = ?').get(o).m
-  db.prepare("INSERT INTO halts (objective_id,reason,evidence_mark,resolved_at) VALUES (?,'verdict_rejected',?,datetime('now'))").run(o, marque)
-  assert.equal(evaluer(o).ok, false, 'après un refus, il ne conclut plus')
+  // The judge takes it back…
+  const mark = db.prepare('SELECT COALESCE(MAX(id),0) m FROM evidences WHERE objective_id = ?').get(o).m
+  db.prepare("INSERT INTO halts (objective_id,reason,evidence_mark,resolved_at) VALUES (?,'verdict_rejected',?,datetime('now'))").run(o, mark)
+  assert.equal(evaluateGate(o).ok, false, 'after a rejection, it no longer concludes')
 
-  // …puis se ravise sans que rien n’ait été produit : refusé.
+  // …then changes its mind with nothing produced in between: refused.
   verdict(o)
-  const g = evaluer(o)
+  const g = evaluateGate(o)
   assert.equal(g.ok, false)
-  assert.match(g.detail, /changer sur du neuf/)
+  assert.match(g.detail, /change on something new/)
 
-  // Une preuve réelle arrive : il peut conclure.
+  // A real proof lands: now it can conclude.
   preuve(o, { type: 'render' })
-  assert.equal(evaluer(o).ok, true)
+  assert.equal(evaluateGate(o).ok, true)
 })

@@ -7,172 +7,171 @@ import BriefComposer from '../components/BriefComposer.vue'
 const props = defineProps<{ slug: string }>()
 
 const objectives = ref<Objective[]>([])
-const chargement = ref(true)
-const erreur = ref<string | null>(null)
+const loading = ref(true)
+const error = ref<string | null>(null)
 
-/** Ce qui vient d'être enregistré, par id — pour que rien ne parte en silence. */
-const etat = ref<Record<string, 'enregistre' | 'erreur' | 'envoi'>>({})
+/** What was just saved, by id — so nothing goes off silently. */
+const state = ref<Record<string, 'saved' | 'error' | 'sending'>>({})
 
-function marquer(cle: string, v: 'enregistre' | 'erreur' | 'envoi') {
-  etat.value = { ...etat.value, [cle]: v }
-  if (v === 'enregistre') setTimeout(() => (etat.value = { ...etat.value, [cle]: undefined as never }), 1800)
+function flag(key: string, v: 'saved' | 'error' | 'sending') {
+  state.value = { ...state.value, [key]: v }
+  if (v === 'saved') setTimeout(() => (state.value = { ...state.value, [key]: undefined as never }), 1800)
 }
 
-async function charger() {
-  chargement.value = true
-  erreur.value = null
+async function load() {
+  loading.value = true
+  error.value = null
   try {
     objectives.value = await api.objectives(props.slug)
   } catch (e: any) {
-    erreur.value = e?.response?.data?.message ?? e?.message ?? 'erreur'
+    error.value = e?.response?.data?.message ?? e?.message ?? 'error'
   } finally {
-    chargement.value = false
+    loading.value = false
   }
 }
 
-onMounted(charger)
-watch(() => props.slug, charger)
+onMounted(load)
+watch(() => props.slug, load)
 
-const rangs = (l: Objective[]) => [...l].sort((a, b) => a.priority - b.priority || a.id - b.id)
+const byRank = (l: Objective[]) => [...l].sort((a, b) => a.priority - b.priority || a.id - b.id)
 
 /**
- * Tout objectif de premier niveau est un chapitre, même vide. Ne le devenir
- * qu'une fois qu'il porte une étape créait une impasse : le chapitre naissait
- * « hors chapitre », donc sans le formulaire qui aurait permis de lui en
- * ajouter une.
+ * Every top-level objective is a chapter, even an empty one. Becoming one only
+ * once it carried a step created a dead end: the chapter was born "outside any
+ * chapter", and therefore without the form that would have let you add one.
  */
-const chapitres = computed(() => {
-  const tous = objectives.value.filter((o) => o.status !== 'abandoned')
-  return rangs(tous.filter((o) => !o.parent_id)).map((c) => ({
-    chapitre: c,
-    etapes: rangs(tous.filter((o) => o.parent_id === c.id)),
+const chapters = computed(() => {
+  const all = objectives.value.filter((o) => o.status !== 'abandoned')
+  return byRank(all.filter((o) => !o.parent_id)).map((c) => ({
+    chapter: c,
+    steps: byRank(all.filter((o) => o.parent_id === c.id)),
   }))
 })
 
-// ---- écriture -------------------------------------------------------------
+// ---- writing --------------------------------------------------------------
 
-async function patch(o: Objective, champ: keyof Objective, valeur: unknown) {
-  if (o[champ] === valeur) return
-  const cle = `${o.id}:${String(champ)}`
-  marquer(cle, 'envoi')
+async function patch(o: Objective, field: keyof Objective, value: unknown) {
+  if (o[field] === value) return
+  const key = `${o.id}:${String(field)}`
+  flag(key, 'sending')
   try {
-    const maj = await api.updateObjective(o.id, { [champ]: valeur } as Partial<Objective>)
-    Object.assign(o, maj)
-    marquer(cle, 'enregistre')
+    const updated = await api.updateObjective(o.id, { [field]: value } as Partial<Objective>)
+    Object.assign(o, updated)
+    flag(key, 'saved')
   } catch (e: any) {
-    erreur.value = e?.response?.data?.message ?? "l'enregistrement a échoué"
-    marquer(cle, 'erreur')
+    error.value = e?.response?.data?.message ?? 'could not save'
+    flag(key, 'error')
   }
 }
 
-const nouveauChapitre = ref('')
+const newChapter = ref('')
 
-async function creerChapitre() {
-  const titre = nouveauChapitre.value.trim()
-  if (!titre) return
+async function createChapter() {
+  const title = newChapter.value.trim()
+  if (!title) return
   try {
     const o = await api.createObjective(props.slug, {
-      title: titre,
+      title: title,
       blast_radius: 'feature',
-      priority: (chapitres.value.length + 1) * 10,
+      priority: (chapters.value.length + 1) * 10,
     })
     objectives.value = [...objectives.value, o]
-    nouveauChapitre.value = ''
+    newChapter.value = ''
   } catch (e: any) {
-    erreur.value = e?.response?.data?.message ?? 'création impossible'
+    error.value = e?.response?.data?.message ?? 'could not create it'
   }
 }
 
-const nouvelleEtape = ref<Record<number, string>>({})
+const newStep = ref<Record<number, string>>({})
 
-async function creerEtape(chapitre: Objective, etapes: Objective[]) {
-  const titre = (nouvelleEtape.value[chapitre.id] ?? '').trim()
-  if (!titre) return
+async function createStep(chapter: Objective, steps: Objective[]) {
+  const title = (newStep.value[chapter.id] ?? '').trim()
+  if (!title) return
   try {
     const o = await api.createObjective(props.slug, {
-      title: titre,
-      blast_radius: chapitre.blast_radius,
-      parent_id: chapitre.id,
-      priority: (etapes.at(-1)?.priority ?? 0) + 10,
+      title: title,
+      blast_radius: chapter.blast_radius,
+      parent_id: chapter.id,
+      priority: (steps.at(-1)?.priority ?? 0) + 10,
     })
     objectives.value = [...objectives.value, o]
-    nouvelleEtape.value = { ...nouvelleEtape.value, [chapitre.id]: '' }
+    newStep.value = { ...newStep.value, [chapter.id]: '' }
   } catch (e: any) {
-    erreur.value = e?.response?.data?.message ?? 'création impossible'
+    error.value = e?.response?.data?.message ?? 'could not create it'
   }
 }
 
-/** Réordonner : on renumérote la colonne entière, jamais un seul rang. */
-async function deplacer(etapes: Objective[], depuis: number, vers: number) {
-  if (vers < 0 || vers >= etapes.length) return
-  const l = [...etapes]
-  const [pris] = l.splice(depuis, 1)
-  l.splice(vers, 0, pris)
-  const ordre = l.map((o, i) => ({ id: o.id, priority: (i + 1) * 10 }))
-  ordre.forEach((x) => {
-    const cible = objectives.value.find((o) => o.id === x.id)
-    if (cible) cible.priority = x.priority
+/** Reordering renumbers the whole column, never a single rank. */
+async function move(steps: Objective[], from: number, to: number) {
+  if (to < 0 || to >= steps.length) return
+  const l = [...steps]
+  const [taken] = l.splice(from, 1)
+  l.splice(to, 0, taken)
+  const order = l.map((o, i) => ({ id: o.id, priority: (i + 1) * 10 }))
+  order.forEach((x) => {
+    const target = objectives.value.find((o) => o.id === x.id)
+    if (target) target.priority = x.priority
   })
   try {
-    await api.reorderObjectives(props.slug, ordre)
-    marquer(`ordre:${pris.parent_id}`, 'enregistre')
+    await api.reorderObjectives(props.slug, order)
+    flag(`order:${taken.parent_id}`, 'saved')
   } catch {
-    erreur.value = "l'ordre n'a pas pu être enregistré"
-    await charger()
+    error.value = 'the order could not be saved'
+    await load()
   }
 }
 
-async function abandonner(o: Objective) {
+async function drop(o: Objective) {
   await patch(o, 'status', 'abandoned')
 }
 
-const RISQUES: BlastRadius[] = ['cosmetic', 'feature', 'api', 'critical']
+const RISKS: BlastRadius[] = ['cosmetic', 'feature', 'api', 'critical']
 </script>
 
 <template>
-  <div v-if="chargement" class="text-ink-400">chargement…</div>
+  <div v-if="loading" class="text-ink-400">loading…</div>
   <div v-else class="space-y-7">
     <section class="card p-4 border-ink-800">
-      <h1 class="text-ink-100 text-[15px]">Le plan</h1>
+      <h1 class="text-ink-100 text-[15px]">The plan</h1>
       <p class="text-ink-400 mt-1.5 leading-relaxed max-w-3xl">
-        Un <strong class="text-ink-300">chapitre</strong> porte des
-        <strong class="text-ink-300">étapes</strong>, dans l'ordre où elles seront exécutées. Une
-        étape n'est prenable par un agent que si on a écrit
-        <strong class="text-ink-300">ce qui prouvera qu'elle est finie</strong> — sans ce critère,
-        elle reste à préciser et personne ne peut s'en saisir.
+        A <strong class="text-ink-300">chapter</strong> carries
+        <strong class="text-ink-300">steps</strong>, in the order they will run. An agent can only take
+        a step once someone has written
+        <strong class="text-ink-300">what will prove it is finished</strong> — without that criterion
+        it stays undefined and nobody can pick it up.
       </p>
     </section>
 
-    <BriefComposer :slug="slug" @applique="charger" />
+    <BriefComposer :slug="slug" @applied="load" />
 
-    <p v-if="erreur" class="card p-3 border-fail/40 text-fail">{{ erreur }}</p>
+    <p v-if="error" class="card p-3 border-fail/40 text-fail">{{ error }}</p>
 
-    <section v-for="{ chapitre, etapes } in chapitres" :key="chapitre.id" class="card p-5">
+    <section v-for="{ chapter, steps } in chapters" :key="chapter.id" class="card p-5">
       <header class="flex items-baseline gap-3 flex-wrap mb-5">
         <input
           class="bg-transparent text-ink-100 border-b border-transparent hover:border-ink-700 focus:border-run focus:outline-none min-w-[18rem] flex-1"
-          :value="chapitre.title"
-          @change="patch(chapitre, 'title', ($event.target as HTMLInputElement).value)"
+          :value="chapter.title"
+          @change="patch(chapter, 'title', ($event.target as HTMLInputElement).value)"
         />
-        <span class="label text-ink-600">chapitre #{{ chapitre.id }}</span>
-        <span v-if="etat[`${chapitre.id}:title`]" class="label text-proof">enregistré</span>
+        <span class="label text-ink-600">chapter #{{ chapter.id }}</span>
+        <span v-if="state[`${chapter.id}:title`]" class="label text-proof">saved</span>
         <button
-          v-if="!etapes.length && chapitre.status !== 'proven'"
+          v-if="!steps.length && chapter.status !== 'proven'"
           class="label hover:text-fail"
-          title="écarter ce chapitre vide"
-          @click="abandonner(chapitre)"
+          title="drop this empty chapter"
+          @click="drop(chapter)"
         >
-          écarter
+          drop
         </button>
       </header>
 
-      <p v-if="!etapes.length" class="text-ink-500 text-[12px] mb-3.5">
-        Chapitre vide. Ajoute ses étapes dans l'ordre où elles seront exécutées.
+      <p v-if="!steps.length" class="text-ink-500 text-[12px] mb-3.5">
+        Empty chapter. Add its steps in the order they will run.
       </p>
 
       <ol class="space-y-2.5">
         <li
-          v-for="(o, i) in etapes"
+          v-for="(o, i) in steps"
           :key="o.id"
           class="border border-ink-800 rounded p-3.5"
           :class="o.status === 'abandoned' ? 'opacity-40' : ''"
@@ -182,16 +181,16 @@ const RISQUES: BlastRadius[] = ['cosmetic', 'feature', 'api', 'critical']
               <button
                 class="text-ink-600 hover:text-ink-100 leading-none text-[11px] disabled:opacity-25"
                 :disabled="i === 0"
-                title="monter"
-                @click="deplacer(etapes, i, i - 1)"
+                title="move up"
+                @click="move(steps, i, i - 1)"
               >
                 ▲
               </button>
               <button
                 class="text-ink-600 hover:text-ink-100 leading-none text-[11px] disabled:opacity-25"
-                :disabled="i === etapes.length - 1"
-                title="descendre"
-                @click="deplacer(etapes, i, i + 1)"
+                :disabled="i === steps.length - 1"
+                title="move down"
+                @click="move(steps, i, i + 1)"
               >
                 ▼
               </button>
@@ -209,34 +208,34 @@ const RISQUES: BlastRadius[] = ['cosmetic', 'feature', 'api', 'critical']
               </div>
 
               <label class="block mt-2.5">
-                <span class="label">Ce qui prouvera que c'est fini</span>
+                <span class="label">What will prove this is finished</span>
                 <textarea
                   rows="3"
                   class="mt-1 w-full bg-ink-950 border rounded px-2.5 py-2 text-[12px] text-ink-300 leading-relaxed resize-y focus:outline-none focus:border-run"
                   :class="o.proof_spec ? 'border-ink-800' : 'border-halt/40'"
-                  :placeholder="'Une condition vérifiable — ex. « php artisan iberis:test --filter=ImportTest passe au vert »'"
+                  :placeholder="'A checkable condition — e.g. “npm test -- ImportTest comes back green”'"
                   :value="o.proof_spec ?? ''"
                   @change="patch(o, 'proof_spec', ($event.target as HTMLTextAreaElement).value)"
                 />
               </label>
               <p v-if="!o.proof_spec" class="text-halt text-[11px] mt-1">
-                Sans critère, aucun agent ne peut prendre cette étape.
+                Without a criterion, no agent can take this step.
               </p>
 
               <div class="flex items-center gap-3 mt-2.5 flex-wrap">
                 <label class="flex items-center gap-2">
-                  <span class="label">Risque</span>
+                  <span class="label">Risk</span>
                   <select
                     class="bg-ink-950 border border-ink-800 rounded px-2 py-1 text-[12px] text-ink-300 focus:outline-none focus:border-run"
                     :value="o.blast_radius"
                     :title="blastHelp[o.blast_radius]"
                     @change="patch(o, 'blast_radius', ($event.target as HTMLSelectElement).value)"
                   >
-                    <option v-for="r in RISQUES" :key="r" :value="r">{{ blastLabel[r] }}</option>
+                    <option v-for="r in RISKS" :key="r" :value="r">{{ blastLabel[r] }}</option>
                   </select>
                 </label>
-                <span v-if="etat[`${o.id}:proof_spec`] === 'enregistre'" class="label text-proof"
-                  >critère enregistré</span
+                <span v-if="state[`${o.id}:proof_spec`] === 'saved'" class="label text-proof"
+                  >criterion saved</span
                 >
                 <label class="flex items-center gap-2">
                   <span class="label">Session</span>
@@ -245,41 +244,41 @@ const RISQUES: BlastRadius[] = ['cosmetic', 'feature', 'api', 'critical']
                     :value="o.resume_mode ?? 'new'"
                     :title="
                       (o.resume_mode ?? 'new') === 'new'
-                        ? 'Chaque tentative repart de zéro : la mission est l’ordre complet.'
-                        : 'La tentative reprend une session précédente — moins cher, mais elle transporte de l’état que personne ne voit.'
+                        ? 'Every attempt starts from scratch: the mission is the whole order.'
+                        : 'The attempt resumes an earlier session — cheaper, but it carries state nobody can see.'
                     "
                     @change="patch(o, 'resume_mode', ($event.target as HTMLSelectElement).value)"
                   >
-                    <option value="new">neuve à chaque fois</option>
-                    <option value="last">reprendre la précédente</option>
+                    <option value="new">fresh every time</option>
+                    <option value="last">resume the previous one</option>
                   </select>
                 </label>
                 <span
                   v-if="(o.resume_mode ?? 'new') !== 'new'"
                   class="text-[11px] text-halt"
-                  >l’ordre ne sera plus tout entier dans la mission</span
+                  >the order will no longer be wholly in the mission</span
                 >
                 <label class="flex items-center gap-2">
-                  <span class="label">Chapitre</span>
+                  <span class="label">Chapter</span>
                   <select
                     class="bg-ink-950 border border-ink-800 rounded px-2 py-1 text-[12px] text-ink-300 focus:outline-none focus:border-run"
                     :value="o.parent_id ?? ''"
                     @change="patch(o, 'parent_id', Number(($event.target as HTMLSelectElement).value) || null)"
                   >
-                    <option value="">aucun — remonter en chapitre</option>
-                    <option v-for="c in chapitres" :key="c.chapitre.id" :value="c.chapitre.id">
-                      {{ c.chapitre.title }}
+                    <option value="">none — promote to chapter</option>
+                    <option v-for="c in chapters" :key="c.chapter.id" :value="c.chapter.id">
+                      {{ c.chapter.title }}
                     </option>
                   </select>
                 </label>
-                <RouterLink :to="`/o/${o.id}`" class="label hover:text-run ml-auto">ouvrir ▸</RouterLink>
+                <RouterLink :to="`/o/${o.id}`" class="label hover:text-run ml-auto">open ▸</RouterLink>
                 <button
                   v-if="o.status !== 'abandoned' && o.status !== 'proven'"
                   class="label hover:text-fail"
-                  title="écarter cette étape sans la supprimer"
-                  @click="abandonner(o)"
+                  title="drop this step without deleting it"
+                  @click="drop(o)"
                 >
-                  écarter
+                  drop
                 </button>
               </div>
             </div>
@@ -287,23 +286,23 @@ const RISQUES: BlastRadius[] = ['cosmetic', 'feature', 'api', 'critical']
         </li>
       </ol>
 
-      <form class="mt-3.5 flex gap-2" @submit.prevent="creerEtape(chapitre, etapes)">
+      <form class="mt-3.5 flex gap-2" @submit.prevent="createStep(chapter, steps)">
         <input
-          v-model="nouvelleEtape[chapitre.id]"
+          v-model="newStep[chapter.id]"
           class="flex-1 bg-ink-950 border border-ink-800 rounded px-2.5 py-2 text-[12px] text-ink-300 focus:outline-none focus:border-run"
-          placeholder="Ajouter une étape à ce chapitre…"
+          placeholder="Add a step to this chapter…"
         />
-        <button class="btn" :disabled="!nouvelleEtape[chapitre.id]?.trim()">ajouter</button>
+        <button class="btn" :disabled="!newStep[chapter.id]?.trim()">add</button>
       </form>
     </section>
 
-    <form class="card p-4 flex gap-2" @submit.prevent="creerChapitre">
+    <form class="card p-4 flex gap-2" @submit.prevent="createChapter">
       <input
-        v-model="nouveauChapitre"
+        v-model="newChapter"
         class="flex-1 bg-ink-950 border border-ink-800 rounded px-2.5 py-2 text-[13px] text-ink-300 focus:outline-none focus:border-run"
-        placeholder="Nouveau chapitre — ex. « Import employés Excel, étape 2 »"
+        placeholder="New chapter — e.g. “Excel employee import, step 2”"
       />
-      <button class="btn" :disabled="!nouveauChapitre.trim()">créer le chapitre</button>
+      <button class="btn" :disabled="!newChapter.trim()">create the chapter</button>
     </form>
   </div>
 </template>

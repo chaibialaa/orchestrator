@@ -15,10 +15,10 @@ const props = defineProps<{ id: string }>()
 
 const objective = ref<Objective | null>(null)
 const loading = ref(true)
-const enCours = ref(false)
-const detailsOuverts = ref(false)
-const deplie = ref<Set<number>>(new Set())
-const apercu = ref<{ url: string; nom: string; texte?: string; id: number } | null>(null)
+const busyOn = ref(false)
+const detailsOpen = ref(false)
+const expanded = ref<Set<number>>(new Set())
+const preview = ref<{ url: string; name: string; text?: string; id: number } | null>(null)
 
 async function load() {
   loading.value = true
@@ -29,63 +29,64 @@ async function load() {
 onMounted(load)
 watch(() => props.id, load)
 
-async function prononcer(decision: 'accept' | 'reject') {
-  enCours.value = true
+async function castVerdict(decision: 'accept' | 'reject') {
+  busyOn.value = true
   try {
     await api.verdict(Number(props.id), decision)
     await load()
   } finally {
-    enCours.value = false
+    busyOn.value = false
   }
 }
 
-async function ouvrir(evidenceId: number, chemin: string, n: number) {
+async function openFile(evidenceId: number, path: string, n: number) {
   const url = api.evidenceFileUrl(evidenceId, n)
-  const nom = chemin.split('/').pop() ?? chemin
-  if (/\.(md|json|txt)$/i.test(chemin)) {
-    const texte = await fetch(url).then((r) => r.text()).catch(() => 'lecture impossible')
-    apercu.value = { url, nom, texte, id: evidenceId }
+  const name = path.split('/').pop() ?? path
+  if (/\.(md|json|txt)$/i.test(path)) {
+    const text = await fetch(url).then((r) => r.text()).catch(() => 'could not read it')
+    preview.value = { url, name, text, id: evidenceId }
   } else {
-    apercu.value = { url, nom, id: evidenceId }
+    preview.value = { url, name, id: evidenceId }
   }
 }
 
-function voisine(pas: number) {
-  const l = preuves.value
-  const i = l.findIndex((e) => e.id === apercu.value?.id)
-  const s = l[(i + pas + l.length) % l.length]
-  if (s?.files?.length) ouvrir(s.id, s.files[0], 0)
+function neighbour(step: number) {
+  const l = proofs.value
+  const i = l.findIndex((e) => e.id === preview.value?.id)
+  const s = l[(i + step + l.length) % l.length]
+  if (s?.files?.length) openFile(s.id, s.files[0], 0)
 }
 
-function bascule(id: number) {
-  const s = new Set(deplie.value)
+function toggle(id: number) {
+  const s = new Set(expanded.value)
   s.has(id) ? s.delete(id) : s.add(id)
-  deplie.value = s
+  expanded.value = s
 }
 
 const short = (sha: string | null) => (sha ? sha.slice(0, 7) : '—')
 
-function duree(p: Passage) {
-  if (!p.ended_at) return 'en cours'
+function duration(p: Passage) {
+  if (!p.ended_at) return 'running'
   const min = Math.round(
     (new Date(p.ended_at).getTime() - new Date(p.started_at).getTime()) / 60000,
   )
   return min < 60 ? `${min} min` : `${(min / 60).toFixed(1)} h`
 }
 
-function nomOutil(t: string) {
+function toolName(t: string) {
   return t.startsWith('mcp__') ? t.split('__').slice(2).join('__') || t : t
 }
 
-/** Le jargon des harnais n'a pas à traverser jusqu'à l'écran. */
-function raisonLisible(texte: string | null) {
-  if (!texte) return ''
-  if (/multiple operations|require approval/i.test(texte)) return 'commande shell non autorisée'
-  if (/redirection.*blocked|may only/i.test(texte)) return 'écriture hors du dépôt refusée'
-  if (/permissions to use/i.test(texte)) return 'outil non autorisé'
-  if (/délai|timeout/i.test(texte)) return texte
-  if (/[Ss]onde/.test(texte)) return 'sonde de diagnostic'
-  return texte.length > 90 ? texte.slice(0, 90) + '…' : texte
+/** Harness jargon has no business reaching the screen. */
+function readableReason(raw: string | null) {
+  if (!raw) return ''
+  if (/multiple operations|require approval/i.test(raw)) return 'shell command not allowed'
+  if (/redirection.*blocked|may only/i.test(raw)) return 'write outside the repository refused'
+  if (/permissions to use/i.test(raw)) return 'tool not allowed'
+  // Both spellings: reports written before the switch still say « délai ».
+  if (/délai|timeout/i.test(raw)) return raw
+  if (/[Ss]onde|probe/.test(raw)) return 'diagnostic probe'
+  return raw.length > 90 ? raw.slice(0, 90) + '…' : raw
 }
 
 const passages = computed(() =>
@@ -94,69 +95,69 @@ const passages = computed(() =>
   ),
 )
 
-/** Ce qui a produit du travail — le reste est du bruit d'exploitation. */
-const ordreDeplie = ref<Set<number>>(new Set())
-function basculeOrdre(id: number) {
-  const s = new Set(ordreDeplie.value)
+/** What produced work — the rest is operational noise. */
+const missionOpen = ref<Set<number>>(new Set())
+function toggleMission(id: number) {
+  const s = new Set(missionOpen.value)
   s.has(id) ? s.delete(id) : s.add(id)
-  ordreDeplie.value = s
+  missionOpen.value = s
 }
-function tailleOrdre(m: string) {
-  const lignes = m.split('\n').length
-  return `${lignes} ligne${lignes > 1 ? 's' : ''}`
+function missionSize(m: string) {
+  const lines = m.split('\n').length
+  return `${lines} line${lines > 1 ? 's' : ''}`
 }
 
-const utiles = computed(() => passages.value.filter((p) => p.verdict === 'advanced' || !p.ended_at))
-const bruit = computed(() => passages.value.filter((p) => p.verdict !== 'advanced' && p.ended_at))
+const useful = computed(() => passages.value.filter((p) => p.verdict === 'advanced' || !p.ended_at))
+const noise = computed(() => passages.value.filter((p) => p.verdict !== 'advanced' && p.ended_at))
 
-const preuves = computed(() => {
+const proofs = computed(() => {
   const o = objective.value
   if (!o) return []
-  const tout = [...(o.evidences ?? []), ...(o.passages ?? []).flatMap((p) => p.evidences ?? [])]
-  const vues = new Set<number>()
-  return tout.filter((e) => {
-    if (!e.files?.length || vues.has(e.id)) return false
-    vues.add(e.id)
+  const all = [...(o.evidences ?? []), ...(o.passages ?? []).flatMap((p) => p.evidences ?? [])]
+  const seen = new Set<number>()
+  return all.filter((e) => {
+    if (!e.files?.length || seen.has(e.id)) return false
+    seen.add(e.id)
     return true
   })
 })
 
-/** Les constats sans fichier : scores, mesures, réserves. */
-const constats = computed(() => {
+/** Findings with no file attached: scores, measurements, caveats. */
+const findings = computed(() => {
   const o = objective.value
   if (!o) return [] as Evidence[]
-  const tout = [...(o.evidences ?? []), ...(o.passages ?? []).flatMap((p) => p.evidences ?? [])]
-  const vues = new Set<number>()
-  return tout.filter((e) => {
-    if (e.files?.length || vues.has(e.id)) return false
-    vues.add(e.id)
+  const all = [...(o.evidences ?? []), ...(o.passages ?? []).flatMap((p) => p.evidences ?? [])]
+  const seen = new Set<number>()
+  return all.filter((e) => {
+    if (e.files?.length || seen.has(e.id)) return false
+    seen.add(e.id)
     return true
   })
 })
 
 const openHalts = computed(() => objective.value?.halts?.filter((h) => !h.resolved_at) ?? [])
 
-const totaux = computed(() => {
+const totals = computed(() => {
   const p = objective.value?.passages ?? []
   return {
     tokens: p.reduce((s, x) => s + (x.tokens ?? 0), 0),
     cost: p.reduce((s, x) => s + Number(x.cost_usd ?? 0), 0),
-    // « advanced » compte comme produit même si la tentative a été
-    // interrompue : le travail est là. Le reste est du coût sans résultat.
-    perdu: p
+    // "advanced" counts as delivered even if the attempt was cut short: the
+    // work is there. The rest is cost with nothing to show.
+    wasted: p
       .filter((x) => x.verdict !== 'advanced')
       .reduce((s, x) => s + Number(x.cost_usd ?? 0), 0),
   }
 })
 
-const estImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
+const isImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
 </script>
 
 <template>
-  <div v-if="loading" class="text-ink-400">chargement…</div>
+  <div v-if="loading" class="text-ink-400">loading…</div>
 
   <div v-else-if="objective" class="space-y-8 pb-16">
-    <!-- CE QU'ON DEMANDAIT -->
+    <!-- WHAT WAS ASKED -->
     <header>
       <div class="flex items-start gap-4 flex-wrap">
         <h1 class="text-[20px] text-ink-100 flex-1 min-w-0">{{ objective.title }}</h1>
@@ -174,43 +175,43 @@ const estImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
         class="mt-5 pl-4 border-l-2"
         :class="objective.proof_spec ? 'border-ink-600' : 'border-fail'"
       >
-        <div class="label">Ce qui doit être vrai pour conclure</div>
+        <div class="label">What must be true to conclude</div>
         <p
           class="mt-1.5 leading-relaxed"
           :class="objective.proof_spec ? 'text-ink-100 text-[15px]' : 'text-fail'"
         >
           {{
             objective.proof_spec ??
-            "Personne n'a répondu à cette question. Aucun agent ne peut prendre cet objectif tant qu'elle n'a pas de réponse."
+            'Nobody has answered this question. No agent can take this objective until it has an answer.'
           }}
         </p>
       </div>
     </header>
 
-    <!-- LA DÉCISION -->
+    <!-- THE DECISION -->
     <section
       v-if="objective.gate?.ready && objective.status !== 'proven'"
       class="border border-proof/40 bg-proof/[0.05] rounded p-5"
     >
       <div class="flex items-start gap-5 flex-wrap">
         <div class="flex-1 min-w-[16rem]">
-          <div class="text-proof text-[15px]">Il ne manque que ton verdict</div>
+          <div class="text-proof text-[15px]">Only your verdict is missing</div>
           <p class="text-ink-300 mt-1.5 leading-relaxed">{{ objective.gate.detail }}</p>
         </div>
         <div class="flex gap-2 shrink-0">
           <button
             class="px-4 py-2 rounded border border-proof text-proof bg-proof/10 hover:bg-proof/20 text-[13px] transition-colors disabled:opacity-40"
-            :disabled="enCours"
-            @click="prononcer('accept')"
+            :disabled="busyOn"
+            @click="castVerdict('accept')"
           >
-            {{ enCours ? '…' : 'Le critère est rempli' }}
+            {{ busyOn ? '…' : 'The criterion is met' }}
           </button>
           <button
             class="px-4 py-2 rounded border border-ink-600 text-ink-400 hover:border-fail hover:text-fail text-[13px] transition-colors disabled:opacity-40"
-            :disabled="enCours"
-            @click="prononcer('reject')"
+            :disabled="busyOn"
+            @click="castVerdict('reject')"
           >
-            Non, à refaire
+            No, redo it
           </button>
         </div>
       </div>
@@ -218,10 +219,10 @@ const estImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
 
     <section v-if="objective.status === 'proven'" class="flex items-center gap-3 text-proof">
       <span class="w-2 h-2 rounded-full bg-proof" />
-      <span>Validé{{ objective.proven_at ? ` le ${objective.proven_at.slice(0, 10)}` : '' }}</span>
+      <span>Accepted{{ objective.proven_at ? ` on ${objective.proven_at.slice(0, 10)}` : '' }}</span>
     </section>
 
-    <!-- CE QUI T'ATTEND -->
+    <!-- WHAT IS WAITING FOR YOU -->
     <section v-if="openHalts.length" class="space-y-2.5">
       <div v-for="h in openHalts" :key="h.id" class="border-l-2 border-halt pl-4 py-1">
         <div class="flex items-center gap-2 flex-wrap">
@@ -235,15 +236,15 @@ const estImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
       </div>
     </section>
 
-    <!-- CE QUI EST SORTI -->
-    <section v-if="preuves.length" id="preuves" class="scroll-mt-20">
-      <h2 class="label mb-3">Ce qui est sorti — {{ preuves.length }}</h2>
+    <!-- WHAT CAME OUT -->
+    <section v-if="proofs.length" id="proofs" class="scroll-mt-20">
+      <h2 class="label mb-3">What came out — {{ proofs.length }}</h2>
       <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
         <button
-          v-for="e in preuves"
+          v-for="e in proofs"
           :key="e.id"
           class="text-left group"
-          @click="ouvrir(e.id, e.files![0], 0)"
+          @click="openFile(e.id, e.files![0], 0)"
         >
           <div
             class="aspect-[4/3] bg-ink-950 rounded border overflow-hidden flex items-center justify-center transition-colors"
@@ -256,7 +257,7 @@ const estImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
             "
           >
             <img
-              v-if="estImage(e.files![0])"
+              v-if="isImage(e.files![0])"
               :src="api.evidenceFileUrl(e.id, 0, 480)"
               :alt="e.label"
               class="w-full h-full object-cover"
@@ -282,11 +283,11 @@ const estImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
       </div>
     </section>
 
-    <!-- CE QU'ON A MESURÉ -->
-    <section v-if="constats.length">
-      <h2 class="label mb-3">Ce qu'on a mesuré</h2>
+    <!-- WHAT WAS MEASURED -->
+    <section v-if="findings.length">
+      <h2 class="label mb-3">What was measured</h2>
       <div class="space-y-2">
-        <div v-for="e in constats" :key="e.id" class="flex items-start gap-2.5">
+        <div v-for="e in findings" :key="e.id" class="flex items-start gap-2.5">
           <span
             class="w-1.5 h-1.5 rounded-full shrink-0 mt-2"
             :class="{
@@ -310,31 +311,30 @@ const estImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
       </div>
     </section>
 
-    <!-- CE QUE ÇA A COÛTÉ -->
-    <section v-if="totaux.tokens" class="flex items-baseline gap-6 text-[13px] border-t border-ink-800 pt-4">
+    <!-- WHAT IT COST -->
+    <section v-if="totals.tokens" class="flex items-baseline gap-6 text-[13px] border-t border-ink-800 pt-4">
       <span class="text-ink-400">
-        <span class="text-ink-100 text-[15px]">${{ totaux.cost.toFixed(2) }}</span> dépensés
+        <span class="text-ink-100 text-[15px]">${{ totals.cost.toFixed(2) }}</span> spent
       </span>
-      <span v-if="totaux.perdu > 0.5" class="text-ink-500">
-        dont ${{ totaux.perdu.toFixed(2) }} sans résultat
+      <span v-if="totals.wasted > 0.5" class="text-ink-500">
+        ${{ totals.wasted.toFixed(2) }} of it with nothing to show
       </span>
-      <span class="text-ink-500">{{ formatTokens(totaux.tokens) }} tokens</span>
-      <span class="text-ink-500">{{ passages.length }} tentatives</span>
+      <span class="text-ink-500">{{ formatTokens(totals.tokens) }} tokens</span>
+      <span class="text-ink-500">{{ passages.length }} attempts</span>
     </section>
 
-    <!-- COMMENT ON Y EST ARRIVÉ -->
+    <!-- HOW WE GOT THERE -->
     <section v-if="passages.length">
       <button
         class="label hover:text-ink-300 transition-colors"
-        @click="detailsOuverts = !detailsOuverts"
+        @click="detailsOpen = !detailsOpen"
       >
-        {{ detailsOuverts ? '▾' : '▸' }} Comment on y est arrivé — {{ utiles.length }} tentative(s)
-        utile(s)<template v-if="bruit.length">, {{ bruit.length }} sans effet</template>
+        {{ detailsOpen ? '▾' : '▸' }} How we got there — {{ useful.length }} useful attempt(s)<template v-if="noise.length">, {{ noise.length }} with no effect</template>
       </button>
 
-      <div v-if="detailsOuverts" class="mt-4 space-y-4">
+      <div v-if="detailsOpen" class="mt-4 space-y-4">
         <article
-          v-for="p in utiles"
+          v-for="p in useful"
           :key="p.id"
           class="border-l-2 pl-4"
           :class="p.verdict === 'advanced' ? 'border-proof/50' : 'border-ink-700'"
@@ -342,7 +342,7 @@ const estImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
           <div class="flex items-center gap-2.5 flex-wrap">
             <Chips kind="harness" :value="p.harness" />
             <Chips v-if="p.verdict" kind="verdict" :value="p.verdict" />
-            <span class="text-ink-500 text-[12px]">{{ duree(p) }}</span>
+            <span class="text-ink-500 text-[12px]">{{ duration(p) }}</span>
             <span v-if="p.tokens" class="text-ink-500 text-[12px]"
               >{{ formatTokens(p.tokens) }} tokens</span
             >
@@ -352,13 +352,13 @@ const estImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
             <span
               v-if="p.resumed_from"
               class="text-halt text-[11px]"
-              title="cette tentative a repris une session précédente : une partie du contexte ne vient pas de sa mission"
-              >reprise de {{ p.resumed_from.slice(0, 8) }}</span
+              title="this attempt resumed an earlier session: part of its context does not come from its mission"
+              >resumed from {{ p.resumed_from.slice(0, 8) }}</span
             >
             <span
               v-if="p.git_before !== p.git_after"
               class="text-ink-600 text-[11px] ml-auto"
-              title="état du dépôt avant et après"
+              title="repository state before and after"
               >{{ short(p.git_before) }} → {{ short(p.git_after) }}</span
             >
           </div>
@@ -370,38 +370,38 @@ const estImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
               class="text-[11px] text-ink-500"
               :title="String(t)"
             >
-              {{ nomOutil(String(t)) }}<span class="text-ink-700">×{{ n }}</span>
+              {{ toolName(String(t)) }}<span class="text-ink-700">×{{ n }}</span>
             </span>
           </div>
 
           <div v-if="p.mission" class="mt-3">
-            <button class="label hover:text-ink-300 transition-colors" @click="basculeOrdre(p.id)">
-              {{ ordreDeplie.has(p.id) ? '▾' : '▸' }} L’ordre reçu —
-              <span class="text-ink-600">{{ tailleOrdre(p.mission) }}</span>
+            <button class="label hover:text-ink-300 transition-colors" @click="toggleMission(p.id)">
+              {{ missionOpen.has(p.id) ? '▾' : '▸' }} The order it received —
+              <span class="text-ink-600">{{ missionSize(p.mission) }}</span>
             </button>
             <pre
-              v-if="ordreDeplie.has(p.id)"
+              v-if="missionOpen.has(p.id)"
               class="mt-2 p-3 bg-ink-950 border border-ink-800 rounded text-[12px] text-ink-300 whitespace-pre-wrap overflow-x-auto max-h-[28rem]"
             >{{ p.mission }}</pre>
           </div>
 
           <div v-if="p.said" class="mt-3">
-            <button class="label hover:text-ink-300 transition-colors" @click="bascule(p.id)">
-              {{ deplie.has(p.id) ? '▾' : '▸' }} Son compte rendu
+            <button class="label hover:text-ink-300 transition-colors" @click="toggle(p.id)">
+              {{ expanded.has(p.id) ? '▾' : '▸' }} Its report
             </button>
             <pre
-              v-if="deplie.has(p.id)"
+              v-if="expanded.has(p.id)"
               class="mt-2 p-3 bg-ink-950 border border-ink-800 rounded text-[12px] text-ink-300 whitespace-pre-wrap overflow-x-auto max-h-[28rem]"
             >{{ p.said }}</pre>
           </div>
         </article>
 
-        <div v-if="bruit.length" class="border-l-2 border-ink-800 pl-4 pt-1">
-          <div class="label mb-2">Tentatives sans effet</div>
-          <div v-for="p in bruit" :key="p.id" class="flex items-baseline gap-2.5 text-[12px] py-0.5">
+        <div v-if="noise.length" class="border-l-2 border-ink-800 pl-4 pt-1">
+          <div class="label mb-2">Attempts with no effect</div>
+          <div v-for="p in noise" :key="p.id" class="flex items-baseline gap-2.5 text-[12px] py-0.5">
             <span class="text-ink-600">{{ harnessLabel[p.harness] ?? p.harness }}</span>
-            <span class="text-ink-500 flex-1">{{ raisonLisible(p.prevented_by) || 'sans résultat' }}</span>
-            <span class="text-ink-700">{{ duree(p) }}</span>
+            <span class="text-ink-500 flex-1">{{ readableReason(p.prevented_by) || 'nothing to show' }}</span>
+            <span class="text-ink-700">{{ duration(p) }}</span>
             <span v-if="Number(p.cost_usd)" class="text-ink-700"
               >${{ Number(p.cost_usd).toFixed(2) }}</span
             >
@@ -410,26 +410,26 @@ const estImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
       </div>
     </section>
 
-    <!-- Panneau des preuves -->
+    <!-- Proof panel -->
     <Teleport to="body">
-      <div v-if="apercu" class="fixed inset-0 z-50 flex">
-        <div class="flex-1 bg-ink-950/85 backdrop-blur-sm" @click="apercu = null" />
+      <div v-if="preview" class="fixed inset-0 z-50 flex">
+        <div class="flex-1 bg-ink-950/85 backdrop-blur-sm" @click="preview = null" />
         <aside class="w-[min(820px,92vw)] h-full bg-ink-900 border-l border-ink-700 flex flex-col">
           <header class="px-4 py-3 border-b border-ink-800 flex items-center gap-2.5">
-            <span class="text-ink-100 flex-1 truncate text-[13px]">{{ apercu.nom }}</span>
-            <template v-if="preuves.length > 1">
-              <button class="btn px-2" @click="voisine(-1)">‹</button>
-              <button class="btn px-2" @click="voisine(1)">›</button>
+            <span class="text-ink-100 flex-1 truncate text-[13px]">{{ preview.name }}</span>
+            <template v-if="proofs.length > 1">
+              <button class="btn px-2" @click="neighbour(-1)">‹</button>
+              <button class="btn px-2" @click="neighbour(1)">›</button>
             </template>
-            <a :href="apercu.url" target="_blank" class="btn">taille réelle</a>
-            <button class="btn" @click="apercu = null">fermer</button>
+            <a :href="preview.url" target="_blank" class="btn">full size</a>
+            <button class="btn" @click="preview = null">close</button>
           </header>
           <div class="flex-1 overflow-auto p-4 bg-ink-950">
             <pre
-              v-if="apercu.texte !== undefined"
+              v-if="preview.text !== undefined"
               class="text-[12px] text-ink-300 whitespace-pre-wrap"
-            >{{ apercu.texte }}</pre>
-            <img v-else :src="apercu.url" :alt="apercu.nom" class="w-full rounded" />
+            >{{ preview.text }}</pre>
+            <img v-else :src="preview.url" :alt="preview.name" class="w-full rounded" />
           </div>
         </aside>
       </div>

@@ -1,10 +1,9 @@
 /**
- * Le veilleur — enregistre le travail des harnais sans leur coopération.
+ * The watcher — records what the harnesses did, without their cooperation.
  *
- * Claude Code et Codex journalisent déjà tout : le répertoire de travail,
- * la consommation par requête, la fin de tâche. On lit leurs traces plutôt
- * que de leur demander de nous prévenir. Un agent ne peut pas oublier de
- * déclarer ce qu'on dérive de ses propres logs.
+ * Claude Code and Codex already log everything: the working directory, usage
+ * per request, task completion. We read their traces instead of asking them to
+ * report in. An agent cannot forget to declare what we derive from its own logs.
  */
 
 import { readFileSync, existsSync, statSync, readdirSync, openSync, readSync, closeSync } from 'node:fs'
@@ -15,13 +14,13 @@ const CLAUDE_ROOT = resolve(homedir(), '.claude/projects')
 const CODEX_ROOT = resolve(homedir(), '.codex/sessions')
 
 /**
- * Claude encode le cwd en remplaçant `/` par `-`. Le décodage est AMBIGU
- * (`biro-web` redeviendrait `biro/web`) : on compare les formes encodées.
+ * Claude encodes the cwd by replacing `/` with `-`. Decoding is AMBIGUOUS
+ * (`biro-web` would turn back into `biro/web`): so we compare encoded forms.
  */
 export function encodeCwd(path) {
   // Le harnais remplace `/`, `_` ET `.` par `-`. N'en traiter qu'un seul faisait
   // chercher les transcripts de `Tycoon_Project` dans un dossier qui n'existe
-  // pas : la consommation revenait à zéro et la passe passait pour stérile.
+  // rule lived in two places: usage came back as zero and the pass read as sterile.
   return path.replace(/[/_.]/g, '-')
 }
 
@@ -73,8 +72,8 @@ export function recentSessions(sinceMs) {
 }
 
 /**
- * Lit un fichier de session à partir d'un décalage et en extrait ce qui
- * nous intéresse : le répertoire, la consommation, la fin de tâche.
+ * Reads a session file from an offset and pulls out what matters: the working
+ * directory, the usage, the end of the task.
  */
 export function readSince(file, offset) {
   let size
@@ -92,7 +91,7 @@ export function readSince(file, offset) {
   closeSync(fd)
 
   const text = buf.toString('utf8')
-  // La dernière ligne peut être tronquée : on la garde pour le tour suivant.
+  // The last line may be truncated: keep it for the next round.
   const lastNewline = text.lastIndexOf('\n')
   const usable = lastNewline === -1 ? '' : text.slice(0, lastNewline)
   const consumed = offset + Buffer.byteLength(usable, 'utf8') + (lastNewline === -1 ? 0 : 1)

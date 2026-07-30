@@ -6,92 +6,92 @@ import { haltLabel, harnessLabel } from '../labels'
 const props = defineProps<{
   chapter: Objective | null
   steps: Objective[]
-  chaine?: 'active' | 'dormante' | 'close'
-  activite?: string
+  chain?: 'active' | 'dormant' | 'closed'
+  activity?: string
 }>()
 
-const actif = computed(() => (props.chaine ?? 'active') === 'active')
-const deplie = ref(false)
-const visible = computed(() => actif.value || deplie.value)
+const isActive = computed(() => (props.chain ?? 'active') === 'active')
+const expanded = ref(false)
+const visible = computed(() => isActive.value || expanded.value)
 
-/** Depuis quand plus rien ne bouge sur cette chaîne. */
-const inactifDepuis = computed(() => {
-  if (!props.activite) return 'jamais démarrée'
-  const j = Math.floor((Date.now() - new Date(props.activite + 'Z').getTime()) / 86400000)
-  if (j >= 1) return `rien depuis ${j} jour${j > 1 ? 's' : ''}`
-  const h = Math.floor((Date.now() - new Date(props.activite + 'Z').getTime()) / 3600000)
-  return h >= 1 ? `rien depuis ${h} h` : 'inactive'
+/** How long nothing has moved on this chain. */
+const idleFor = computed(() => {
+  if (!props.activity) return 'never started'
+  const d = Math.floor((Date.now() - new Date(props.activity + 'Z').getTime()) / 86400000)
+  if (d >= 1) return `nothing for ${d} day${d > 1 ? 's' : ''}`
+  const h = Math.floor((Date.now() - new Date(props.activity + 'Z').getTime()) / 3600000)
+  return h >= 1 ? `nothing for ${h} h` : 'idle'
 })
 
-const etiquette = computed(() =>
-  props.chaine === 'close'
-    ? { mot: 'chaîne terminée', couleur: 'text-proof' }
-    : props.chaine === 'dormante'
-      ? { mot: `en sommeil — ${inactifDepuis.value}`, couleur: 'text-ink-500' }
-      : { mot: 'chaîne suivie par la boucle', couleur: 'text-run' },
+const chainBadge = computed(() =>
+  props.chain === 'closed'
+    ? { label: 'chain finished', color: 'text-proof' }
+    : props.chain === 'dormant'
+      ? { label: `dormant — ${idleFor.value}`, color: 'text-ink-500' }
+      : { label: 'chain the loop is following', color: 'text-run' },
 )
 
-type Etat = {
-  cle: string
-  mot: string
-  couleur: string
-  bord: string
-  fond: string
-  bat: boolean
+type State = {
+  key: string
+  label: string
+  color: string
+  border: string
+  fill: string
+  pulses: boolean
 }
 
-function depuis(iso: string): string {
+function since(iso: string): string {
   const min = Math.max(0, Math.round((Date.now() - new Date(iso + 'Z').getTime()) / 60000))
   if (min < 60) return `${min} min`
   return `${Math.floor(min / 60)} h ${String(min % 60).padStart(2, '0')}`
 }
 
-/** L'état d'une étape, dit en un mot et une couleur. */
-function etat(o: Objective): Etat {
+/** A step's state, in one word and one colour. */
+function state(o: Objective): State {
   if (o.status === 'proven')
     return {
-      cle: 'proven', mot: 'prouvé',
-      couleur: 'text-proof', bord: 'border-proof', fond: 'bg-proof', bat: false,
+      key: 'proven', label: 'proven',
+      color: 'text-proof', border: 'border-proof', fill: 'bg-proof', pulses: false,
     }
 
   if (o.status === 'blocked') {
-    const humain = ['blast_radius', 'no_provable_criterion', 'invariant_regression', 'human_request']
-    const aToi = humain.includes(o.halt_reason ?? '')
+    const needsHuman = ['blast_radius', 'no_provable_criterion', 'invariant_regression', 'human_request']
+    const yours = needsHuman.includes(o.halt_reason ?? '')
     return {
-      cle: 'blocked',
-      mot: aToi ? 'à trancher' : 'refusé, à reprendre',
-      couleur: 'text-halt',
-      bord: 'border-halt',
-      fond: aToi ? 'bg-halt' : 'bg-transparent',
-      bat: false,
+      key: 'blocked',
+      label: yours ? 'your call' : 'rejected, to redo',
+      color: 'text-halt',
+      border: 'border-halt',
+      fill: yours ? 'bg-halt' : 'bg-transparent',
+      pulses: false,
     }
   }
 
   if (o.status === 'in_progress')
     return o.live_since
       ? {
-          cle: 'live', mot: `agent · ${depuis(o.live_since)}`,
-          couleur: 'text-run', bord: 'border-run', fond: 'bg-run', bat: true,
+          key: 'live', label: `agent · ${since(o.live_since)}`,
+          color: 'text-run', border: 'border-run', fill: 'bg-run', pulses: true,
         }
       : {
-          cle: 'paused', mot: 'commencé, en pause',
-          couleur: 'text-run', bord: 'border-run', fond: 'bg-transparent', bat: false,
+          key: 'paused', label: 'started, paused',
+          color: 'text-run', border: 'border-run', fill: 'bg-transparent', pulses: false,
         }
 
   if (o.status === 'draft')
     return {
-      cle: 'draft', mot: 'à préciser',
-      couleur: 'text-ink-500', bord: 'border-ink-600', fond: 'bg-transparent', bat: false,
+      key: 'draft', label: 'needs a criterion',
+      color: 'text-ink-500', border: 'border-ink-600', fill: 'bg-transparent', pulses: false,
     }
 
   return {
-    cle: 'ready', mot: 'prêt à prendre',
-    couleur: 'text-ink-400', bord: 'border-ink-400', fond: 'bg-transparent', bat: false,
+    key: 'ready', label: 'ready to take',
+    color: 'text-ink-400', border: 'border-ink-400', fill: 'bg-transparent', pulses: false,
   }
 }
 
-/** Qui a réellement travaillé sur cette étape. */
-function harnais(o: Objective): string[] {
+/** Who actually worked on this step. */
+function harnesses(o: Objective): string[] {
   return (o.harnesses ?? '')
     .split(',')
     .map((h) => h.trim())
@@ -99,10 +99,10 @@ function harnais(o: Objective): string[] {
     .map((h) => harnessLabel[h] ?? h)
 }
 
-const prouves = computed(() => props.steps.filter((s) => s.status === 'proven').length)
+const provenCount = computed(() => props.steps.filter((s) => s.status === 'proven').length)
 
-/** La seule étape sur laquelle un humain ou un agent doit se poser maintenant. */
-const reprise = computed(() => {
+/** The one step a human or an agent should land on now. */
+const resumeFrom = computed(() => {
   const s = props.steps
   return (
     s.find((o) => o.live_since) ??
@@ -114,32 +114,32 @@ const reprise = computed(() => {
   )
 })
 
-const repriseTexte = computed(() => {
-  const o = reprise.value
+const resumeText = computed(() => {
+  const o = resumeFrom.value
   if (!o) return null
-  const e = etat(o)
-  if (e.cle === 'live') return `#${o.id} ${o.title} — un agent y travaille depuis ${depuis(o.live_since!)}`
-  if (e.cle === 'blocked')
-    return `#${o.id} ${o.title} — ${haltLabel[o.halt_reason ?? ''] ?? 'arrêté'}`
-  if (e.cle === 'paused') return `#${o.id} ${o.title} — commencé puis laissé, personne dessus`
-  if (e.cle === 'draft') return `#${o.id} ${o.title} — il manque son critère de preuve`
-  return `#${o.id} ${o.title} — prêt, aucun agent ne l'a pris`
+  const e = state(o)
+  if (e.key === 'live') return `#${o.id} ${o.title} — an agent has been on it for ${since(o.live_since!)}`
+  if (e.key === 'blocked')
+    return `#${o.id} ${o.title} — ${haltLabel[o.halt_reason ?? ''] ?? 'halted'}`
+  if (e.key === 'paused') return `#${o.id} ${o.title} — started then left, nobody on it`
+  if (e.key === 'draft') return `#${o.id} ${o.title} — its proof criterion is missing`
+  return `#${o.id} ${o.title} — ready, no agent has taken it`
 })
 
-/** Ce qui manque au chapitre pour conclure, dit franchement. */
-const terminus = computed(() => {
+/** What the chapter still needs in order to close, said plainly. */
+const gateLabel = computed(() => {
   if (!props.chapter) return null
-  if (props.chapter.status === 'proven') return { mot: 'franchi', couleur: 'text-proof' }
-  const reste = props.steps.length - prouves.value
+  if (props.chapter.status === 'proven') return { label: 'passed', color: 'text-proof' }
+  const left = props.steps.length - provenCount.value
   return {
-    mot: reste > 0 ? `${reste} étape${reste > 1 ? 's' : ''} avant le gate` : 'toutes les étapes sont prouvées',
-    couleur: reste > 0 ? 'text-ink-500' : 'text-halt',
+    label: left > 0 ? `${left} step${left > 1 ? 's' : ''} before the gate` : 'every step is proven',
+    color: left > 0 ? 'text-ink-500' : 'text-halt',
   }
 })
 </script>
 
 <template>
-  <section class="card p-5" :class="actif ? '' : 'opacity-70 hover:opacity-100 transition-opacity'">
+  <section class="card p-5" :class="isActive ? '' : 'opacity-70 hover:opacity-100 transition-opacity'">
     <header class="flex items-baseline gap-3 flex-wrap" :class="visible ? 'mb-6' : ''">
       <RouterLink
         v-if="chapter"
@@ -148,18 +148,18 @@ const terminus = computed(() => {
       >
         {{ chapter.title }}
       </RouterLink>
-      <span v-else class="text-ink-300">Hors chapitre</span>
-      <span class="label" :class="etiquette.couleur">{{ etiquette.mot }}</span>
+      <span v-else class="text-ink-300">Outside any chapter</span>
+      <span class="label" :class="chainBadge.color">{{ chainBadge.label }}</span>
       <span class="label ml-auto">
-        <span class="text-proof">{{ prouves }}</span
-        ><span class="text-ink-600">/{{ steps.length }} prouvé{{ prouves > 1 ? 's' : '' }}</span>
+        <span class="text-proof">{{ provenCount }}</span
+        ><span class="text-ink-600">/{{ steps.length }} proven</span>
       </span>
-      <button v-if="!actif" class="label hover:text-ink-300 transition-colors" @click="deplie = !deplie">
-        {{ deplie ? '▾ replier' : '▸ voir la voie' }}
+      <button v-if="!isActive" class="label hover:text-ink-300 transition-colors" @click="expanded = !expanded">
+        {{ expanded ? '▾ collapse' : '▸ show the track' }}
       </button>
     </header>
 
-    <!-- La voie : on la lit de gauche à droite, dans l'ordre d'exécution. -->
+    <!-- The track: read left to right, in execution order. -->
     <ol v-if="visible" class="flex items-start overflow-x-auto pb-1 -mx-1">
       <li
         v-for="(o, i) in steps"
@@ -171,7 +171,7 @@ const terminus = computed(() => {
           <span class="flex items-center h-3">
             <span
               class="w-2.5 h-2.5 rounded-full shrink-0 border"
-              :class="[etat(o).bord, etat(o).fond, etat(o).bat ? 'animate-pulse' : '']"
+              :class="[state(o).border, state(o).fill, state(o).pulses ? 'animate-pulse' : '']"
             />
             <span
               v-if="i < steps.length - 1 || chapter"
@@ -189,30 +189,30 @@ const terminus = computed(() => {
             >
               {{ o.title }}
             </div>
-            <div class="text-[11px] mt-1" :class="etat(o).couleur">{{ etat(o).mot }}</div>
+            <div class="text-[11px] mt-1" :class="state(o).color">{{ state(o).label }}</div>
           </div>
         </RouterLink>
 
-        <div v-if="harnais(o).length || o.artifacts_count" class="mt-1.5 flex items-baseline gap-2 flex-wrap">
+        <div v-if="harnesses(o).length || o.artifacts_count" class="mt-1.5 flex items-baseline gap-2 flex-wrap">
           <span
-            v-for="h in harnais(o)"
+            v-for="h in harnesses(o)"
             :key="h"
             class="text-[10px] text-ink-500 border border-ink-700 rounded px-1 py-px"
-            :title="`travail effectué par ${h}`"
+            :title="`work done by ${h}`"
             >{{ h }}</span
           >
           <RouterLink
             v-if="o.artifacts_count"
-            :to="`/o/${o.id}#preuves`"
+            :to="`/o/${o.id}#proofs`"
             class="text-[10px] text-ink-500 hover:text-run underline decoration-ink-700 underline-offset-2 transition-colors"
-            :title="'voir les fichiers produits et les preuves'"
-            >{{ o.artifacts_count }} fichier{{ o.artifacts_count > 1 ? 's' : '' }}</RouterLink
+            :title="'see the files produced and the proofs'"
+            >{{ o.artifacts_count }} file{{ o.artifacts_count > 1 ? 's' : '' }}</RouterLink
           >
         </div>
         </div>
       </li>
 
-      <!-- Terminus : le gate du chapitre. -->
+      <!-- Terminus: the chapter gate. -->
       <li v-if="chapter" class="flex items-start shrink-0 w-[11.5rem]">
         <div class="w-full pr-3">
           <span class="flex items-center h-3">
@@ -224,21 +224,21 @@ const terminus = computed(() => {
           </span>
           <div class="mt-2.5">
             <div class="text-ink-600 text-[11px]">gate</div>
-            <div class="text-[12px] leading-snug mt-0.5 text-ink-300">Conclure le chapitre</div>
-            <div class="text-[11px] mt-1" :class="terminus?.couleur">{{ terminus?.mot }}</div>
+            <div class="text-[12px] leading-snug mt-0.5 text-ink-300">Close the chapter</div>
+            <div class="text-[11px] mt-1" :class="gateLabel?.color">{{ gateLabel?.label }}</div>
           </div>
         </div>
       </li>
     </ol>
 
     <RouterLink
-      v-if="reprise && actif"
-      :to="`/o/${reprise.id}`"
+      v-if="resumeFrom && isActive"
+      :to="`/o/${resumeFrom.id}`"
       class="mt-5 pt-3.5 border-t border-ink-800 flex items-baseline gap-2 group"
     >
-      <span class="label shrink-0">reprendre ici</span>
+      <span class="label shrink-0">resume here</span>
       <span class="text-[13px] text-ink-300 group-hover:text-run transition-colors">{{
-        repriseTexte
+        resumeText
       }}</span>
     </RouterLink>
   </section>

@@ -6,10 +6,10 @@ import Storages from '../components/Storages.vue'
 <template>
   <div class="space-y-7">
     <section class="card p-4 border-ink-800">
-      <h1 class="text-ink-100 text-[15px]">Outils</h1>
+      <h1 class="text-ink-100 text-[15px]">Tools</h1>
       <p class="text-ink-400 mt-1.5 leading-relaxed max-w-3xl">
-        Ce qui agit sur les projets sans être un projet. Rien ici ne se déclenche tout seul et rien
-        n'entre dans un plan sans que tu l'aies relu.
+        Things that act on projects without being a project. Nothing here fires on its own, and
+        nothing enters a plan before you have read it.
       </p>
     </section>
 

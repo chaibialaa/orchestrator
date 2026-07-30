@@ -3,22 +3,23 @@ import { onMounted, ref, computed, onUnmounted } from 'vue'
 import { api, type Dashboard, type Review } from '../api'
 import Chips from '../components/Chips.vue'
 import ActivityFeed from '../components/ActivityFeed.vue'
+import Blockers from '../components/Blockers.vue'
 import { formatTokens, haltHelp, statusLabel } from '../labels'
 
 const data = ref<Dashboard | null>(null)
 const review = ref<Review | null>(null)
-const enCours = ref<number | null>(null)
+const busyOn = ref<number | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
 let timer: number | undefined
 
-async function prononcer(id: number, decision: 'accept' | 'reject') {
-  enCours.value = id
+async function castVerdict(id: number, decision: 'accept' | 'reject') {
+  busyOn.value = id
   try {
     await api.verdict(id, decision)
     await load()
   } finally {
-    enCours.value = null
+    busyOn.value = null
   }
 }
 
@@ -28,7 +29,7 @@ async function load() {
     review.value = await api.review()
     error.value = null
   } catch (e: any) {
-    error.value = e?.message ?? 'erreur'
+    error.value = e?.message ?? 'error'
   } finally {
     loading.value = false
   }
@@ -46,7 +47,7 @@ const breachedInvariants = computed(
   () => data.value?.invariants.filter((i) => i.last_status === 'breached') ?? [],
 )
 
-/** decimal(20,4) arrive avec ses zéros de queue : on ne les affiche pas. */
+/** decimal(20,4) arrives with trailing zeros: we do not show them. */
 function num(v: string | null) {
   if (v === null) return '—'
   const n = Number(v)
@@ -56,10 +57,10 @@ function num(v: string | null) {
 function ago(iso: string | null) {
   if (!iso) return '—'
   const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000)
-  if (s < 60) return "à l'instant"
-  if (s < 3600) return `il y a ${Math.round(s / 60)} min`
-  if (s < 86400) return `il y a ${Math.round(s / 3600)} h`
-  return `il y a ${Math.round(s / 86400)} j`
+  if (s < 60) return 'just now'
+  if (s < 3600) return `${Math.round(s / 60)} min ago`
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`
+  return `${Math.round(s / 86400)} d ago`
 }
 
 const statusOrder = ['blocked', 'in_progress', 'ready', 'draft', 'proven'] as const
@@ -81,35 +82,39 @@ const segColor: Record<string, string> = {
 </script>
 
 <template>
-  <div v-if="loading" class="text-ink-400">chargement…</div>
+  <div v-if="loading" class="text-ink-400">loading…</div>
   <div v-else-if="error" class="card p-4 border-fail/40 text-fail">
-    L'API ne répond pas — {{ error }}
+    The API is not responding — {{ error }}
   </div>
 
   <div v-else-if="data" class="space-y-7">
     <section class="card p-4 border-ink-800">
-      <h1 class="text-ink-100 text-[15px]">Vue d'ensemble</h1>
+      <h1 class="text-ink-100 text-[15px]">Overview</h1>
       <p class="text-ink-400 mt-1.5 leading-relaxed max-w-3xl">
-        Tous les projets suivis, dans l'ordre de ce qui te réclame une décision. Un objectif
-        n'est « terminé » que lorsqu'une preuve a été fournie et acceptée — le reste est du
-        travail en cours, pas du travail fait.
+        Every tracked project, ordered by what needs a decision from you. An objective is only
+        “done” once proof has been produced and accepted — everything else is work in progress,
+        not work finished.
       </p>
     </section>
 
-    <!-- Chiffres globaux -->
+    <!-- Before the numbers: what stops progress. A counter going up never tells
+         you a loop has been spinning on nothing for an hour. -->
+    <Blockers />
+
+    <!-- Totals -->
     <section class="grid grid-cols-2 lg:grid-cols-4 gap-3">
       <div class="card p-3.5" :class="t!.awaiting_human ? 'border-halt/40' : ''">
-        <div class="label">En attente de toi</div>
+        <div class="label">Waiting on you</div>
         <div class="text-2xl mt-1" :class="t!.awaiting_human ? 'text-halt' : ''">
           {{ t!.awaiting_human }}
         </div>
         <div class="text-ink-600 text-[11px] mt-2">
-          {{ t!.awaiting_human ? 'arrêts non levés' : 'rien ne te bloque' }}
+          {{ t!.awaiting_human ? 'unresolved halts' : 'nothing is waiting on you' }}
         </div>
       </div>
 
       <div class="card p-3.5">
-        <div class="label">Objectifs vérifiés</div>
+        <div class="label">Verified objectives</div>
         <div class="text-2xl mt-1">
           {{ t!.proven }}<span class="text-ink-600 text-base">/{{ t!.objectives }}</span>
         </div>
@@ -122,19 +127,19 @@ const segColor: Record<string, string> = {
       </div>
 
       <div class="card p-3.5">
-        <div class="label">Consommation</div>
+        <div class="label">Usage</div>
         <div class="text-2xl mt-1">{{ formatTokens(t!.tokens) }}</div>
         <div class="text-ink-600 text-[11px] mt-2">
-          tokens · {{ t!.requests }} demandes ·
+          tokens · {{ t!.requests }} requests ·
           <span class="text-ink-400">${{ t!.cost_usd.toFixed(2) }}</span>
         </div>
       </div>
 
       <div class="card p-3.5">
-        <div class="label">Travail effectué</div>
+        <div class="label">Work done</div>
         <div class="text-2xl mt-1">{{ t!.passages }}</div>
         <div class="text-ink-600 text-[11px] mt-2 flex flex-wrap gap-1 items-center">
-          tentatives
+          attempts
           <Chips v-for="h in data.harness_split" :key="h.harness" kind="harness" :value="h.harness" />
         </div>
       </div>
@@ -142,12 +147,12 @@ const segColor: Record<string, string> = {
 
     <ActivityFeed compact />
 
-    <!-- Ton verdict -->
+    <!-- Your verdict -->
     <section v-if="review?.ready.length">
-      <h2 class="text-proof text-[14px] mb-1">Prêt — il ne manque que ton verdict — {{ review.ready.length }}</h2>
+      <h2 class="text-proof text-[14px] mb-1">Ready — only your verdict is missing — {{ review.ready.length }}</h2>
       <p class="text-ink-400 mb-3 max-w-3xl">
-        Le travail est fait et les preuves sont là. Un objectif ne se déclare pas fini tout seul :
-        c'est le seul geste que la boucle ne fait jamais à ta place.
+        The work is done and the proof is there. An objective never declares itself finished:
+        this is the one move the loop never makes for you.
       </p>
       <div class="space-y-2.5">
         <div v-for="o in review.ready" :key="o.id" class="card p-4 border-proof/35 bg-proof/[0.04]">
@@ -157,28 +162,28 @@ const segColor: Record<string, string> = {
             <Chips kind="blast" :value="o.blast_radius" />
           </div>
 
-          <p v-if="o.proof_spec" class="text-ink-400 mt-2 text-[12px]">Critère : {{ o.proof_spec }}</p>
+          <p v-if="o.proof_spec" class="text-ink-400 mt-2 text-[12px]">Criterion: {{ o.proof_spec }}</p>
 
           <div class="flex items-center gap-4 mt-3 text-[12px] flex-wrap">
-            <span class="text-proof">{{ o.evidences_pass }} preuve(s) concluante(s)</span>
-            <span v-if="o.evidences_fail" class="text-fail">{{ o.evidences_fail }} en échec</span>
-            <span class="text-ink-400">{{ o.passages }} tentatives</span>
+            <span class="text-proof">{{ o.evidences_pass }} passing proof(s)</span>
+            <span v-if="o.evidences_fail" class="text-fail">{{ o.evidences_fail }} failing</span>
+            <span class="text-ink-400">{{ o.passages }} attempts</span>
             <span v-if="o.cost_usd" class="text-ink-400">${{ o.cost_usd.toFixed(2) }}</span>
 
             <div class="ml-auto flex gap-1.5">
               <button
                 class="chip border-proof text-proof bg-proof/10 hover:bg-proof/20"
-                :disabled="enCours === o.id"
-                @click="prononcer(o.id, 'accept')"
+                :disabled="busyOn === o.id"
+                @click="castVerdict(o.id, 'accept')"
               >
-                {{ enCours === o.id ? '…' : 'Je valide' }}
+                {{ busyOn === o.id ? '…' : 'I accept' }}
               </button>
               <button
                 class="chip border-fail/60 text-fail hover:bg-fail/10"
-                :disabled="enCours === o.id"
-                @click="prononcer(o.id, 'reject')"
+                :disabled="busyOn === o.id"
+                @click="castVerdict(o.id, 'reject')"
               >
-                Non
+                No
               </button>
             </div>
           </div>
@@ -186,11 +191,11 @@ const segColor: Record<string, string> = {
       </div>
     </section>
 
-    <!-- Ce qui attend -->
+    <!-- What is waiting -->
     <section v-if="data.open_halts.length">
-      <h2 class="text-halt text-[14px] mb-1">Ce qui t'attend — {{ data.open_halts.length }}</h2>
+      <h2 class="text-halt text-[14px] mb-1">Waiting for you — {{ data.open_halts.length }}</h2>
       <p class="text-ink-400 mb-3">
-        Dans chacun de ces cas, l'outil a préféré s'arrêter plutôt que de continuer sans certitude.
+        In each of these, the tool chose to stop rather than carry on without certainty.
       </p>
       <div class="space-y-2.5">
         <RouterLink
@@ -213,22 +218,22 @@ const segColor: Record<string, string> = {
       </div>
     </section>
 
-    <!-- Invariants franchis -->
+    <!-- Breached invariants -->
     <section v-if="breachedInvariants.length">
-      <h2 class="text-fail text-[14px] mb-1">Mesures de production hors limite</h2>
-      <p class="text-ink-400 mb-3">Quelque chose vient de casser pour de vrai, pas en test.</p>
+      <h2 class="text-fail text-[14px] mb-1">Production measurements out of bounds</h2>
+      <p class="text-ink-400 mb-3">Something just broke for real, not in a test.</p>
       <div class="card p-4 space-y-2 border-fail/40">
         <div v-for="i in breachedInvariants" :key="i.id" class="flex items-center gap-3">
           <span class="text-ink-600 text-[11px] uppercase tracking-widest w-24">{{ i.project }}</span>
           <span class="text-ink-100 flex-1">{{ i.statement }}</span>
-          <span class="text-fail">mesuré {{ num(i.last_value) }}</span>
+          <span class="text-fail">measured {{ num(i.last_value) }}</span>
         </div>
       </div>
     </section>
 
-    <!-- Projets -->
+    <!-- Projects -->
     <section>
-      <h2 class="text-ink-100 text-[14px] mb-3">Projets — {{ data.projects.length }}</h2>
+      <h2 class="text-ink-100 text-[14px] mb-3">Projects — {{ data.projects.length }}</h2>
       <div class="space-y-2.5">
         <RouterLink
           v-for="p in data.projects"
@@ -255,12 +260,12 @@ const segColor: Record<string, string> = {
           <div class="flex items-center gap-4 mt-3 text-[12px] flex-wrap">
             <span class="text-ink-400">
               <span class="text-proof">{{ p.proven }}</span
-              >/{{ p.total_objectives }} vérifiés
+              >/{{ p.total_objectives }} verified
             </span>
             <span v-if="p.awaiting_human" class="text-halt">
-              {{ p.awaiting_human }} en attente de toi
+              {{ p.awaiting_human }} waiting on you
             </span>
-            <span class="text-ink-400">{{ p.passages }} tentatives</span>
+            <span class="text-ink-400">{{ p.passages }} attempts</span>
             <span v-if="p.tokens" class="text-ink-400">{{ formatTokens(p.tokens) }} tokens</span>
             <span v-if="p.cost_usd" class="text-ink-400">${{ p.cost_usd.toFixed(2) }}</span>
             <span
@@ -269,8 +274,8 @@ const segColor: Record<string, string> = {
               :class="p.invariants.breached ? 'text-fail' : 'text-ink-400'"
             >
               {{ p.invariants.total }} invariant{{ p.invariants.total > 1 ? 's' : '' }}
-              <template v-if="p.invariants.breached">— {{ p.invariants.breached }} franchi(s)</template>
-              <template v-else-if="p.invariants.unknown">— jamais mesuré(s)</template>
+              <template v-if="p.invariants.breached">— {{ p.invariants.breached }} breached</template>
+              <template v-else-if="p.invariants.unknown">— never measured</template>
             </span>
           </div>
         </RouterLink>
@@ -278,9 +283,9 @@ const segColor: Record<string, string> = {
     </section>
 
     <div class="grid lg:grid-cols-2 gap-5">
-      <!-- Activité récente -->
+      <!-- Recent activity -->
       <section>
-        <h2 class="text-ink-100 text-[14px] mb-3">Dernières tentatives</h2>
+        <h2 class="text-ink-100 text-[14px] mb-3">Latest attempts</h2>
         <div class="card divide-y divide-ink-800">
           <RouterLink
             v-for="r in data.recent"
@@ -308,7 +313,7 @@ const segColor: Record<string, string> = {
               </div>
             </div>
           </RouterLink>
-          <div v-if="!data.recent.length" class="p-3 text-ink-600">aucune tentative</div>
+          <div v-if="!data.recent.length" class="p-3 text-ink-600">no attempts yet</div>
         </div>
       </section>
 

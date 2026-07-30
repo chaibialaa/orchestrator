@@ -1,14 +1,14 @@
 /**
- * Le relais — pont entre une conversation ChatGPT et les harnais locaux.
+ * The relay — a bridge between a ChatGPT conversation and the local harnesses.
  *
- * Passe par le protocole DevTools de Chrome, sur l'onglet déjà ouvert et
- * déjà authentifié de l'utilisateur. Rien n'est stocké, rien n'est envoyé
- * ailleurs que dans la conversation désignée.
+ * It goes through Chrome's DevTools protocol, on the user's already-open and
+ * already-signed-in tab. Nothing is stored, nothing is sent anywhere except into
+ * the designated conversation.
  *
- * IMPORTANT — frontière de confiance : ce que dit GPT est une DEMANDE de
- * travail, jamais une commande à exécuter. Le texte part vers un harnais
- * de code, qui reste soumis au rayon de souffle, au pack de règles et à
- * la porte de preuve. Le relais ne court-circuite aucune garde.
+ * IMPORTANT — trust boundary: what GPT says is a REQUEST for work, never a
+ * command to run. The text goes to a code harness, which remains subject to the
+ * blast radius, the rule pack and the proof gate. The relay short-circuits no
+ * guard.
  */
 
 const CDP_PORT = 9222
@@ -18,28 +18,28 @@ async function cdpTargets(port) {
   return res.json()
 }
 
-/** Ouvre une session DevTools sur l'onglet dont l'URL contient `match`. */
+/** Opens a DevTools session on the tab whose URL contains `match`. */
 export async function attach(match, port = CDP_PORT) {
   let targets
   try {
     targets = await cdpTargets(port)
   } catch {
     throw new Error(
-      `Chrome n'écoute pas sur le port ${port}.\n` +
-        `  Relancer Chrome avec :  open -a "Google Chrome" --args --remote-debugging-port=${port}`,
+      `Chrome is not listening on port ${port}.\n` +
+        `  Restart Chrome with:  open -a "Google Chrome" --args --remote-debugging-port=${port}`,
     )
   }
 
   const tab = targets.find((t) => t.type === 'page' && t.url.includes(match))
   if (!tab) {
     const pages = targets.filter((t) => t.type === 'page').map((t) => t.url.slice(0, 70))
-    throw new Error(`aucun onglet ne correspond à « ${match} ».\n  Onglets ouverts :\n    ${pages.join('\n    ')}`)
+    throw new Error(`no tab matches “${match}”.\n  Open tabs:\n    ${pages.join('\n    ')}`)
   }
 
   const ws = new WebSocket(tab.webSocketDebuggerUrl)
   await new Promise((ok, ko) => {
     ws.addEventListener('open', ok, { once: true })
-    ws.addEventListener('error', () => ko(new Error('connexion DevTools refusée')), { once: true })
+    ws.addEventListener('error', () => ko(new Error('DevTools connection refused')), { once: true })
   })
 
   let seq = 0
@@ -59,27 +59,27 @@ export async function attach(match, port = CDP_PORT) {
     }
   })
 
-  // Le délai est réglable par appel : rapatrier une image de plusieurs
-  // mégaoctets en base64 depuis la page prend bien plus que trente secondes,
-  // et échouer là-dessus perdrait un rendu déjà produit et déjà payé.
-  const send = (method, params = {}, delai = 30000) =>
+  // The timeout is per call: pulling a multi-megabyte image back as base64 from
+  // the page takes far more than thirty seconds, and failing on that would lose a
+  // rendering already produced and already paid for.
+  const send = (method, params = {}, timeoutMs = 30000) =>
     new Promise((resolve, reject) => {
       const id = ++seq
       pending.set(id, resolve)
       ws.send(JSON.stringify({ id, method, params }))
       setTimeout(() => {
-        if (pending.delete(id)) reject(new Error(`${method} sans réponse après ${delai / 1000} s`))
-      }, delai)
+        if (pending.delete(id)) reject(new Error(`${method} did not answer after ${timeoutMs / 1000} s`))
+      }, timeoutMs)
     })
 
-  const evaluate = async (expression, { delai = 30000 } = {}) => {
+  const evaluate = async (expression, { timeoutMs = 30000 } = {}) => {
     const r = await send(
       'Runtime.evaluate',
       { expression, returnByValue: true, awaitPromise: true },
-      delai,
+      timeoutMs,
     )
     if (r.result?.exceptionDetails) {
-      throw new Error(r.result.exceptionDetails.text ?? 'erreur JS dans la page')
+      throw new Error(r.result.exceptionDetails.text ?? 'JS error in the page')
     }
     return r.result?.result?.value
   }
@@ -87,7 +87,7 @@ export async function attach(match, port = CDP_PORT) {
   return { evaluate, url: tab.url, close: () => ws.close() }
 }
 
-/** Le dernier message de l'assistant, tel qu'affiché. */
+/** The assistant's last message, as displayed. */
 export const JS_LAST_ASSISTANT = `
 (() => {
   const nodes = document.querySelectorAll('[data-message-author-role="assistant"]');
@@ -98,11 +98,11 @@ export const JS_LAST_ASSISTANT = `
 `
 
 /**
- * Vrai tant que la réponse est en cours de génération.
+ * True while the reply is still being generated.
  *
- * On ne se fie PAS au libellé du bouton d'arrêt : il est traduit selon la
- * langue de l'interface, et un sélecteur qui ne matche jamais fait croire
- * que la génération est finie dès le premier caractère.
+ * We do NOT trust the stop button's label: it is translated to the interface
+ * language, and a selector that never matches makes generation look finished from
+ * the very first character.
  */
 export const JS_IS_STREAMING = `
 (() => {
@@ -117,8 +117,8 @@ export const JS_IS_STREAMING = `
 `
 
 /**
- * Attente robuste : le texte a cessé de bouger.
- * Indépendante de l'interface — c'est le seul signal qui ne se traduit pas.
+ * A robust wait: the text has stopped moving.
+ * Interface-independent — the only signal that is never translated.
  */
 export async function waitForStable(page, { quietMs = 4000, maxMs = 300000, minLength = 40 } = {}) {
   const started = Date.now()
@@ -136,8 +136,8 @@ export async function waitForStable(page, { quietMs = 4000, maxMs = 300000, minL
       const streaming = await page.evaluate(JS_IS_STREAMING)
 
       if (!streaming) {
-        // Le rendu de ChatGPT cale parfois sur quelques caractères alors
-        // que la réponse est complète côté serveur. Un rechargement tranche.
+        // ChatGPT's rendering sometimes stalls on a few characters while the
+        // reply is complete server-side. A reload settles it.
         if (!reloaded && (last ?? '').length < minLength) {
           reloaded = true
           await page.evaluate('location.reload()')
@@ -147,10 +147,10 @@ export async function waitForStable(page, { quietMs = 4000, maxMs = 300000, minL
           continue
         }
 
-        // On ne rend JAMAIS un fragment. Une réponse de 18 caractères a été
-        // prise pour complète, la boucle y a lu un « #24 » et s'est arrêtée
-        // sur un objectif inventé — alors que GPT écrivait encore. Mieux vaut
-        // attendre en vain que d'agir sur une phrase coupée.
+        // We NEVER return a fragment. An 18-character reply was once taken for
+        // complete, the loop read a "#24" in it and stopped on an invented
+        // objective — while GPT was still writing. Better to wait for nothing
+        // than to act on a cut-off sentence.
         if ((last ?? '').length < minLength) {
           stableSince = null
           await new Promise((r) => setTimeout(r, 3000))
@@ -170,15 +170,15 @@ export async function waitForStable(page, { quietMs = 4000, maxMs = 300000, minL
 }
 
 /**
- * Vérifie qu'un texte est bien arrivé comme dernier message utilisateur.
- * Le retour de l'évaluation se perd quand la page bouge après le clic :
- * on ne se fie donc pas à lui, on constate le résultat.
+ * Checks that a text really landed as the last user message. The evaluation's
+ * return value is lost when the page moves after the click: so we do not trust
+ * it, we observe the result instead.
  */
 /**
- * Confirme qu'un message est bien parti. On ne compare PAS le texte brut :
- * l'interface rend le markdown, donc « ## Tour 1 » s'affiche « Tour 1 » et une
- * comparaison de préfixe échoue toujours. On cherche une signature de mots,
- * débarrassée de tout ce que le rendu peut changer.
+ * Confirms a message actually went out. We do NOT compare the raw text: the
+ * interface renders markdown, so "## Turn 1" displays as "Turn 1" and
+ * a prefix comparison always fails. We look for a word signature, stripped of
+ * everything the rendering can change.
  */
 const signature = (t) =>
   String(t)
@@ -188,11 +188,10 @@ const signature = (t) =>
     .toLowerCase()
 
 export async function confirmPosted(page, text) {
-  // Un fragment du DÉBUT, et seulement du début. L'interface replie les longs
-  // messages derrière « Afficher plus » : sur un compte rendu de 9 000
-  // caractères, seuls ~700 sont dans le DOM. Chercher au milieu, comme je le
-  // faisais, ne trouvait jamais rien et la boucle s'arrêtait sur une fausse
-  // alerte alors que le message était bien parti.
+  // A fragment from the START, and only from the start. The interface folds long
+  // messages behind "Show more": on a 9,000-character report, only ~700 are in
+  // the DOM. Searching in the middle, as this once did, never found anything and
+  // the loop stopped on a false alarm while the message had gone out fine.
   const brut = signature(text)
   const debut = Math.min(20, Math.max(0, brut.length - 40))
   const marque = JSON.stringify(brut.slice(debut, debut + 60))
@@ -220,32 +219,32 @@ export async function confirmPosted(page, text) {
 }
 
 /**
- * Joint des fichiers au message en cours de rédaction.
+ * Attaches files to the message being composed.
  *
- * Sans ça, la conversation juge sur une phrase de compte rendu — c'est-à-dire
- * sur la parole de l'exécutant. Un verdict visuel exige de voir le rendu.
+ * Without this, the conversation judges on a sentence of report — that is, on
+ * the executor's word. A visual verdict requires seeing the rendering.
  */
-export async function attachFiles(page, fichiers) {
-  if (!fichiers.length) return 0
+export async function attachFiles(page, files) {
+  if (!files.length) return 0
 
-  const charge = fichiers.map((f) => ({
-    nom: f.nom,
+  const payload = files.map((f) => ({
+    name: f.name,
     type: f.type,
     b64: f.b64,
   }))
 
   const r = await page.evaluate(`
 (async () => {
-  const fichiers = ${JSON.stringify(charge)};
+  const files = ${JSON.stringify(payload)};
   const input = document.querySelector('input[type=file]');
-  if (!input) return 'aucun champ fichier';
+  if (!input) return 'no file input';
 
   const dt = new DataTransfer();
-  for (const f of fichiers) {
+  for (const f of files) {
     const bin = atob(f.b64);
-    const oct = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) oct[i] = bin.charCodeAt(i);
-    dt.items.add(new File([oct], f.nom, { type: f.type }));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    dt.items.add(new File([bytes], f.name, { type: f.type }));
   }
 
   input.files = dt.files;
@@ -258,7 +257,7 @@ export async function attachFiles(page, fichiers) {
   return Number(r) || 0
 }
 
-/** Dépose un texte dans le composeur et l'envoie. */
+/** Drops a text into the composer and sends it. */
 export function jsPost(text) {
   const payload = JSON.stringify(text)
   return `
@@ -287,7 +286,7 @@ export function jsPost(text) {
 
   await new Promise(r => setTimeout(r, 400));
 
-  // Le bouton reste désactivé tant qu'un fichier est en cours de téléversement.
+  // The button stays disabled while a file is still uploading.
   for (let i = 0; i < 40; i++) {
     const b = document.querySelector('[data-testid="send-button"]');
     if (b && !b.disabled) break;
@@ -298,7 +297,7 @@ export function jsPost(text) {
     ?? document.querySelector('button[aria-label*="Send"]')
     ?? document.querySelector('button[aria-label*="Envoyer"]');
   if (!send) return 'bouton envoyer introuvable';
-  if (send.disabled) return 'bouton envoyer désactivé';
+  if (send.disabled) return 'send button disabled';
   send.click();
   return 'ok';
 })()
@@ -306,70 +305,83 @@ export function jsPost(text) {
 }
 
 /**
- * Extrait une consigne adressée à un harnais.
- * Format attendu dans la réponse de GPT :  @codex: … ou @claude: …
+ * Extracts an instruction addressed to a harness.
+ * Expected format in GPT's reply:  @codex: … or @claude: …
  */
 /**
  * Le verdict que la conversation prononce sur un objectif.
- * Formats acceptés :  #14 validé   ·   #14 refusé   ·   valide #14
+ * Accepted forms:  #14 validé   ·   #14 refusé   ·   valide #14
  */
 /**
- * Lit un verdict dans une réponse.
+ * Reads a verdict out of a reply.
  *
- * On prend le PREMIER verdict du texte, pas le premier motif trouvé : chercher
+ * We take the FIRST verdict in the text, not the first pattern found: searching
  * l'acceptation sur tout le message avant de chercher le refus faisait gagner
- * un « satisfait » de la ligne 200 contre un « #11 refusé » de la ligne 1. Le
- * juge prononce son verdict en tête, puis explique — c'est la tête qui compte.
+ * a "satisfait" on line 200 against a "#11 refusé" on line 1. The judge states
+ * the verdict up top, then explains — the top is what counts.
  *
- * `attendu` permet de viser un objectif précis : quand on demande le verdict du
- * chapitre #11, un verdict sur #12 dans le même message ne répond pas.
+ * `expected` lets us target one objective: when asking for chapter #11's verdict,
+ * a verdict on #12 in the same message is not an answer.
  */
-export function parseVerdict(text, { attendu = null } = {}) {
+export function parseVerdict(text, { expected = null } = {}) {
   if (!text) return null
 
-  // Le marqueur explicite prime sur toute lecture en prose. Déduire un verdict
-  // d'une phrase, c'est deviner ; `@verdict: #11 refusé` ne se devine pas.
-  // Tant que le juge le pose, il n'y a plus rien à interpréter.
-  // `\w` ne couvre pas les accents : « valid\w* » s'arrête avant le é de
-  // « validé ». Le code le documentait déjà pour `\b` ; le piège est le même.
-  const mot = '(valid|accept|refus|rejet)[a-zà-ÿ]*'
-  const marque =
-    new RegExp(`@verdict\\s*:?\\s*#?(\\d+)\\s+${mot}`, 'i').exec(text) ??
-    new RegExp(`@verdict\\s*:?\\s*${mot}\\s+#?(\\d+)`, 'i').exec(text)
+  // The explicit marker beats any reading of the prose. Inferring a verdict from
+  // a sentence is guessing; `@verdict: #11 rejected` needs no guessing. As long as
+  // the judge writes it, there is nothing left to interpret.
+  // `\w` does not cover accents: "valid\w*" stops before the é in "validé". The
+  // code already documented that for `\b`; the trap is the same.
+  const wordPattern = '(valid|accept|approv|refus|rejet|reject)[a-zà-ÿ]*'
+  const mark =
+    new RegExp(`@verdict\\s*:?\\s*#?(\\d+)\\s+${wordPattern}`, 'i').exec(text) ??
+    new RegExp(`@verdict\\s*:?\\s*${wordPattern}\\s+#?(\\d+)`, 'i').exec(text)
 
-  if (marque) {
-    const [id, mot] = /^\d+$/.test(marque[1]) ? [marque[1], marque[2]] : [marque[2], marque[1]]
-    const decision = /^(valid|accept)/i.test(mot) ? 'accept' : 'reject'
-    if (attendu != null && Number(id) !== Number(attendu)) return null
+  if (mark) {
+    const [id, word] = /^\d+$/.test(mark[1]) ? [mark[1], mark[2]] : [mark[2], mark[1]]
+    const decision = /^(valid|accept|approv)/i.test(word) ? 'accept' : 'reject'
+    if (expected != null && Number(id) !== Number(expected)) return null
     return { id: Number(id), decision, explicite: true }
   }
 
-  // \b ne fonctionne pas après un accent : on borne explicitement.
-  const fin = '(?![a-zà-ÿ])'
-  const oui = `(?:validé|valide|accepté|accepte|conforme|atteint|satisfait)${fin}`
-  const non = `(?:refusé|refuse|rejeté|rejete|insuffisant|non conforme)${fin}`
+  // \b does not work after an accent: bound it explicitly.
+  const edge = '(?![a-zà-ÿ])'
 
-  const trouves = []
-  for (const [decision, verbes] of [
-    ['accept', oui],
-    ['reject', non],
+  // BOTH languages, deliberately. The tool now addresses the judge in English, but
+  // the conversations opened before that switch are French and still hold their
+  // history — a parser that only spoke one of the two would misread half of them.
+  //
+  // Negation is handled ONCE, in one place: "non conforme", "not accepted" and
+  // "never satisfied" must all read as rejections. Listing only the positive words
+  // and hoping made a rejection read as an acceptance — both branches matched at
+  // the same index and the accept branch, pushed first, won. Found by a test.
+  const neg = '(?:non|not|never|jamais|pas)\\s+'
+  const POSITIVE = 'validé|valide|accepté|accepte|conforme|atteint|satisfait|validated|accepted|approved|met|satisfied|passes'
+  const NEGATIVE = 'refusé|refuse|rejeté|rejete|insuffisant|refused|rejected|insufficient|fails'
+
+  const yes = `(?<!${neg})(?:${POSITIVE})${edge}`
+  const no = `(?:${NEGATIVE}|${neg}(?:${POSITIVE}))${edge}`
+
+  const found = []
+  for (const [decision, verbs] of [
+    ['accept', yes],
+    ['reject', no],
   ]) {
-    for (const motif of [`#(\\d+)[^.\\n]{0,40}?${verbes}`, `${verbes}[^.\\n]{0,30}?#(\\d+)`]) {
-      for (const m of text.matchAll(new RegExp(motif, 'gi'))) {
-        trouves.push({ id: Number(m[1]), decision, ou: m.index ?? 0 })
+    for (const pattern of [`#(\\d+)[^.\\n]{0,40}?${verbs}`, `${verbs}[^.\\n]{0,30}?#(\\d+)`]) {
+      for (const m of text.matchAll(new RegExp(pattern, 'gi'))) {
+        found.push({ id: Number(m[1]), decision, at: m.index ?? 0 })
       }
     }
   }
 
-  if (!trouves.length) return null
-  trouves.sort((a, b) => a.ou - b.ou)
+  if (!found.length) return null
+  found.sort((a, b) => a.at - b.at)
 
-  if (attendu != null) {
-    const vise = trouves.find((v) => v.id === Number(attendu))
-    return vise ? { id: vise.id, decision: vise.decision } : null
+  if (expected != null) {
+    const wanted = found.find((v) => v.id === Number(expected))
+    return wanted ? { id: wanted.id, decision: wanted.decision } : null
   }
 
-  return { id: trouves[0].id, decision: trouves[0].decision }
+  return { id: found[0].id, decision: found[0].decision }
 }
 
 export function parseDirective(text) {
@@ -383,13 +395,13 @@ export function parseDirective(text) {
 }
 
 /**
- * Le juge déclare-t-il le travail terminé ? Sans marqueur, « Le chapitre est
- * terminé. » ne se distingue pas d'un commentaire, et la boucle réclamait une
+ * Does the judge declare the work finished? With no marker, "Le chapitre est
+ * terminé." is indistinguishable from a comment, and the loop kept asking for an
  * consigne en boucle alors qu'on venait de lui dire qu'il n'y en aurait plus.
  */
-export function parseFini(text) {
+export function parseDone(text) {
   if (!text) return null
   const m = /@fini\s*:?\s*(?:#?(\d+))?([^\n]*)/i.exec(text)
   if (!m) return null
-  return { id: m[1] ? Number(m[1]) : null, raison: (m[2] ?? '').trim() || null }
+  return { id: m[1] ? Number(m[1]) : null, reason: (m[2] ?? '').trim() || null }
 }

@@ -1,58 +1,64 @@
 import { base, json } from './db/index.js'
 
 /**
- * La porte de preuve. « Terminé » n'est pas un champ qu'un agent écrit, c'est
- * une condition qu'on évalue — toute transition vers `proven` passe par ici.
+ * The proof gate. "Done" is not a field an agent writes, it is a condition we
+ * evaluate — every transition to `proven` comes through here.
  *
- * Chaque règle ci-dessous existe parce qu'elle a manqué au moins une fois, et
- * que son absence a laissé passer quelque chose de faux. Les commentaires
- * disent laquelle : les retirer, c'est rouvrir la porte.
+ * Every rule below exists because it was missing at least once, and its absence
+ * let something false through. The comments say which one: removing them
+ * reopens the gate.
  */
 
-/** Types de preuve qui exigent un contact avec le réel, pas juste un build vert. */
-export const REEL = ['e2e', 'manual', 'invariant', 'screenshot', 'render']
+/** Proof types that require contact with the real world, not just a green build. */
+export const REAL_WORLD = ['e2e', 'manual', 'invariant', 'screenshot', 'render']
 
-/** Motifs d'arrêt qui exigent VRAIMENT un humain. Les autres, la boucle les lève. */
-export const ARRETS_HUMAINS = [
+/** Halt reasons that REALLY need a human. The loop clears the others itself. */
+export const HUMAN_HALTS = [
   'blast_radius',
   'no_provable_criterion',
   'invariant_regression',
   'human_request',
 ]
 
-const echec = (reason, detail) => ({ ok: false, reason, detail, ready: false })
+const refuse = (reason, detail) => ({ ok: false, reason, detail, ready: false })
 
-/** Qui a prononcé cette preuve, si c'en est une de jugement. Sinon, personne. */
-const jugePar = (e) => json.lire(e.payload, {})?.judged_by ?? null
+/** Who pronounced this proof, if it is a judgement. Otherwise, nobody. */
+const judgedBy = (e) => json.read(e.payload, {})?.judged_by ?? null
 
-/** Le critère demande-t-il de regarder une image pour être tranché ? */
-export function exigeDuVisuel(spec) {
-  return /(capture|rendu|render|screenshot|image|visuel|lisible|à l['’]écran|plan [ABC])/iu.test(
+/**
+ * Does the criterion require looking at an image to be settled?
+ *
+ * The French words stay: this matches a `proof_spec` written by a human or by
+ * the driving conversation, and those are still written in French. Dropping them
+ * would silently disable the rule on every existing objective.
+ */
+export function requiresVisual(spec) {
+  return /(capture|rendu|render|screenshot|image|visuel|visual|lisible|readable|on ?screen|à l['’]écran|plan [ABC])/iu.test(
     spec ?? '',
   )
 }
 
-export function evaluer(objectifId) {
+export function evaluateGate(objectiveId) {
   const db = base()
-  const o = db.prepare('SELECT * FROM objectives WHERE id = ?').get(objectifId)
-  if (!o) return echec('error', "Cet objectif n'existe pas.")
+  const o = db.prepare('SELECT * FROM objectives WHERE id = ?').get(objectiveId)
+  if (!o) return refuse('error', 'This objective does not exist.')
 
   if (!o.proof_spec || !o.proof_spec.trim()) {
-    return echec('no_provable_criterion', "Aucun critère de preuve n'est défini pour cet objectif.")
+    return refuse('no_provable_criterion', 'No proof criterion is defined for this objective.')
   }
 
-  // Un chapitre ne se conclut pas avant ses parties. Sans cette règle, un
-  // parent portant quelques preuves passe « prêt » alors que ses sous-objectifs
-  // sont encore ouverts.
-  const enfantsOuverts = db
+  // A chapter does not conclude before its parts. Without this rule, a parent
+  // carrying a few proofs read as "ready" while its sub-objectives were still
+  // open.
+  const openChildren = db
     .prepare("SELECT id, title FROM objectives WHERE parent_id = ? AND status NOT IN ('proven','abandoned')")
     .all(o.id)
 
-  if (enfantsOuverts.length) {
-    return echec(
+  if (openChildren.length) {
+    return refuse(
       'children_open',
-      `${enfantsOuverts.length} sous-objectif(s) encore ouvert(s) : ` +
-        enfantsOuverts.map((e) => `#${e.id} ${e.title}`).join(' · ') +
+      `${openChildren.length} sub-objective(s) still open: ` +
+        openChildren.map((e) => `#${e.id} ${e.title}`).join(' · ') +
         '.',
     )
   }
@@ -62,49 +68,49 @@ export function evaluer(objectifId) {
     .all(o.id)
 
   if (!passing.length) {
-    return echec('no_new_proof', 'Aucune preuve au verdict `pass` rattachée à cet objectif.')
+    return refuse('no_new_proof', 'No proof with a `pass` verdict is attached to this objective.')
   }
 
-  // Un critère qui exige de VOIR ne se conclut pas sur un texte. Le juge ne
-  // dispose que de ce qu'on lui transmet : sans image attachée, son « validé »
-  // porte sur le récit de l'exécutant, pas sur son travail. C'est arrivé deux
-  // fois de suite avant que cette règle existe.
-  if (exigeDuVisuel(o.proof_spec)) {
+  // A criterion that requires SEEING does not conclude on text. The judge only
+  // has what we hand over: with no image attached, its "accepted" is about the
+  // executor's account, not about its work. That happened twice in a row before
+  // this rule existed.
+  if (requiresVisual(o.proof_spec)) {
     const images = db
       .prepare("SELECT COUNT(*) n FROM evidences WHERE objective_id = ? AND type IN ('render','screenshot')")
       .get(o.id).n
 
     if (!images) {
-      return echec(
+      return refuse(
         'no_new_proof',
-        "Le critère demande de voir quelque chose, et aucune image n'est rattachée. " +
-          "Un verdict prononcé sans rendu juge le récit de la session, pas son travail.",
+        'The criterion asks to see something, and no image is attached. ' +
+          "A verdict pronounced without a rendering judges the session's story, not its work.",
       )
     }
   }
 
-  // Rayon de souffle élevé : un build vert ne suffit pas, il faut une preuve
-  // qui a touché le réel — et qui vienne du TRAVAIL, pas du jugement. Un
-  // verdict est une preuve `manual`, donc « du réel » au sens de la liste :
-  // sans cette exclusion, le juge se satisfaisait lui-même sur un objectif
-  // critique. Découvert par un test, jamais par l'usage.
+  // High blast radius: a green build is not enough, it takes a proof that
+  // touched the real world — and that comes from the WORK, not from the
+  // judgement. A verdict is a `manual` proof, therefore "real world" by the
+  // list above: without this exclusion, the judge satisfied itself on a critical
+  // objective. Found by a test, never by use.
   if (['api', 'critical'].includes(o.blast_radius)) {
-    const reelles = passing.filter((e) => REEL.includes(e.type) && jugePar(e) === null)
-    if (!reelles.length) {
-      const fournis = [...new Set(passing.map((e) => e.type))].join(', ')
-      return echec(
+    const fromWork = passing.filter((e) => REAL_WORLD.includes(e.type) && judgedBy(e) === null)
+    if (!fromWork.length) {
+      const supplied = [...new Set(passing.map((e) => e.type))].join(', ')
+      return refuse(
         'blast_radius',
-        `Rayon de souffle \`${o.blast_radius}\` : une preuve de type ${REEL.join('/')} est exigée, ` +
-          `seuls des ${fournis} ont été fournis.`,
+        `Blast radius \`${o.blast_radius}\`: a proof of type ${REAL_WORLD.join('/')} is required, ` +
+          `only ${supplied} were supplied.`,
       )
     }
   }
 
-  // Un juge a le droit de se dédire — mais sur quelque chose de NEUF. Sans
-  // cette règle, il suffisait de redemander pour transformer un refus en
-  // acceptation : refus à 12:40, acceptation à 12:49, zéro tentative et zéro
-  // preuve entre les deux. C'est l'inverse exact de ce que l'outil promet.
-  const dernierRefus = db
+  // A judge may take it back — but on something NEW. Without this rule, asking
+  // again was enough to turn a rejection into an acceptance: rejected at 12:40,
+  // accepted at 12:49, zero attempts and zero proof in between. That is the
+  // exact opposite of what the tool promises.
+  const lastRejection = db
     .prepare(
       `SELECT evidence_mark FROM halts
        WHERE objective_id = ? AND reason IN ('verdict_rejected','human_request')
@@ -112,66 +118,66 @@ export function evaluer(objectifId) {
     )
     .get(o.id)
 
-  if (dernierRefus?.evidence_mark != null) {
-    const depuis = db
+  if (lastRejection?.evidence_mark != null) {
+    const since = db
       .prepare(
         `SELECT COUNT(*) n FROM evidences
          WHERE objective_id = ? AND id > ? AND type != 'manual'`,
       )
-      .get(o.id, dernierRefus.evidence_mark).n
+      .get(o.id, lastRejection.evidence_mark).n
 
-    if (!depuis) {
-      return echec(
+    if (!since) {
+      return refuse(
         'no_new_proof',
-        "Le juge a refusé, puis accepté, sans qu'aucune preuve n'ait été produite entre les deux. " +
-          'Un avis peut changer ; il doit changer sur du neuf.',
+        'The judge rejected, then accepted, without a single proof being produced in between. ' +
+          'An opinion may change; it has to change on something new.',
       )
     }
   }
 
-  const projet = db.prepare('SELECT gate_judge FROM projects WHERE id = ?').get(o.project_id)
-  const juge = projet?.gate_judge ?? 'human'
+  const project = db.prepare('SELECT gate_judge FROM projects WHERE id = ?').get(o.project_id)
+  const judge = project?.gate_judge ?? 'human'
 
-  if (juge === 'gpt') {
-    if (!passing.some((e) => jugePar(e) === 'gpt')) {
-      // Distinction essentielle : il ne manque PAS une preuve, il manque un
-      // verdict. L'objectif est prêt, il attend son juge.
+  if (judge === 'gpt') {
+    if (!passing.some((e) => judgedBy(e) === 'gpt')) {
+      // An essential distinction: a proof is NOT missing, a verdict is. The
+      // objective is ready, it is waiting for its judge.
       return {
         ok: false,
         reason: 'awaiting_verdict',
-        detail: "Tout est là. Il ne manque que le verdict de la conversation qui pilote.",
+        detail: 'Everything is here. Only the verdict of the driving conversation is missing.',
         ready: true,
       }
     }
-  } else if (juge !== 'self') {
-    const independante = passing.some(
+  } else if (judge !== 'self') {
+    const independent = passing.some(
       (e) =>
         e.passage_id === null ||
-        jugePar(e) !== null ||
+        judgedBy(e) !== null ||
         db.prepare('SELECT harness FROM passages WHERE id = ?').get(e.passage_id)?.harness === 'human',
     )
 
-    if (!independante) {
+    if (!independent) {
       return {
         ok: false,
         reason: 'awaiting_verdict',
         detail:
-          juge === 'human'
-            ? "Tout est là. Il ne manque que ton verdict : les preuves viennent de l'exécutant, et ce projet exige que tu valides."
-            : "Tout est là. Il ne manque qu'un jugement indépendant.",
+          judge === 'human'
+            ? 'Everything is here. Only your verdict is missing: the proofs come from the executor, and this project requires you to accept them.'
+            : 'Everything is here. Only an independent judgement is missing.',
         ready: true,
       }
     }
   }
 
-  const arretOuvert = db
+  const openHalt = db
     .prepare('SELECT reason FROM halts WHERE objective_id = ? AND resolved_at IS NULL LIMIT 1')
     .get(o.id)
 
-  if (arretOuvert) {
-    return echec(
+  if (openHalt) {
+    return refuse(
       'human_request',
-      'Un arrêt reste ouvert sur cet objectif ; il doit être levé avant de conclure.',
+      'A halt is still open on this objective; it has to be cleared before concluding.',
     )
   }
 
@@ -179,54 +185,54 @@ export function evaluer(objectifId) {
 }
 
 /**
- * Un passage ne démarre que si l'on sait déjà comment on prouvera le résultat.
- * C'est la forme détectable de « je suis bloqué ».
+ * A pass only starts if we already know how the result will be proven. That is
+ * the detectable form of "I am stuck".
  */
-export function peutDemarrer(objectifId) {
+export function canStart(objectiveId) {
   const db = base()
-  const o = db.prepare('SELECT * FROM objectives WHERE id = ?').get(objectifId)
-  if (!o) return echec('error', "Cet objectif n'existe pas.")
+  const o = db.prepare('SELECT * FROM objectives WHERE id = ?').get(objectiveId)
+  if (!o) return refuse('error', 'This objective does not exist.')
 
   if (!o.proof_spec || !o.proof_spec.trim()) {
-    return echec(
+    return refuse(
       'no_provable_criterion',
-      "Impossible de démarrer : l'objectif n'énonce pas comment il sera prouvé.",
+      'Cannot start: the objective does not state how it will be proven.',
     )
   }
 
-  const bloquant = db
+  const blockingHalt = db
     .prepare(
       `SELECT reason FROM halts WHERE objective_id = ? AND resolved_at IS NULL
-       AND reason IN (${ARRETS_HUMAINS.map(() => '?').join(',')}) LIMIT 1`,
+       AND reason IN (${HUMAN_HALTS.map(() => '?').join(',')}) LIMIT 1`,
     )
-    .get(o.id, ...ARRETS_HUMAINS)
+    .get(o.id, ...HUMAN_HALTS)
 
-  if (bloquant) {
-    return echec('human_request', 'Un arrêt non levé bloque cet objectif.')
+  if (blockingHalt) {
+    return refuse('human_request', 'An uncleared halt is blocking this objective.')
   }
 
   return { ok: true, reason: null, detail: null }
 }
 
 /**
- * Piétinement : N tentatives consécutives sans preuve neuve. Une tentative
- * EMPÊCHÉE n'a pas essayé — permissions refusées, plafond d'usage, sonde de
- * diagnostic — et ne compte pas. Les compter faisait accuser la méthode alors
- * que rien n'avait été tenté.
+ * Stalling: N consecutive attempts with no new proof. A PREVENTED attempt did
+ * not try — permissions refused, usage ceiling, diagnostic probe — and does not
+ * count. Counting them made the method look at fault when nothing had been
+ * attempted at all.
  */
-export function pietine(objectifId, seuil = 2) {
+export function isStalling(objectiveId, threshold = 2) {
   const db = base()
-  const recentes = db
+  const recentPassages = db
     .prepare(
       `SELECT id FROM passages
        WHERE objective_id = ? AND ended_at IS NOT NULL AND prevented = 0
        ORDER BY started_at DESC LIMIT ?`,
     )
-    .all(objectifId, seuil)
+    .all(objectiveId, threshold)
 
-  if (recentes.length < seuil) return false
+  if (recentPassages.length < threshold) return false
 
-  return recentes.every(
+  return recentPassages.every(
     (p) =>
       db
         .prepare("SELECT COUNT(*) n FROM evidences WHERE passage_id = ? AND verdict = 'pass'")
