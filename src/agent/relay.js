@@ -72,16 +72,33 @@ export async function attach(match, port = CDP_PORT) {
       }, timeoutMs)
     })
 
-  const evaluate = async (expression, { timeoutMs = 30000 } = {}) => {
-    const r = await send(
-      'Runtime.evaluate',
-      { expression, returnByValue: true, awaitPromise: true },
-      timeoutMs,
-    )
-    if (r.result?.exceptionDetails) {
-      throw new Error(r.result.exceptionDetails.text ?? 'JS error in the page')
+  const evaluate = async (expression, { timeoutMs = 30000, retries = 1 } = {}) => {
+    // Chrome answers when it feels like it. A page that has just swallowed six
+    // attachments, or is re-rendering a nine-thousand-character reply, takes well
+    // over the default timeout — and that rejection killed an hour of work and
+    // $57 already spent, on a chapter whose verdict was never asked for. A slow
+    // page is a transient, not a reason to abandon a run: we wait longer and try
+    // again before giving up.
+    let last
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        const r = await send(
+          'Runtime.evaluate',
+          { expression, returnByValue: true, awaitPromise: true },
+          attempt === 0 ? timeoutMs : timeoutMs * 3,
+        )
+        if (r.result?.exceptionDetails) {
+          throw new Error(r.result.exceptionDetails.text ?? 'JS error in the page')
+        }
+        return r.result?.result?.value
+      } catch (e) {
+        last = e
+        // A JS error inside the page will fail identically every time; only a
+        // timeout is worth a second attempt.
+        if (!/did not answer/.test(String(e.message))) throw e
+      }
     }
-    return r.result?.result?.value
+    throw last
   }
 
   return { evaluate, url: tab.url, close: () => ws.close() }

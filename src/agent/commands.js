@@ -1034,7 +1034,7 @@ const commands = {
     for (let turn = 1; turn <= max; turn++) {
       // 1. Wait for GPT to finish writing — we trust the text going still, not
       //    the label on a translated button.
-      const message = await waitForStable(page)
+      const message = await readJudge(page)
 
       if (!message || message === lastSeen) {
         console.log(`  turn ${turn} — nothing new from GPT. Stopping.`)
@@ -1104,7 +1104,7 @@ const commands = {
       if (!willPost) {
         console.log(`\n    ── what would be posted ──\n${indent(report)}\n`)
       } else {
-        const posted = await page.evaluate(jsPost(report)).catch(() => undefined)
+        const posted = await postToJudgeWrapped(page).evaluate(jsPost(report)).catch(() => undefined)
 
         // The return value can be lost if the page moves: observe instead.
         const landed = await confirmPosted(page, report)
@@ -1154,7 +1154,7 @@ const commands = {
       return
     }
 
-    await page.evaluate(jsPost(texte))
+    await postToJudgeWrapped(page).evaluate(jsPost(texte))
     const ok = await confirmPosted(page, texte).catch(() => false)
     console.log(ok ? '  ↑ state posted into the conversation\n' : '  ⚠ send not confirmed — check the page\n')
   },
@@ -1266,6 +1266,19 @@ const commands = {
     if (inbox && Object.keys(inbox).length) {
       w('### The tools available to the executor')
       w('Name them in the mission when it needs them — without that, it improvises.')
+      w()
+      // Measured, not guessed: a session's context saturates near the context
+      // window after roughly 80 tool calls, and every call past that point re-reads
+      // a full window. One pass made 393 requests and consumed 89 M tokens, 97 % of
+      // it cache re-reads. The cost is `requests × window`, so the only lever that
+      // moves is the NUMBER of round trips — and the judge is the one who writes
+      // the mission that makes them.
+      w('**Ask for batched calls.** A session\'s context saturates after roughly eighty')
+      w('tool calls, and every call past that point re-reads the whole window. Cost is')
+      w('the number of round trips, not their size. So when a mission needs many')
+      w('operations of the same kind, require them in one batched call — `batch_execute`')
+      w('over fifty separate `execute_code`, one query returning a list over fifty')
+      w('queries. Say it in the mission: the executor will not do it on its own.')
       for (const [capacite, outils] of Object.entries(inbox)) {
         const dispo = outils.filter((o) => o.joignable !== 'absent')
         if (!dispo.length) continue
@@ -1974,7 +1987,7 @@ const commands = {
           console.log(`\n  All ${children.length} sub-objectives are proven, but the chapter does not conclude:`)
           console.log(`  ${gate.detail ?? gate.reason}\n`)
 
-          await page
+          await postToJudgeWrapped(page)
             .evaluate(
               jsPost(
                 `The ${children.length} sub-objectives of chapter **#${chapterId} ${chapter.title}** are proven, ` +
@@ -2006,7 +2019,7 @@ const commands = {
           console.log(`  Fetching the chapter's verdict from the judge.\n`)
 
           const proofs = (chapter.evidences ?? []).length
-          await page
+          await postToJudgeWrapped(page)
             .evaluate(
               jsPost(
                 `All ${children.length} sub-objectives of chapter **#${chapterId} ${chapter.title}** are proven:\n` +
@@ -2020,7 +2033,7 @@ const commands = {
             .catch(() => {})
 
           // We wait for its verdict like any other: same loop, not a special case.
-          const reponse = await waitForStable(page)
+          const reponse = await readJudge(page)
           const v = reponse ? parseVerdict(reponse) : null
 
           if (v && Number(v.id) === Number(chapterId)) {
@@ -2055,7 +2068,7 @@ const commands = {
       }
 
       // 2. Ce que dit GPT.
-      const message = await waitForStable(page)
+      const message = await readJudge(page)
 
       // An UNCHANGED message is not silence: it may carry a mission that was never
       // executed. Atlas stopped on "GPT is not answering any more" while its last
@@ -2132,7 +2145,7 @@ const commands = {
       if (!directive) {
         console.log(`  turn ${turn} — no instruction in the reply. Asking again.`)
         if (willPost) {
-          await page.evaluate(
+          await postToJudgeWrapped(page).evaluate(
             jsPost(
               'No usable instruction in your reply. End with `@claude:` or `@codex:` alone on its line, followed by the full mission citing the target objective number — everything after that marker is passed to the harness word for word. Or say explicitly that the chapter is finished.',
             ),
@@ -2161,7 +2174,7 @@ const commands = {
           `\n  STOP — $${spentSinceProgress.toFixed(2)} spent without a single objective being proven.\n  This is no longer a question of means: the approach is not converging.\n`,
         )
         if (willPost) {
-          await page
+          await postToJudgeWrapped(page)
             .evaluate(
               jsPost(
                 `$${spentSinceProgress.toFixed(2)} spent without any objective being proven. The loop stops: this is not a lack of budget, it is that the approach is not converging. The method, the proof criterion, or the breakdown has to change.`,
@@ -2176,7 +2189,7 @@ const commands = {
       if (budget && remaining < 15) {
         console.log(`\n  STOP — $${remaining.toFixed(2)} left, not enough for a turn. Spent $${spent.toFixed(2)}.\n`)
         if (willPost) {
-          await page
+          await postToJudgeWrapped(page)
             .evaluate(
               jsPost(
                 `Budget nearly exhausted: $${spent.toFixed(2)} spent of $${budget}. There is not enough left to run a full turn, so the loop stops here rather than cutting a session off mid-work.`,
@@ -2228,31 +2241,59 @@ const commands = {
         `    → ${outcome.verdict}${outcome.denied?.length ? ` · ${outcome.denied.length} tool(s) refused` : ''} · total $${spent.toFixed(2)}`,
       )
 
+      // Saturation, said out loud. A session's context reaches the window after
+      // roughly 150 requests; past that every call re-reads a full window, so the
+      // last hundred requests cost as much as the first three hundred. Measured:
+      // 393 requests → 89 M tokens, 97 % of it cache re-reads. We do not stop the
+      // loop for it — the work may well be worth it — but nobody should discover
+      // this in a bill.
+      const requests = Number(passage?.requests ?? 0)
+      if (requests > 150) {
+        const perRequest = Math.round(Number(passage?.tokens ?? 0) / requests / 1000)
+        console.log(
+          `    ! ${requests} requests, ~${perRequest} k of context re-read each — this session saturated its window.` +
+            `\n      The mission asks for too many round trips; batched calls would cost a fraction.`,
+        )
+      }
+
       // Absorbing a stall is useful once or twice — GPT changes angle. Past that,
       // insisting costs without adding anything: that is the moment to change
       // approach, not to start over.
       // Usage ceiling reached: that is not a task failure, it is a wait. We sleep
       // until the reset rather than burning turns.
+      // A usage ceiling is not a task failure, it is a wait — and it is OUR
+      // plumbing, not the judge's business. Nothing is said to the conversation:
+      // it cannot act on it, and telling it invites exactly what we would then
+      // have to forbid — a verdict on a turn that never ran, a change of approach,
+      // a round trip that teaches nobody anything.
       if (outcome.limitReset) {
-        const pendingAuth = outcome.limitReset - Date.now()
-        const minutes = Math.ceil(pendingAuth / 60000)
+        const announced = Math.max(0, outcome.limitReset - Date.now())
 
-        if (pendingAuth > 0 && pendingAuth < 6 * 3600 * 1000) {
-          console.log(`\n  PLAFOND D'USAGE — reprise dans ${minutes} min. La boucle attend.\n`)
-          if (willPost) {
-            await page
-              .evaluate(
-                jsPost(
-                  `Plafond d'usage atteint sur le harnais. Ce n'est pas un echec de la tache : la boucle attend ${minutes} minutes et reprendra la meme consigne. Ne change pas d'approche pour cette raison.`,
-                ),
-              )
-              .catch(() => {})
+        // We never sleep on the announced hour. A ceiling lifts for reasons that
+        // hour cannot know — a different account, an upgraded plan, an early
+        // reset. The loop once slept three hours through a ceiling that had gone
+        // in five minutes, and nothing could wake it. So: probe cheaply, cap the
+        // wait, and retry regardless. A retry against a ceiling still standing
+        // costs nothing — the harness refuses before doing any work.
+        const CAP = 30 * 60 * 1000
+        const waitMs = Math.min(announced, CAP)
+        console.log(
+          `\n  USAGE CEILING — announced in ${Math.ceil(announced / 60000)} min. ` +
+            `Probing every 2 min, retrying in ${Math.ceil(waitMs / 60000)} min at the latest.\n`,
+        )
+
+        const deadline = Date.now() + waitMs
+        while (Date.now() < deadline) {
+          await pause(Math.min(120000, deadline - Date.now()))
+          if (await harnessAvailable(directive.harness)) {
+            console.log('  ceiling lifted — resuming\n')
+            break
           }
-          await pause(pendingAuth + 30000)
-          lastSeen = null
-          turn -= 1
-          continue
         }
+
+        lastSeen = null
+        turn -= 1
+        continue
       }
 
       // A turn that wrote files is not sterile, even if git does not track them
@@ -2265,7 +2306,7 @@ const commands = {
       if (sterile >= sterileTurns) {
         console.log(`\n  STOP — ${sterileTurns} turns without a single file moving. This is no longer a problem to absorb.\n`)
         if (willPost) {
-          await page
+          await postToJudgeWrapped(page)
             .evaluate(
               jsPost(
                 'Three consecutive turns without a single file moving. The loop stops: this is no longer a one-off obstacle, it is the approach failing to take. A human decision is needed — change method, revisit the proof criterion, or give this objective up.',
@@ -2326,7 +2367,7 @@ const commands = {
 
       const report = buildReport(turn, directive, { ...outcome, joints })
       if (willPost) {
-        await page.evaluate(jsPost(report)).catch(() => {})
+        await postToJudgeWrapped(page).evaluate(jsPost(report)).catch(() => {})
         const landed = await confirmPosted(page, report)
         console.log(landed ? '    ↑ posted' : '    !  posting not confirmed')
         if (!landed) break
@@ -2338,7 +2379,7 @@ const commands = {
       if (budget && spent >= budget) {
         console.log(`\n  STOP — budget of $${budget} reached (spent $${spent.toFixed(2)}).\n`)
         if (willPost) {
-          await page.evaluate(
+          await postToJudgeWrapped(page).evaluate(
             jsPost(`Budget of $${budget} reached after ${turn} turns. The loop stops here; the chapter is not closed.`),
           )
         }
@@ -2354,7 +2395,7 @@ const commands = {
       if (outcome.stop && needsHuman) {
         console.log(`\n  ARRÊT — ${outcome.stopReason}\n`)
         if (willPost) {
-          await page
+          await postToJudgeWrapped(page)
             .evaluate(
               jsPost(
                 `The loop stops: ${outcome.stopReason}. A human decision is needed before going on — either clear the halt, or state the proof criterion, or aim at another objective.`,
@@ -2676,7 +2717,10 @@ function sessionDiagnostics(sinceMs, harness = 'claude') {
     }
   }
 
-  return { denied: [...denied], lastMessage, sessionId, limitReset: parseLimitReset(lastMessage) }
+  // `tools` was built and then dropped on the floor: the field existed, the
+  // column existed, and every row was NULL. Which is why nobody could say where
+  // four hundred tool calls went, on the passes that cost the most.
+  return { denied: [...denied], lastMessage, sessionId, tools, limitReset: parseLimitReset(lastMessage) }
 }
 
 /**
@@ -3162,6 +3206,75 @@ function extraireResultats(said) {
   return { scores, chemins: [...new Set(chemins)], atteint }
 }
 
+/**
+ * The same surface as `page`, whose `evaluate` reports a failure instead of
+ * throwing. Used only for posting: reading a reply must still fail loudly, since
+ * acting on a message we could not read would be worse than stopping.
+ */
+const postToJudgeWrapped = (page) => ({
+  evaluate: (expression) =>
+    page.evaluate(expression, { timeoutMs: 120000 }).catch((e) => {
+      console.log(`    ! the message could not be posted (${String(e.message).slice(0, 70)}) — the loop carries on`)
+      return null
+    }),
+})
+
+/**
+ * Is the harness answering again? Asked with the cheapest possible question — a
+ * prompt whose reply is one word, no tools, no repository access.
+ *
+ * The point is that a ceiling does not only lift at the announced hour: a
+ * different account, an upgraded plan, an early reset. Waiting on the clock made
+ * the loop sleep three hours through a ceiling that had gone in five minutes,
+ * with no way for anyone to wake it.
+ */
+async function harnessAvailable(harness) {
+  try {
+    const [bin, args] =
+      harness === 'codex'
+        ? [harnessBin('codex'), ['exec', '--skip-git-repo-check', 'Reply with the single word: ok']]
+        : [
+            harnessBin('claude'),
+            ['-p', 'Reply with the single word: ok', '--disallowed-tools', 'Bash', 'Write', 'Edit', 'Read'],
+          ]
+
+    const out = execFileSync(bin, args, {
+      encoding: 'utf8',
+      timeout: 120000,
+      maxBuffer: 1024 * 1024,
+      env: { ...process.env, ORCHESTRATOR_MANAGED: '1' },
+    })
+    // A ceiling answers with its own message rather than failing outright, so a
+    // successful exit is not enough — the text has to be free of it.
+    return !parseLimitReset(out)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Reads the judge's latest reply, tolerating a browser that stalls.
+ *
+ * Chrome is shared by every loop running at once. When it hangs — a page
+ * re-rendering a nine-thousand-character reply, six attachments landing at once —
+ * `Runtime.evaluate` never answers, and an unhandled rejection killed EVERY loop
+ * at the same second. Hours of work, twice.
+ *
+ * A browser that stalls is a transient. We wait, we try again, and we only give
+ * up on the turn — never on the run.
+ */
+async function readJudge(page, attempts = 3) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await readJudge(page)
+    } catch (e) {
+      console.log(`    ! the browser did not answer (${String(e.message).slice(0, 50)}) — retry ${i + 1}/${attempts}`)
+      await pause(15000)
+    }
+  }
+  return null
+}
+
 function buildReport(turn, directive, outcome) {
   const lines = [
     `## Turn ${turn} — objective #${outcome.objectiveId ?? '?'}`,
@@ -3205,16 +3318,7 @@ function buildReport(turn, directive, outcome) {
     lines.push(`Tracked files modified (${outcome.changed.length}): ${outcome.changed.slice(0, 12).join(', ')}${outcome.changed.length > 12 ? '…' : ''}`)
   } else if (!outcome.produits?.length) {
     lines.push(
-      outcome.limitReset
-        ? 'No file modified — the session could not work, see the ceiling below.'
-        : 'No file modified, no deliverable produced.',
-    )
-  }
-
-  if (outcome.limitReset) {
-    lines.push(
-      '',
-      'USAGE CEILING — the harness refused the session before it began. This is **not** a task failure and it is not grounds for rejection: nothing was attempted. Do not change approach because of it, and do not pronounce a verdict on this turn. The loop waits for the reset and will replay the same instruction.',
+      'No file modified, no deliverable produced.',
     )
   }
 
