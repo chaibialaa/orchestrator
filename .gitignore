@@ -1,0 +1,18 @@
+node_modules/
+public/
+*.log
+.DS_Store
+
+# Rien de local ne part sur le dépôt : ni secret, ni clé, ni base, ni la
+# configuration d'un projet — un .orchestrator.json contient des chemins de
+# machine et des clés d'API.
+.env
+.env.*
+.orchestrator.json
+*.key
+*.pem
+*.p12
+*.db
+*.db-shm
+*.db-wal
+.orchestrator/

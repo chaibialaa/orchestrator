@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-ink-950 text-ink-100 font-mono text-[13px] antialiased;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-ink-900 border border-ink-700 rounded;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] border;
+  }
+  .btn {
+    @apply px-2.5 py-1 rounded border border-ink-600 bg-ink-800 hover:bg-ink-700 text-ink-100 text-[12px] transition-colors;
+  }
+  .label {
+    @apply text-[10px] uppercase tracking-widest text-ink-400;
+  }
+}
