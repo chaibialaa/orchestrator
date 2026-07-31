@@ -1,5 +1,7 @@
 import express from 'express'
-import { existsSync, statSync, createReadStream } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+const { X_OK } = constants
+import { existsSync, statSync, createReadStream, accessSync, constants } from 'node:fs'
 import { resolve as path, join, extname, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { base, json, nowStamp } from './db/index.js'
@@ -1081,6 +1083,121 @@ export function createServer() {
    * it was visible anywhere but a log file: that is this route's whole reason to
    * exist.
    */
+  // ---- setup ---------------------------------------------------------------
+
+  const setting = (key) => db().prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value ?? null
+
+  const setSetting = (key, value) =>
+    db()
+      .prepare(
+        `INSERT INTO settings (key, value, updated_at) VALUES (@key, @value, @now)
+         ON CONFLICT(key) DO UPDATE SET value = @value, updated_at = @now`,
+      )
+      .run({ key, value, now: nowStamp() })
+
+  /**
+   * Where this harness actually is on this machine. Asked of the shell, never of
+   * the reader.
+   *
+   * The PATH is not the whole story: Codex installs under ~/.codex and is not on
+   * it, so a PATH-only probe reported "not installed" about a harness with
+   * fourteen advancing passes to its name. A previous check recorded the real
+   * path — we try that too, and confirm it is still executable.
+   */
+  const binaryAt = (name) => {
+    if (/^[\w.-]+$/.test(name)) {
+      try {
+        const found = execFileSync('/bin/sh', ['-c', `command -v ${name} 2>/dev/null`], {
+          encoding: 'utf8',
+          timeout: 3000,
+        }).trim().split('\n')[0]
+        if (found) return found
+      } catch {
+        /* not on the PATH — keep looking */
+      }
+    }
+    const remembered = db()
+      .prepare("SELECT last_detail FROM agents WHERE name = ? AND reach = 'cli' AND last_status = 'ok'")
+      .get(name)?.last_detail
+    if (remembered && existsSync(remembered)) {
+      try {
+        accessSync(remembered, X_OK)
+        return remembered
+      } catch {
+        return null
+      }
+    }
+    return null
+  }
+
+  /**
+   * The state of the installation, measured.
+   *
+   * Every line here is a probe, not a stored answer. A walkthrough that asked
+   * "have you installed Claude Code?" and believed the reply would be a form,
+   * and the first thing to go stale — the value of asking is that the tool goes
+   * and looks.
+   */
+  api.get('/setup', async (_req, res) => {
+    const port = 9222
+    let browser = { listening: false, judgeTab: null }
+    try {
+      const tabs = await (await fetch(`http://127.0.0.1:${port}/json`, {
+        signal: AbortSignal.timeout(2500),
+      })).json()
+      browser = {
+        listening: true,
+        judgeTab: tabs.find((t) => t.type === 'page' && String(t.url).includes('chatgpt.com'))?.url ?? null,
+      }
+    } catch {
+      /* not listening: that IS the answer */
+    }
+
+    const projects = db()
+      .prepare('SELECT id, slug, name, repo_path, judge_url FROM projects ORDER BY id')
+      .all()
+      .map((p) => ({
+        slug: p.slug,
+        name: p.name,
+        repo_path: p.repo_path,
+        repo_exists: Boolean(p.repo_path && existsSync(p.repo_path)),
+        has_judge: Boolean(p.judge_url),
+        allowed_tools: db()
+          .prepare(
+            "SELECT COUNT(*) n FROM permissions WHERE project_id = ? AND harness = 'claude' AND decision = 'allow'",
+          )
+          .get(p.id).n,
+      }))
+
+    res.json({
+      controller: setting('controller'),
+      walkthrough_done: setting('walkthrough_done') === '1',
+      harnesses: {
+        claude: binaryAt('claude'),
+        codex: binaryAt('codex'),
+      },
+      browser: { ...browser, port },
+      projects,
+      storages: db().prepare('SELECT COUNT(*) n FROM storages WHERE enabled = 1').get().n,
+      // A worker is what actually carries out anything asked from this screen.
+      workers_seen: db()
+        .prepare("SELECT COUNT(DISTINCT machine) n FROM runs WHERE machine IS NOT NULL AND taken_at > datetime('now','-1 day')")
+        .get().n,
+    })
+  })
+
+  api.patch('/setup', (req, res) => {
+    const b = req.body ?? {}
+    if ('controller' in b) {
+      if (b.controller !== null && !['claude', 'codex', 'none'].includes(b.controller)) {
+        throw new Rejected('Unknown controller: claude, codex or none.')
+      }
+      setSetting('controller', b.controller)
+    }
+    if ('walkthrough_done' in b) setSetting('walkthrough_done', b.walkthrough_done ? '1' : '0')
+    res.json({ ok: true })
+  })
+
   api.get('/blockers', (_req, res) => res.json(blockers()))
 
   // ---- stockages distants -------------------------------------------------
@@ -1850,6 +1967,45 @@ export function createServer() {
       deny: lines.filter((l) => l.decision === 'deny').map((l) => l.pattern),
       ask: lines.filter((l) => l.decision === 'ask').map((l) => l.pattern),
     })
+  })
+
+  /**
+   * Copy one project's allowed list onto another.
+   *
+   * Seeding a list by hand is sixty decisions taken one at a time, and the cost
+   * of getting it wrong is silent: a session simply refuses every call it needs
+   * and bills for the refusals. A project that already works is the only honest
+   * starting point — better than a list invented here, which would be a guess
+   * dressed as a default.
+   *
+   * Denials are copied too. Copying only the permissions would quietly widen
+   * what the source project allows.
+   */
+  api.post('/projects/:slug/permissions/copy', (req, res) => {
+    const target = projectBy(req.params.slug)
+    const source = projectBy(String(req.body?.from ?? ''))
+    if (source.id === target.id) throw new Rejected('A project cannot be copied onto itself.')
+
+    const rows = db()
+      .prepare('SELECT harness, pattern, label, decision, note FROM permissions WHERE project_id = ?')
+      .all(source.id)
+    if (!rows.length) throw new Rejected(`${source.name} has no rules to copy.`)
+
+    // Existing rules win: this fills a gap, it does not overwrite a decision
+    // someone already took on the target.
+    const insert = db().prepare(
+      `INSERT INTO permissions (project_id, harness, pattern, label, decision, note)
+       SELECT @project_id, @harness, @pattern, @label, @decision, @note
+       WHERE NOT EXISTS (
+         SELECT 1 FROM permissions WHERE project_id = @project_id AND harness = @harness AND pattern = @pattern
+       )`,
+    )
+    let added = 0
+    db().transaction(() => {
+      for (const r of rows) added += insert.run({ ...r, project_id: target.id }).changes
+    })()
+
+    res.json({ added, from: source.slug, skipped: rows.length - added })
   })
 
   api.patch('/permissions/:id', (req, res) => {

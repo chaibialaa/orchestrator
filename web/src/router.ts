@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import DashboardView from './views/DashboardView.vue'
 import ConfigView from './views/ConfigView.vue'
+import SetupView from './views/SetupView.vue'
 import ToolsView from './views/ToolsView.vue'
 import AnalyseView from './views/AnalyseView.vue'
 import PlanView from './views/PlanView.vue'
@@ -14,6 +15,7 @@ export const router = createRouter({
   routes: [
     { path: '/', name: 'dashboard', component: DashboardView },
     { path: '/tools', name: 'tools', component: ToolsView },
+    { path: '/setup', name: 'setup', component: SetupView },
     { path: '/config', name: 'config', component: ConfigView },
     { path: '/p/:slug', name: 'objectives', component: ObjectivesView, props: true },
     { path: '/p/:slug/plan', name: 'plan', component: PlanView, props: true },

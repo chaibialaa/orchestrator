@@ -1,16 +1,24 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { api, type Project } from './api'
 
 const route = useRoute()
+const router = useRouter()
 const projects = ref<Project[]>([])
 
 onMounted(async () => {
   try {
     projects.value = await api.projects()
-  } catch (e) {
+  } catch {
     projects.value = []
+  }
+
+  // An empty tool explains itself once. It never takes the page over again: a
+  // walkthrough that reappears is a walkthrough you learn to click past.
+  if (!projects.value.length && route.name === 'dashboard') {
+    const setup = await api.setup().catch(() => null)
+    if (setup && !setup.walkthrough_done) router.replace('/setup')
   }
 })
 </script>
@@ -54,6 +62,12 @@ onMounted(async () => {
             class="hover:text-ink-100"
             :class="route.name === 'tools' ? 'text-ink-100' : ''"
             >tools</RouterLink
+          >
+          <RouterLink
+            to="/setup"
+            class="hover:text-ink-100"
+            :class="route.name === 'setup' ? 'text-ink-100' : ''"
+            >setup</RouterLink
           >
           <RouterLink
             to="/config"

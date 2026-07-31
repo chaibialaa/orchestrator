@@ -343,3 +343,12 @@ CREATE TABLE IF NOT EXISTS runs (
   taken_at     TEXT,
   ended_at     TEXT
 );
+
+-- Choices that belong to the installation rather than to a project: which AI the
+-- reader talks to in order to drive all this, whether the walkthrough has been
+-- gone through. One row per key, so a new one costs a migration of nothing.
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);

@@ -267,6 +267,24 @@ export type TreeNode = {
   attempts: TreeAttempt[]
 }
 
+/** The state of the installation, measured on request — never a stored answer. */
+export interface Setup {
+  controller: 'claude' | 'codex' | 'none' | null
+  walkthrough_done: boolean
+  harnesses: { claude: string | null; codex: string | null }
+  browser: { listening: boolean; judgeTab: string | null; port: number }
+  projects: {
+    slug: string
+    name: string
+    repo_path: string | null
+    repo_exists: boolean
+    has_judge: boolean
+    allowed_tools: number
+  }[]
+  storages: number
+  workers_seen: number
+}
+
 /** A run the interface asked for; a local worker carries it out. */
 export interface Run {
   id: number
@@ -474,6 +492,15 @@ export const api = {
   /** Clear the open halts of one KIND on an objective — `resolveHalt` above takes an id. */
   clearHalts: (objectiveId: number, reason: string) =>
     http.post(`/objectives/${objectiveId}/halts/resolve`, { reason }).then((r) => r.data),
+
+  setup: () => http.get<Setup>('/setup').then((r) => r.data),
+  /** Fill a project's empty rule list from one that already works. Existing rules win. */
+  copyPermissions: (slug: string, from: string) =>
+    http
+      .post<{ added: number; from: string; skipped: number }>(`/projects/${slug}/permissions/copy`, { from })
+      .then((r) => r.data),
+  saveSetup: (payload: { controller?: string; walkthrough_done?: boolean }) =>
+    http.patch('/setup', payload).then((r) => r.data),
 
   updateProject: (slug: string, payload: Partial<Project>) =>
     http.patch<Project>(`/projects/${slug}`, payload).then((r) => r.data),
