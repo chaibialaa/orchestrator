@@ -7,7 +7,7 @@
     color-scheme: dark;
   }
   body {
-    @apply bg-ink-950 text-ink-100 font-mono text-[13px] antialiased;
+    @apply bg-ink-950 text-ink-100 font-sans text-[13px] antialiased;
   }
 }
 
@@ -23,5 +23,9 @@
   }
   .label {
     @apply text-[10px] uppercase tracking-widest text-ink-400;
+  }
+  /* Anything the machine measured: ids, paths, counts, hashes. */
+  .num {
+    @apply font-mono tabular-nums;
   }
 }

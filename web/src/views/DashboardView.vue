@@ -47,11 +47,25 @@ const breachedInvariants = computed(
   () => data.value?.invariants.filter((i) => i.last_status === 'breached') ?? [],
 )
 
+/**
+ * One question, asked once: is anything waiting on a person?
+ *
+ * Verdicts, halts and breached measurements used to be three sections with three
+ * headings and three paragraphs. They are the same question, and splitting them
+ * made the answer something the reader had to assemble.
+ */
+const needsYou = computed(
+  () =>
+    (review.value?.ready.length ?? 0) +
+    (data.value?.open_halts.length ?? 0) +
+    breachedInvariants.value.length,
+)
+
 /** decimal(20,4) arrives with trailing zeros: we do not show them. */
 function num(v: string | null) {
   if (v === null) return '—'
   const n = Number(v)
-  return Number.isFinite(n) ? n.toLocaleString('fr-FR', { maximumFractionDigits: 4 }) : v
+  return Number.isFinite(n) ? n.toLocaleString('en-US', { maximumFractionDigits: 4 }) : v
 }
 
 function ago(iso: string | null) {
@@ -63,7 +77,7 @@ function ago(iso: string | null) {
   return `${Math.round(s / 86400)} d ago`
 }
 
-const statusOrder = ['blocked', 'in_progress', 'ready', 'draft', 'proven'] as const
+const statusOrder = ['proven', 'in_progress', 'blocked', 'ready', 'draft'] as const
 
 function barSegments(p: Dashboard['projects'][number]) {
   const total = p.total_objectives || 1
@@ -74,11 +88,12 @@ function barSegments(p: Dashboard['projects'][number]) {
 }
 
 const segColor: Record<string, string> = {
-  blocked: 'bg-halt',
+  proven: 'bg-proof',
   in_progress: 'bg-run',
-  ready: 'bg-run/40',
-  draft: 'bg-ink-400/50',
-  proven: 'bg-proof' }
+  blocked: 'bg-halt',
+  ready: 'bg-ink-600',
+  draft: 'bg-ink-700',
+}
 </script>
 
 <template>
@@ -87,88 +102,74 @@ const segColor: Record<string, string> = {
     The API is not responding — {{ error }}
   </div>
 
-  <div v-else-if="data" class="space-y-7">
-    <section class="card p-4 border-ink-800">
-      <h1 class="text-ink-100 text-[15px]">Overview</h1>
-      <p class="text-ink-400 mt-1.5 leading-relaxed max-w-3xl">
-        Every tracked project, ordered by what needs a decision from you. An objective is only
-        “done” once proof has been produced and accepted — everything else is work in progress,
-        not work finished.
+  <div v-else-if="data" class="space-y-8">
+    <!-- One line of orientation, and the totals as context rather than as subject.
+         Four large number cards competed with the things that actually need a
+         decision; they belong in the margin. -->
+    <header class="flex items-end gap-6 flex-wrap border-b border-ink-800 pb-4">
+      <div class="flex-1 min-w-[16rem]">
+        <h1 class="text-ink-100 text-[17px]">Overview</h1>
+        <p class="text-ink-400 mt-1">
+          An objective is done only once proof has been produced and accepted.
+        </p>
+      </div>
+
+      <dl class="flex items-end gap-7 text-[12px]">
+        <div>
+          <dt class="label">Verified</dt>
+          <dd class="num text-[18px] text-ink-100 mt-0.5">
+            {{ t!.proven }}<span class="text-ink-600 text-[13px]">/{{ t!.objectives }}</span>
+          </dd>
+        </div>
+        <div>
+          <dt class="label">Attempts</dt>
+          <dd class="num text-[18px] text-ink-100 mt-0.5">{{ t!.passages }}</dd>
+        </div>
+        <div>
+          <dt class="label">Spent</dt>
+          <dd class="num text-[18px] text-ink-100 mt-0.5">${{ t!.cost_usd.toFixed(0) }}</dd>
+        </div>
+        <div>
+          <dt class="label">Tokens</dt>
+          <dd class="num text-[18px] text-ink-100 mt-0.5">{{ formatTokens(t!.tokens) }}</dd>
+        </div>
+      </dl>
+    </header>
+
+    <!-- ═══ THE ONLY PART THAT ASKS SOMETHING OF YOU ═══ -->
+    <section>
+      <h2 class="label mb-3">
+        Needs you
+        <span v-if="needsYou" class="text-halt normal-case tracking-normal text-[12px] ml-1"
+          >— {{ needsYou }}</span
+        >
+      </h2>
+
+      <p v-if="!needsYou" class="text-ink-500 text-[12px]">
+        Nothing. The loop handles what it can handle on its own.
       </p>
-    </section>
 
-    <!-- Before the numbers: what stops progress. A counter going up never tells
-         you a loop has been spinning on nothing for an hour. -->
-    <Blockers />
-
-    <!-- Totals -->
-    <section class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-      <div class="card p-3.5" :class="t!.awaiting_human ? 'border-halt/40' : ''">
-        <div class="label">Waiting on you</div>
-        <div class="text-2xl mt-1" :class="t!.awaiting_human ? 'text-halt' : ''">
-          {{ t!.awaiting_human }}
-        </div>
-        <div class="text-ink-600 text-[11px] mt-2">
-          {{ t!.awaiting_human ? 'unresolved halts' : 'nothing is waiting on you' }}
-        </div>
-      </div>
-
-      <div class="card p-3.5">
-        <div class="label">Verified objectives</div>
-        <div class="text-2xl mt-1">
-          {{ t!.proven }}<span class="text-ink-600 text-base">/{{ t!.objectives }}</span>
-        </div>
-        <div class="h-1 bg-ink-800 rounded mt-2 overflow-hidden">
-          <div
-            class="h-full bg-proof transition-all"
-            :style="{ width: `${t!.objectives ? (t!.proven / t!.objectives) * 100 : 0}%` }"
-          />
-        </div>
-      </div>
-
-      <div class="card p-3.5">
-        <div class="label">Usage</div>
-        <div class="text-2xl mt-1">{{ formatTokens(t!.tokens) }}</div>
-        <div class="text-ink-600 text-[11px] mt-2">
-          tokens · {{ t!.requests }} requests ·
-          <span class="text-ink-400">${{ t!.cost_usd.toFixed(2) }}</span>
-        </div>
-      </div>
-
-      <div class="card p-3.5">
-        <div class="label">Work done</div>
-        <div class="text-2xl mt-1">{{ t!.passages }}</div>
-        <div class="text-ink-600 text-[11px] mt-2 flex flex-wrap gap-1 items-center">
-          attempts
-          <Chips v-for="h in data.harness_split" :key="h.harness" kind="harness" :value="h.harness" />
-        </div>
-      </div>
-    </section>
-
-    <ActivityFeed compact />
-
-    <!-- Your verdict -->
-    <section v-if="review?.ready.length">
-      <h2 class="text-proof text-[14px] mb-1">Ready — only your verdict is missing — {{ review.ready.length }}</h2>
-      <p class="text-ink-400 mb-3 max-w-3xl">
-        The work is done and the proof is there. An objective never declares itself finished:
-        this is the one move the loop never makes for you.
-      </p>
-      <div class="space-y-2.5">
-        <div v-for="o in review.ready" :key="o.id" class="card p-4 border-proof/35 bg-proof/[0.04]">
+      <div v-else class="space-y-2.5">
+        <!-- Verdicts: everything is there, only the judgement is missing. -->
+        <article
+          v-for="o in review?.ready ?? []"
+          :key="`v${o.id}`"
+          class="card p-4 border-proof/35 bg-proof/[0.04]"
+        >
           <div class="flex items-start gap-3 flex-wrap">
-            <span class="text-ink-600 text-[11px] uppercase tracking-widest">{{ o.project }}</span>
-            <RouterLink :to="`/o/${o.id}`" class="text-ink-100 flex-1 hover:underline">{{ o.title }}</RouterLink>
+            <span class="label text-ink-600 mt-0.5">{{ o.project }}</span>
+            <RouterLink :to="`/o/${o.id}`" class="text-ink-100 flex-1 min-w-[12rem] hover:underline">
+              {{ o.title }}
+            </RouterLink>
             <Chips kind="blast" :value="o.blast_radius" />
           </div>
 
-          <p v-if="o.proof_spec" class="text-ink-400 mt-2 text-[12px]">Criterion: {{ o.proof_spec }}</p>
+          <p v-if="o.proof_spec" class="text-ink-400 mt-2 leading-relaxed">{{ o.proof_spec }}</p>
 
           <div class="flex items-center gap-4 mt-3 text-[12px] flex-wrap">
-            <span class="text-proof">{{ o.evidences_pass }} passing proof(s)</span>
-            <span v-if="o.evidences_fail" class="text-fail">{{ o.evidences_fail }} failing</span>
-            <span class="text-ink-400">{{ o.passages }} attempts</span>
-            <span v-if="o.cost_usd" class="text-ink-400">${{ o.cost_usd.toFixed(2) }}</span>
+            <span class="text-proof num">{{ o.evidences_pass }} passing</span>
+            <span v-if="o.evidences_fail" class="text-fail num">{{ o.evidences_fail }} failing</span>
+            <span class="text-ink-500 num">{{ o.passages }} attempts</span>
 
             <div class="ml-auto flex gap-1.5">
               <button
@@ -176,7 +177,7 @@ const segColor: Record<string, string> = {
                 :disabled="busyOn === o.id"
                 @click="castVerdict(o.id, 'accept')"
               >
-                {{ busyOn === o.id ? '…' : 'I accept' }}
+                {{ busyOn === o.id ? '…' : 'The criterion is met' }}
               </button>
               <button
                 class="chip border-fail/60 text-fail hover:bg-fail/10"
@@ -187,66 +188,75 @@ const segColor: Record<string, string> = {
               </button>
             </div>
           </div>
-        </div>
-      </div>
-    </section>
+        </article>
 
-    <!-- What is waiting -->
-    <section v-if="data.open_halts.length">
-      <h2 class="text-halt text-[14px] mb-1">Waiting for you — {{ data.open_halts.length }}</h2>
-      <p class="text-ink-400 mb-3">
-        In each of these, the tool chose to stop rather than carry on without certainty.
-      </p>
-      <div class="space-y-2.5">
+        <!-- Halts: the tool stopped on purpose. -->
         <RouterLink
           v-for="h in data.open_halts"
-          :key="h.id"
+          :key="`h${h.id}`"
           :to="`/o/${h.objective_id}`"
           class="card p-4 block border-halt/35 bg-halt/[0.04] hover:border-halt/60 transition-colors"
         >
           <div class="flex items-start gap-3 flex-wrap">
-            <span class="text-ink-600 text-[11px] uppercase tracking-widest">{{ h.project }}</span>
-            <span class="text-ink-100 flex-1">{{ h.objective_title }}</span>
+            <span class="label text-ink-600 mt-0.5">{{ h.project }}</span>
+            <span class="text-ink-100 flex-1 min-w-[12rem]">{{ h.objective_title }}</span>
             <Chips kind="halt" :value="h.reason" />
-            <Chips v-if="h.blast_radius" kind="blast" :value="h.blast_radius" />
           </div>
-          <p class="text-ink-400 mt-2">{{ haltHelp[h.reason] }}</p>
-          <p v-if="h.detail" class="text-ink-500 text-[12px] mt-2 border-l-2 border-ink-700 pl-3 whitespace-pre-wrap">
+          <p class="text-ink-400 mt-2 leading-relaxed">{{ haltHelp[h.reason] }}</p>
+          <p
+            v-if="h.detail"
+            class="text-ink-500 text-[12px] mt-2 border-l-2 border-ink-700 pl-3 whitespace-pre-wrap"
+          >
             {{ h.detail.slice(0, 240) }}
           </p>
         </RouterLink>
-      </div>
-    </section>
 
-    <!-- Breached invariants -->
-    <section v-if="breachedInvariants.length">
-      <h2 class="text-fail text-[14px] mb-1">Production measurements out of bounds</h2>
-      <p class="text-ink-400 mb-3">Something just broke for real, not in a test.</p>
-      <div class="card p-4 space-y-2 border-fail/40">
-        <div v-for="i in breachedInvariants" :key="i.id" class="flex items-center gap-3">
-          <span class="text-ink-600 text-[11px] uppercase tracking-widest w-24">{{ i.project }}</span>
-          <span class="text-ink-100 flex-1">{{ i.statement }}</span>
-          <span class="text-fail">measured {{ num(i.last_value) }}</span>
+        <!-- Measurements taken on the live site, out of bounds. -->
+        <div v-if="breachedInvariants.length" class="card p-4 border-fail/40">
+          <div class="label text-fail mb-2">Out of bounds in production</div>
+          <div v-for="i in breachedInvariants" :key="i.id" class="flex items-baseline gap-3 py-0.5">
+            <span class="label text-ink-600 w-20 shrink-0">{{ i.project }}</span>
+            <span class="text-ink-100 flex-1">{{ i.statement }}</span>
+            <span class="text-fail num">{{ num(i.last_value) }}</span>
+          </div>
         </div>
       </div>
     </section>
 
-    <!-- Projects -->
+    <!-- ═══ WHAT IS IN THE WAY, AND WHAT IS MOVING ═══ -->
+    <Blockers />
+    <ActivityFeed compact />
+
+    <!-- ═══ WHERE THE PROJECTS STAND ═══ -->
     <section>
-      <h2 class="text-ink-100 text-[14px] mb-3">Projects — {{ data.projects.length }}</h2>
-      <div class="space-y-2.5">
+      <h2 class="label mb-3">Projects — {{ data.projects.length }}</h2>
+      <div class="card divide-y divide-ink-850">
         <RouterLink
           v-for="p in data.projects"
           :key="p.slug"
           :to="`/p/${p.slug}`"
-          class="card p-4 block hover:border-ink-600 transition-colors"
+          class="p-4 block hover:bg-ink-850/40 transition-colors"
         >
           <div class="flex items-baseline gap-3 flex-wrap">
             <span class="text-ink-100 text-[14px]">{{ p.name }}</span>
-            <code v-if="p.repo_path" class="text-ink-600 text-[11px]">{{ p.repo_path }}</code>
-            <span class="ml-auto text-ink-400 text-[11px]">{{ ago(p.last_activity) }}</span>
+            <span class="num text-ink-400 text-[12px]">
+              <span class="text-proof">{{ p.proven }}</span
+              >/{{ p.total_objectives }}
+            </span>
+            <span v-if="p.awaiting_human" class="text-halt text-[12px]">
+              {{ p.awaiting_human }} waiting on you
+            </span>
+            <span
+              v-if="p.invariants.breached"
+              class="text-fail text-[12px]"
+              title="A measurement taken on the live site is out of bounds"
+            >
+              {{ p.invariants.breached }} out of bounds
+            </span>
+            <span class="ml-auto text-ink-600 text-[11px]">{{ ago(p.last_activity) }}</span>
           </div>
 
+          <!-- The bar IS the project: what is proven, what is moving, what is stuck. -->
           <div class="h-1.5 bg-ink-800 rounded mt-3 overflow-hidden flex">
             <div
               v-for="seg in barSegments(p)"
@@ -257,69 +267,14 @@ const segColor: Record<string, string> = {
             />
           </div>
 
-          <div class="flex items-center gap-4 mt-3 text-[12px] flex-wrap">
-            <span class="text-ink-400">
-              <span class="text-proof">{{ p.proven }}</span
-              >/{{ p.total_objectives }} verified
-            </span>
-            <span v-if="p.awaiting_human" class="text-halt">
-              {{ p.awaiting_human }} waiting on you
-            </span>
-            <span class="text-ink-400">{{ p.passages }} attempts</span>
-            <span v-if="p.tokens" class="text-ink-400">{{ formatTokens(p.tokens) }} tokens</span>
-            <span v-if="p.cost_usd" class="text-ink-400">${{ p.cost_usd.toFixed(2) }}</span>
-            <span
-              v-if="p.invariants.total"
-              class="ml-auto"
-              :class="p.invariants.breached ? 'text-fail' : 'text-ink-400'"
-            >
-              {{ p.invariants.total }} invariant{{ p.invariants.total > 1 ? 's' : '' }}
-              <template v-if="p.invariants.breached">— {{ p.invariants.breached }} breached</template>
-              <template v-else-if="p.invariants.unknown">— never measured</template>
-            </span>
+          <div class="flex items-center gap-4 mt-2.5 text-[11px] text-ink-600 flex-wrap">
+            <span class="num">{{ p.passages }} attempts</span>
+            <span v-if="p.tokens" class="num">{{ formatTokens(p.tokens) }} tokens</span>
+            <span v-if="p.cost_usd" class="num">${{ p.cost_usd.toFixed(2) }}</span>
+            <code v-if="p.repo_path" class="ml-auto truncate max-w-[20rem]">{{ p.repo_path }}</code>
           </div>
         </RouterLink>
       </div>
     </section>
-
-    <div class="grid lg:grid-cols-2 gap-5">
-      <!-- Recent activity -->
-      <section>
-        <h2 class="text-ink-100 text-[14px] mb-3">Latest attempts</h2>
-        <div class="card divide-y divide-ink-800">
-          <RouterLink
-            v-for="r in data.recent"
-            :key="r.id"
-            :to="`/o/${r.objective_id}`"
-            class="p-3 flex items-start gap-2.5 hover:bg-ink-850 transition-colors"
-          >
-            <span
-              class="w-1.5 h-1.5 rounded-full shrink-0 mt-1.5"
-              :class="{
-                'bg-proof': r.verdict === 'advanced',
-                'bg-ink-600': r.verdict === 'no_progress',
-                'bg-halt': r.verdict === 'halted',
-                'bg-fail': r.verdict === 'failed',
-                'bg-run animate-pulse': !r.verdict }"
-            />
-            <div class="flex-1 min-w-0">
-              <div class="flex items-baseline gap-2 flex-wrap">
-                <Chips kind="harness" :value="r.harness" />
-                <span class="text-ink-300 truncate">{{ r.objective_title }}</span>
-              </div>
-              <div class="text-ink-600 text-[11px] mt-1">
-                {{ r.project }} · {{ ago(r.started_at) }}
-                <template v-if="r.tokens"> · {{ formatTokens(r.tokens) }} tokens</template>
-              </div>
-            </div>
-          </RouterLink>
-          <div v-if="!data.recent.length" class="p-3 text-ink-600">no attempts yet</div>
-        </div>
-      </section>
-
-      
-    </div>
-
-    
   </div>
 </template>

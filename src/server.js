@@ -654,8 +654,24 @@ export function createServer() {
         requests: c.requests,
         cost_usd: c.cost,
         last_activity: c.last_activity,
-        objectives: {},
-        invariants: { total: 0, breached: 0, unknown: 0 },
+        // These two were hardcoded empty. The screen drew a progress bar with no
+        // segments and an invariants column that never said anything — for every
+        // project, since the beginning. A placeholder that renders as "nothing to
+        // report" is worse than an error: it looks like an answer.
+        objectives: Object.fromEntries(
+          db()
+            .prepare('SELECT status, COUNT(*) n FROM objectives WHERE project_id = ? GROUP BY status')
+            .all(p.id)
+            .map((r) => [r.status, r.n]),
+        ),
+        invariants: db()
+          .prepare(
+            `SELECT COUNT(*) total,
+               SUM(CASE WHEN last_status = 'breached' THEN 1 ELSE 0 END) breached,
+               SUM(CASE WHEN last_status = 'unknown' OR last_status IS NULL THEN 1 ELSE 0 END) unknown
+             FROM invariants WHERE project_id = ?`,
+          )
+          .get(p.id),
       }
     })
 

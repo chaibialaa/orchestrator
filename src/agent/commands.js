@@ -2639,12 +2639,50 @@ function codexDiagnostics(file) {
     const p = d.payload
     if (p?.type === 'agent_message' && p.message) lastMessage = p.message
     if (p?.type === 'mcp_tool_call_end' && p.result?.is_error) {
-      denied.add(String(p.invocation?.tool ?? p.tool ?? 'outil MCP'))
+      denied.add(String(p.invocation?.tool ?? p.tool ?? 'MCP tool'))
     }
+
+    // Every Codex pass reported zero tokens and zero cost, which made it look
+    // free next to Claude. It was never free — it was never measured. `usage` and
+    // `model` were declared here, assigned nowhere, returned nowhere, while the
+    // rollout carried a `token_count` event on every turn all along.
+    if (p?.type === 'token_count' && p.info?.total_token_usage) usage = p.info.total_token_usage
+    if (p?.type === 'turn_context' && p.model) model = p.model
+    if (p?.type === 'session_meta' && p.payload?.model) model = p.payload.model
+
+    // Codex names its tools differently: `custom_tool_call` for its own, plus the
+    // MCP calls. Counting both is what lets anyone see where a pass spent itself.
+    const toolName =
+      p?.type === 'custom_tool_call' || p?.type === 'function_call'
+        ? p.name
+        : p?.type === 'mcp_tool_call_begin'
+          ? (p.invocation?.tool ?? p.tool)
+          : null
+    if (toolName) tools[String(toolName)] = (tools[String(toolName)] ?? 0) + 1
   }
 
-  const limitReset = parseLimitReset(lastMessage)
-  return { denied: [...denied], lastMessage, tools, limitReset }
+  // The caller wants a token count and, when a rate is known, a cost. With no
+  // rate we still publish the tokens: an unmeasured harness looks free, and
+  // "free" is the one thing it certainly is not.
+  const rate = codexPricing(model)
+  const tokens = usage?.total_tokens ?? 0
+  const cost = rate
+    ? ((usage?.input_tokens ?? 0) * (rate[0] ?? 0) +
+        (usage?.output_tokens ?? 0) * (rate[1] ?? 0) +
+        (usage?.cached_input_tokens ?? 0) * (rate[2] ?? 0)) /
+      1e6
+    : 0
+
+  return {
+    denied: [...denied],
+    lastMessage,
+    tools,
+    model,
+    tokens,
+    cost,
+    pricingKnown: Boolean(rate),
+    limitReset: parseLimitReset(lastMessage),
+  }
 }
 
 /**

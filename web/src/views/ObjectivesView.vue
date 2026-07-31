@@ -2,7 +2,7 @@
 import { onMounted, ref, watch, computed } from 'vue'
 import { api, type Objective, type Stats } from '../api'
 import Chips from '../components/Chips.vue'
-import ChapterRail from '../components/ChapterRail.vue'
+import ChapterTrack from '../components/ChapterTrack.vue'
 import ActivityFeed from '../components/ActivityFeed.vue'
 import { formatTokens } from '../labels'
 
@@ -132,101 +132,69 @@ function story(o: Objective): string {
     </div>
   </div>
 
-  <div v-else class="space-y-7">
-    <!-- What this page is -->
-    <section class="card p-4 border-ink-800">
-      <div class="flex items-start gap-4">
-        <div class="flex-1">
-          <h1 class="text-ink-100 text-[15px]">Where the project stands</h1>
-          <p class="text-ink-400 mt-1.5 leading-relaxed max-w-3xl">
-            Every line is an <strong class="text-ink-300">objective</strong>: something we want to
-            make true. An objective is never “done” because an agent said so — it is done when a
-            <strong class="text-ink-300">proof</strong> has been produced and accepted. When the tool
-            cannot conclude on its own, it stops and shows up under
-            <strong class="text-halt">Waiting on you</strong>.
-          </p>
-        </div>
-        <button class="btn shrink-0" @click="showHelp = !showHelp">
-          {{ showHelp ? 'hide' : 'how to read this' }}
-        </button>
+  <div v-else class="space-y-8">
+    <!-- The page had a paragraph explaining itself, four large number cards, and a
+         "how to read this" panel — before showing a single line of the project. The
+         explanation is now one sentence, the numbers are a margin, and the subject
+         starts immediately. -->
+    <header class="flex items-end gap-6 flex-wrap border-b border-ink-800 pb-4">
+      <div class="flex-1 min-w-[16rem]">
+        <h1 class="text-ink-100 text-[17px]">Where the project stands</h1>
+        <p class="text-ink-400 mt-1">
+          Read the track bottom to top: order is execution order.
+          <button class="text-ink-500 hover:text-ink-300 underline underline-offset-2" @click="showHelp = !showHelp">
+            {{ showHelp ? 'hide the legend' : 'what do the colours mean?' }}
+          </button>
+        </p>
       </div>
 
-      <div v-if="showHelp" class="mt-4 pt-4 border-t border-ink-800 grid md:grid-cols-2 gap-5">
+      <dl class="flex items-end gap-7 text-[12px]">
         <div>
-          <div class="label mb-2">The states</div>
-          <ul class="space-y-1.5">
-            <li v-for="s in ['draft', 'ready', 'in_progress', 'blocked', 'proven']" :key="s" class="flex gap-2">
-              <Chips kind="status" :value="s" />
-            </li>
-          </ul>
+          <dt class="label">Verified</dt>
+          <dd class="num text-[18px] text-ink-100 mt-0.5">
+            {{ done.length }}<span class="text-ink-600 text-[13px]">/{{ objectives.length }}</span>
+          </dd>
         </div>
         <div>
-          <div class="label mb-2">Risk level decides autonomy</div>
-          <ul class="space-y-2">
-            <li v-for="b in ['cosmetic', 'feature', 'api', 'critical']" :key="b">
-              <Chips kind="blast" :value="b" />
-            </li>
-          </ul>
-          <p class="text-ink-600 text-[11px] mt-2">
-            Hover a badge for its explanation.
-          </p>
+          <dt class="label">Attempts</dt>
+          <dd class="num text-[18px] text-ink-100 mt-0.5">{{ stats?.passages ?? 0 }}</dd>
         </div>
+        <div>
+          <dt class="label">Spent</dt>
+          <dd class="num text-[18px] text-ink-100 mt-0.5">${{ (stats?.cost_usd ?? 0).toFixed(0) }}</dd>
+        </div>
+        <div>
+          <dt class="label">Tokens</dt>
+          <dd class="num text-[18px] text-ink-100 mt-0.5">{{ formatTokens(stats?.tokens) }}</dd>
+        </div>
+      </dl>
+    </header>
+
+    <!-- The legend, on request. It teaches what a colour means; it does not repeat
+         what the track already shows. -->
+    <section v-if="showHelp" class="card p-4 grid md:grid-cols-2 gap-6">
+      <div>
+        <div class="label mb-2">A step can be</div>
+        <ul class="space-y-1.5">
+          <li v-for="s in ['draft', 'ready', 'in_progress', 'blocked', 'proven']" :key="s">
+            <Chips kind="status" :value="s" />
+          </li>
+        </ul>
+      </div>
+      <div>
+        <div class="label mb-2">Risk level decides autonomy</div>
+        <ul class="space-y-1.5">
+          <li v-for="b in ['cosmetic', 'feature', 'api', 'critical']" :key="b">
+            <Chips kind="blast" :value="b" />
+          </li>
+        </ul>
+        <p class="text-ink-600 text-[11px] mt-2">Hover a badge for its explanation.</p>
       </div>
     </section>
 
-    <!-- Totals -->
-    <section class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-      <div class="card p-3.5">
-        <div class="label">Verified objectives</div>
-        <div class="text-2xl mt-1">
-          {{ done.length }}<span class="text-ink-600 text-base">/{{ objectives.length }}</span>
-        </div>
-        <div class="h-1 bg-ink-800 rounded mt-2 overflow-hidden">
-          <div class="h-full bg-proof transition-all" :style="{ width: `${(stats?.proven_ratio ?? 0) * 100}%` }" />
-        </div>
-      </div>
-
-      <div class="card p-3.5" :class="waiting.length ? 'border-halt/40' : ''">
-        <div class="label">Waiting on you</div>
-        <div class="text-2xl mt-1" :class="waiting.length ? 'text-halt' : ''">
-          {{ waiting.length }}
-        </div>
-        <div class="text-ink-600 text-[11px] mt-2">
-          {{ waiting.length ? 'the tool cannot decide alone' : 'nothing is waiting on you' }}
-        </div>
-      </div>
-
-      <div class="card p-3.5">
-        <div class="label">Usage</div>
-        <div class="text-2xl mt-1">{{ formatTokens(stats?.tokens) }}</div>
-        <div class="text-ink-600 text-[11px] mt-2">
-          tokens · {{ stats?.requests ?? 0 }} requests ·
-          <span class="text-ink-400">${{ (stats?.cost_usd ?? 0).toFixed(2) }}</span>
-        </div>
-      </div>
-
-      <div class="card p-3.5">
-        <div class="label">Work done</div>
-        <div class="text-2xl mt-1">{{ stats?.passages ?? 0 }}</div>
-        <div class="text-ink-600 text-[11px] mt-2">
-          attempts, by
-          <Chips
-            v-for="h in Object.keys(stats?.harness_split ?? {})"
-            :key="h"
-            kind="harness"
-            :value="h"
-            class="ml-0.5"
-          />
-        </div>
-      </div>
-    </section>
-
-    <!-- What is waiting for you -->
+    <!-- What genuinely needs a person. -->
     <section v-if="waiting.length">
-      <h2 class="text-halt text-[14px] mb-1">Waiting for you — {{ waiting.length }}</h2>
-      <p class="text-ink-400 mb-3">
-        In each of these, the tool chose to stop rather than carry on without certainty.
-      </p>
+      <h2 class="label text-halt mb-3">Waiting for you — {{ waiting.length }}</h2>
       <div class="space-y-2.5">
         <RouterLink
           v-for="o in waiting"
@@ -237,7 +205,7 @@ function story(o: Objective): string {
           <div class="flex items-start gap-3">
             <div class="flex-1">
               <div class="text-ink-100">{{ o.title }}</div>
-              <p class="text-ink-400 mt-1.5">{{ story(o) }}</p>
+              <p class="text-ink-400 mt-1.5 leading-relaxed">{{ story(o) }}</p>
             </div>
             <Chips kind="blast" :value="o.blast_radius" />
           </div>
@@ -245,23 +213,18 @@ function story(o: Objective): string {
       </div>
     </section>
 
-    <p v-if="autoResumed.length" class="text-ink-500 text-[13px]">
+    <!-- THE SUBJECT OF THE PAGE: what comes after what, and where it breaks. -->
+    <section v-if="tracks.length" class="space-y-4">
+      <section v-for="(v, i) in tracks" :key="v.chapter?.id ?? `loose-${i}`" class="card p-5 pb-3">
+        <ChapterTrack :chapter="v.chapter" :steps="v.steps" :active="v.chain === 'active'" />
+      </section>
+    </section>
+
+    <p v-if="autoResumed.length" class="text-ink-600 text-[12px]">
       {{ autoResumed.length }} objective{{ autoResumed.length > 1 ? 's' : '' }} halted on a reason the
       loop clears by itself — nothing for you to do:
-      <span class="text-ink-400">{{ autoResumed.map((o) => `#${o.id}`).join(', ') }}</span>
+      <span class="num text-ink-500">{{ autoResumed.map((o) => `#${o.id}`).join(', ') }}</span>
     </p>
-
-    <!-- The tracks: what comes after what, and where things actually stand. -->
-    <section v-if="tracks.length" class="space-y-4">
-      <ChapterRail
-        v-for="(v, i) in tracks"
-        :key="v.chapter?.id ?? `loose-${i}`"
-        :chapter="v.chapter"
-        :steps="v.steps"
-        :chain="v.chain"
-        :activity="v.activity"
-      />
-    </section>
 
     <ActivityFeed :slug="slug" />
 
@@ -275,6 +238,5 @@ function story(o: Objective): string {
       >
       <span class="label text-ink-600">open ▸</span>
     </RouterLink>
-
   </div>
 </template>
