@@ -293,6 +293,22 @@ const commands = {
         state[input.session_id ?? 'inconnu'] = { passageId, project: config.project }
         writeState(state)
         lines.push(`Attempt #${passageId} opened — proofs attach to it.`)
+
+        // The declared checks were shown to the breakdown agent and to nobody
+        // else, so the agent doing the work had no idea a command existed that
+        // could return a verdict. It produced files; files are recorded as
+        // "deliverable produced", which is `inconclusive` — and a chapter whose
+        // criterion needs a passing proof could never conclude. On one chapter
+        // that cost $133 across six attempts to keep rediscovering.
+        const declared = Object.keys(config.proofs ?? {})
+        if (declared.length) {
+          lines.push('')
+          lines.push('Checks this project declares. Running one attaches its verdict — pass or fail —')
+          lines.push('to the attempt. A file on its own is only ever recorded as inconclusive.')
+          for (const key of declared) {
+            lines.push(`  orchestrator prove ${passageId} ${key}`)
+          }
+        }
       }
     } else {
       lines.push('## No takeable objective')

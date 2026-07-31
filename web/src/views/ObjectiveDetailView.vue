@@ -137,6 +137,19 @@ const findings = computed(() => {
 
 const openHalts = computed(() => objective.value?.halts?.filter((h) => !h.resolved_at) ?? [])
 
+/** What the checks actually returned, next to the button that acts on them. */
+const tally = computed(() => {
+  const o = objective.value
+  const all = [...(o?.evidences ?? []), ...(o?.passages ?? []).flatMap((p) => p.evidences ?? [])]
+  const seen = new Set<number>()
+  const unique = all.filter((e) => (seen.has(e.id) ? false : (seen.add(e.id), true)))
+  return {
+    pass: unique.filter((e) => e.verdict === 'pass').length,
+    fail: unique.filter((e) => e.verdict === 'fail').length,
+    inconclusive: unique.filter((e) => e.verdict === 'inconclusive').length,
+  }
+})
+
 const totals = computed(() => {
   const p = objective.value?.passages ?? []
   return {
@@ -195,8 +208,37 @@ const isImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
     >
       <div class="flex items-start gap-5 flex-wrap">
         <div class="flex-1 min-w-[16rem]">
-          <div class="text-proof text-[15px]">Only your verdict is missing</div>
+          <div class="text-proof text-[15px]">Your verdict: is the criterion met?</div>
           <p class="text-ink-300 mt-1.5 leading-relaxed">{{ objective.gate.detail }}</p>
+
+          <!-- What to check, restated where the decision is taken. Asking for a
+               verdict without saying what to look at is asking for a guess: the
+               criterion sits further up the page, and the tally of what actually
+               passed sat nowhere at all. -->
+          <p v-if="objective.proof_spec" class="mt-3 text-ink-200 border-l-2 border-proof/40 pl-3 leading-relaxed">
+            {{ objective.proof_spec }}
+          </p>
+
+          <div class="mt-2.5 flex items-baseline gap-4 flex-wrap text-[12px]">
+            <span class="num" :class="tally.pass ? 'text-proof' : 'text-ink-600'">
+              {{ tally.pass }} passing
+            </span>
+            <span v-if="tally.fail" class="num text-fail">{{ tally.fail }} failing</span>
+            <span v-if="tally.inconclusive" class="num text-ink-500">
+              {{ tally.inconclusive }} inconclusive
+            </span>
+            <a v-if="proofs.length" href="#proofs" class="text-run hover:underline">
+              look at the {{ proofs.length }} deliverables ↓
+            </a>
+          </div>
+
+          <!-- The gate can be satisfied without a single check having returned a
+               verdict — files alone are inconclusive. Accepting then rests on the
+               reader's eyes, which is fine, as long as nobody is told otherwise. -->
+          <p v-if="!tally.pass" class="mt-2.5 text-halt leading-relaxed">
+            No check returned a verdict here — every proof is a file somebody produced.
+            Accepting means you have looked and you are satisfied, not that something measured it.
+          </p>
         </div>
         <div class="flex gap-2 shrink-0">
           <button
