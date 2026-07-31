@@ -231,6 +231,32 @@ export interface Blocker {
   since: string | null
 }
 
+export type TreeAttempt = {
+  id: number
+  harness: string
+  verdict: string | null
+  prevented: number
+  cost_usd: number | string | null
+  tokens: number | null
+  started_at: string
+  ended_at: string | null
+  files: number
+}
+
+export type TreeNode = {
+  id: number
+  parent_id: number | null
+  title: string
+  status: string
+  priority: number
+  blast_radius: string
+  proof_spec: string | null
+  live_since: string | null
+  halt_reason: string | null
+  artifacts_count: number
+  attempts: TreeAttempt[]
+}
+
 export interface Storage {
   id: number
   provider: 'gdrive' | 'dropbox'
@@ -393,6 +419,13 @@ export const api = {
       .then((r) => r.data),
 
   blockers: () => http.get<Blocker[]>('/blockers').then((r) => r.data),
+  /** The project branched: chapters, their steps, and every attempt each one took. */
+  tree: (slug: string) =>
+    http
+      .get<{ project: { slug: string; name: string }; objectives: TreeNode[] }>(
+        `/projects/${slug}/tree`,
+      )
+      .then((r) => r.data),
   storages: () => http.get<Storage[]>('/storages').then((r) => r.data),
   createStorage: (payload: { provider: string; label: string; target?: string | null; credentials?: unknown }) =>
     http.post<Storage>('/storages', payload).then((r) => r.data),

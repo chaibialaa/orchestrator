@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref, watch, computed } from 'vue'
-import { api, type Objective, type Stats } from '../api'
+import { api, type Objective, type Stats, type TreeNode } from '../api'
 import Chips from '../components/Chips.vue'
-import ChapterTrack from '../components/ChapterTrack.vue'
+import ProjectTree from '../components/ProjectTree.vue'
 import ActivityFeed from '../components/ActivityFeed.vue'
 import { formatTokens } from '../labels'
 
@@ -10,6 +10,7 @@ const props = defineProps<{ slug: string }>()
 
 const objectives = ref<Objective[]>([])
 const stats = ref<Stats | null>(null)
+const tree = ref<TreeNode[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
 const showHelp = ref(false)
@@ -18,9 +19,14 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const [o, s] = await Promise.all([api.objectives(props.slug), api.stats(props.slug)])
+    const [o, s, t] = await Promise.all([
+      api.objectives(props.slug),
+      api.stats(props.slug),
+      api.tree(props.slug),
+    ])
     objectives.value = o
     stats.value = s
+    tree.value = t.objectives
   } catch (e: any) {
     error.value = e?.message ?? 'error'
   } finally {
@@ -31,48 +37,8 @@ async function load() {
 onMounted(load)
 watch(() => props.slug, load)
 
-/**
- * The project's tracks. A chapter is an objective that carries others; its steps
- * read in priority order, which IS execution order. Anything that depends on
- * nobody and carries nobody forms a track of its own.
- */
-const tracks = computed(() => {
-  const all = objectives.value
-  const parents = all.filter((o) => all.some((x) => x.parent_id === o.id))
-  const byRank = (l: Objective[]) => [...l].sort((a, b) => a.priority - b.priority || a.id - b.id)
-
-  const chapters = byRank(parents).map((c) => ({
-    chapter: c,
-    steps: byRank(all.filter((o) => o.parent_id === c.id)),
-  }))
-
-  const loose = byRank(all.filter((o) => !o.parent_id && !parents.includes(o)))
-  const out = loose.length ? [...chapters, { chapter: null, steps: loose }] : chapters
-
-  // The loop follows one chain at a time. Showing the others at the same level
-  // made it look like three open fronts: so each chain is dated, the most recent
-  // one leads, and the rest are plainly called closed or dormant.
-  const lastTouched = (v: { chapter: Objective | null; steps: Objective[] }) =>
-    [v.chapter, ...v.steps]
-      .map((o) => o?.last_activity ?? '')
-      .sort()
-      .pop() ?? ''
-
-  const dated = out
-    .map((v) => ({ ...v, activity: lastTouched(v) }))
-    .sort((a, b) => b.activity.localeCompare(a.activity))
-
-  let activeTaken = false
-
-  return dated.map((v) => {
-    const closed = v.steps.every((o) => ['proven', 'abandoned'].includes(o.status))
-    const active = !closed && !activeTaken
-    if (active) activeTaken = true
-
-    const chain: 'active' | 'dormant' | 'closed' = closed ? 'closed' : active ? 'active' : 'dormant'
-    return { ...v, chain }
-  })
-})
+// The chain/track computation lived here. The tree endpoint now returns the
+// branching directly, so the screen no longer rebuilds it from a flat list.
 
 const NEEDS_HUMAN = ['blast_radius', 'no_provable_criterion', 'invariant_regression', 'human_request']
 
@@ -213,11 +179,10 @@ function story(o: Objective): string {
       </div>
     </section>
 
-    <!-- THE SUBJECT OF THE PAGE: what comes after what, and where it breaks. -->
-    <section v-if="tracks.length" class="space-y-4">
-      <section v-for="(v, i) in tracks" :key="v.chapter?.id ?? `loose-${i}`" class="card p-5 pb-3">
-        <ChapterTrack :chapter="v.chapter" :steps="v.steps" :active="v.chain === 'active'" />
-      </section>
+    <!-- THE SUBJECT OF THE PAGE: the work branched — what was asked for, what it
+         split into, and every attempt each part took. -->
+    <section v-if="tree.length" class="space-y-4">
+      <ProjectTree :nodes="tree" />
     </section>
 
     <p v-if="autoResumed.length" class="text-ink-600 text-[12px]">

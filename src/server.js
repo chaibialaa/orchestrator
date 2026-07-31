@@ -162,6 +162,52 @@ export function createServer() {
     )
   })
 
+  /**
+   * The project as a tree: the chapter that was asked for, the steps under it,
+   * and every attempt each step took — successes and failures alike.
+   *
+   * The screen used to draw a single line per chapter, which hides the shape of
+   * the work: eleven attempts on one step and one on the next look identical on a
+   * line. Where effort actually went, and where it kept failing, is branching —
+   * so the data has to arrive branched.
+   *
+   * One query per level, not one per node: a tree of thirty nodes must not cost
+   * thirty round trips.
+   */
+  api.get('/projects/:slug/tree', (req, res) => {
+    const p = projectBy(req.params.slug)
+
+    const objectives = db()
+      .prepare(
+        `SELECT o.id, o.parent_id, o.title, o.status, o.priority, o.blast_radius, o.proof_spec,
+                (SELECT MAX(started_at) FROM passages WHERE objective_id = o.id AND ended_at IS NULL) AS live_since,
+                (SELECT reason FROM halts WHERE objective_id = o.id AND resolved_at IS NULL ORDER BY id DESC LIMIT 1) AS halt_reason,
+                (SELECT COUNT(*) FROM evidences WHERE objective_id = o.id AND ref IS NOT NULL
+                  AND type IN ('render','screenshot','diff')) AS artifacts_count
+         FROM objectives o WHERE o.project_id = ? ORDER BY o.priority, o.id`,
+      )
+      .all(p.id)
+
+    const attempts = db()
+      .prepare(
+        `SELECT pa.id, pa.objective_id, pa.harness, pa.verdict, pa.prevented, pa.cost_usd, pa.tokens,
+                pa.started_at, pa.ended_at, pa.summary,
+                (SELECT COUNT(*) FROM evidences WHERE passage_id = pa.id AND ref IS NOT NULL) AS files
+         FROM passages pa
+         WHERE pa.objective_id IN (SELECT id FROM objectives WHERE project_id = ?)
+         ORDER BY pa.id`,
+      )
+      .all(p.id)
+
+    const byObjective = {}
+    for (const a of attempts) (byObjective[a.objective_id] ??= []).push(a)
+
+    res.json({
+      project: { slug: p.slug, name: p.name },
+      objectives: objectives.map((o) => ({ ...o, attempts: byObjective[o.id] ?? [] })),
+    })
+  })
+
   api.get('/projects/:slug/stats', (req, res) => {
     const p = projectBy(req.params.slug)
     const objectives = db().prepare('SELECT id, status FROM objectives WHERE project_id = ?').all(p.id)
