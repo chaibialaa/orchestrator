@@ -1,3 +1,8 @@
+import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
 /**
  * The relay — a bridge between a ChatGPT conversation and the local harnesses.
  *
@@ -13,9 +18,56 @@
 
 const CDP_PORT = 9222
 
+/**
+ * The profile the tool drives. Never the one you browse with.
+ *
+ * Launching Chrome on a personal profile with a debugging port would reopen
+ * somebody's windows under a socket any local process can talk to. This one is
+ * separate, holds only the signed-in conversation, and the port binds to
+ * 127.0.0.1 — it is not reachable from the network.
+ */
+const CHROME_PROFILE = join(homedir(), '.chrome-orchestrator')
+const CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+
 async function cdpTargets(port) {
   const res = await fetch(`http://127.0.0.1:${port}/json/list`)
   return res.json()
+}
+
+/**
+ * Start the browser the loop drives, and wait for it to answer.
+ *
+ * This was the last thing left to a person, on the grounds that starting a
+ * browser is a decision about the machine. It is not: the profile is dedicated,
+ * the session inside it is already signed in, and a loop that stops at three in
+ * the morning because a window was closed is not unattended. Signing in stays
+ * yours — that one really is a decision, and a password is never mine to type.
+ */
+async function startBrowser(port) {
+  if (!existsSync(CHROME_BIN)) return false
+  spawn(
+    CHROME_BIN,
+    [
+      `--remote-debugging-port=${port}`,
+      `--user-data-dir=${CHROME_PROFILE}`,
+      '--no-first-run',
+      '--no-default-browser-check',
+      // Restoring tabs would reopen whatever was on screen when it last died,
+      // which is noise the loop then has to search through.
+      '--hide-crash-restore-bubble',
+    ],
+    { detached: true, stdio: 'ignore' },
+  ).unref()
+
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 1000))
+    const up = await cdpTargets(port).then(
+      () => true,
+      () => false,
+    )
+    if (up) return true
+  }
+  return false
 }
 
 /**
@@ -59,12 +111,14 @@ export async function attach(match, port = CDP_PORT, { openIfMissing = null } = 
   try {
     targets = await cdpTargets(port)
   } catch {
-    // This one we genuinely cannot do: launching a browser with a debugging port
-    // is a decision about the machine, not about the work.
-    throw new Error(
-      `Chrome is not listening on port ${port}.\n` +
-        `  Restart Chrome with:  open -a "Google Chrome" --args --remote-debugging-port=${port}`,
-    )
+    console.error(`    ! nothing on port ${port} — starting the browser`)
+    if (!(await startBrowser(port))) {
+      throw new Error(
+        `Chrome is not listening on port ${port} and could not be started.\n` +
+          `  Start it with:  "${CHROME_BIN}" --remote-debugging-port=${port} --user-data-dir=${CHROME_PROFILE}`,
+      )
+    }
+    targets = await cdpTargets(port)
   }
 
   const tab = targets.find((t) => t.type === 'page' && t.url.includes(match))

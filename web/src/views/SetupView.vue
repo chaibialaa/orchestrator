@@ -121,7 +121,9 @@ const requirements = computed(() => {
     evidence: s.browser.listening
       ? `listening on ${s.browser.port}`
       : `nothing on port ${s.browser.port}`,
-    fix: `open -a "Google Chrome" --args --remote-debugging-port=${s.browser.port}`,
+    // Not a chore any more: a worker starts it on its own dedicated profile the
+    // moment it needs one, and reloads it if the page ever stops answering.
+    fix: 'Nothing to do — a worker starts it itself, on a profile separate from the one you browse with.',
   })
 
   list.push({
@@ -129,7 +131,9 @@ const requirements = computed(() => {
     met: Boolean(s.browser.judgeTab),
     title: 'A signed-in ChatGPT tab is open',
     evidence: s.browser.judgeTab ?? 'no chatgpt.com tab in that browser',
-    fix: 'Open chatgpt.com in that Chrome and sign in. Signing in is yours to do, not the tool’s.',
+    fix:
+      'Open chatgpt.com in that Chrome and sign in, once. The session then lives in that profile ' +
+      'and the loop reuses it; signing in is yours to do, and a password is never the tool’s to type.',
   })
 
   list.push({
