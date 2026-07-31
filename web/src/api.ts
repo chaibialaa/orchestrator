@@ -269,6 +269,21 @@ export type TreeNode = {
   attempts: TreeAttempt[]
 }
 
+/** A file a PERSON put into the process — a mock-up, a screenshot of what broke. */
+export interface Attachment {
+  id: number
+  project_id: number
+  kind: 'brief' | 'run' | 'project'
+  owner_id: number | null
+  name: string
+  mime: string | null
+  bytes: number
+  /** Absolute path on this machine: it is what a pass is told to open. */
+  path: string
+  note: string | null
+  created_at: string
+}
+
 /** The state of the installation, measured on request — never a stored answer. */
 export interface Setup {
   controller: 'claude' | 'codex' | 'none' | null
@@ -496,6 +511,18 @@ export const api = {
   /** Clear the open halts of one KIND on an objective — `resolveHalt` above takes an id. */
   clearHalts: (objectiveId: number, reason: string) =>
     http.post(`/objectives/${objectiveId}/halts/resolve`, { reason }).then((r) => r.data),
+
+  attachments: (slug: string, kind?: string, ownerId?: number) =>
+    http
+      .get<Attachment[]>(`/projects/${slug}/attachments`, { params: { kind, owner_id: ownerId } })
+      .then((r) => r.data),
+  addAttachment: (
+    slug: string,
+    payload: { kind: string; owner_id?: number; name: string; mime: string; data: string; note?: string },
+  ) => http.post<Attachment>(`/projects/${slug}/attachments`, payload).then((r) => r.data),
+  removeAttachment: (id: number) => http.delete(`/attachments/${id}`).then((r) => r.data),
+  attachmentUrl: (id: number, w?: number) =>
+    `${http.defaults.baseURL}/attachments/${id}/file${w ? `?w=${w}` : ''}`,
 
   setup: () => http.get<Setup>('/setup').then((r) => r.data),
   /** Fill a project's empty rule list from one that already works. Existing rules win. */

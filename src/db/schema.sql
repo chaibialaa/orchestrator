@@ -352,3 +352,25 @@ CREATE TABLE IF NOT EXISTS settings (
   value      TEXT,
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Files a PERSON puts into the process: a mock-up to match, a screenshot of what
+-- broke, a spec. The loop already sends what a pass produced up to the judging
+-- conversation; nothing came the other way, so the most natural way to steer a
+-- visual project — "make it look like this" — had no way in.
+CREATE TABLE IF NOT EXISTS attachments (
+  id         INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  -- What it is attached to. `brief` feeds a breakdown, `run` feeds one pass,
+  -- `project` stays available to every pass on it.
+  kind       TEXT NOT NULL CHECK (kind IN ('brief','run','project')),
+  owner_id   INTEGER,
+  name       TEXT NOT NULL,
+  mime       TEXT,
+  bytes      INTEGER NOT NULL,
+  -- On disk under ~/.orchestrator/attachments, never in the repository: putting
+  -- a person's screenshot into a git working tree makes it a change to review.
+  path       TEXT NOT NULL,
+  note       TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_owner ON attachments(kind, owner_id);

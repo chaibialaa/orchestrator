@@ -4,6 +4,7 @@ import { api, type BlastRadius, type Objective } from '../api'
 import { blastLabel, blastHelp, statusLabel } from '../labels'
 import BriefComposer from '../components/BriefComposer.vue'
 import RunControl from '../components/RunControl.vue'
+import Attachments from '../components/Attachments.vue'
 
 const props = defineProps<{ slug: string }>()
 
@@ -145,6 +146,10 @@ const RISKS: BlastRadius[] = ['cosmetic', 'feature', 'api', 'critical']
     </section>
 
     <BriefComposer :slug="slug" @applied="load" />
+
+    <section class="card p-4">
+      <Attachments :slug="slug" kind="project" />
+    </section>
 
     <!-- The breakdown works on the brief above, not on the repository. Running it
          with nothing written simply reports that nothing is waiting. Without this

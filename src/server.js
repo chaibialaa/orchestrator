@@ -1,7 +1,7 @@
 import express from 'express'
 import { execFileSync } from 'node:child_process'
 const { X_OK } = constants
-import { existsSync, statSync, createReadStream, accessSync, constants, mkdirSync } from 'node:fs'
+import { existsSync, statSync, createReadStream, accessSync, constants, mkdirSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { resolve as path, join, extname, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1152,6 +1152,105 @@ export function createServer() {
     createReadStream(small ?? absolute).pipe(res)
   })
 
+
+  // ---- attachments ----------------------------------------------------------
+
+  /** Where a person's files live: the tool's own directory, never the repository. */
+  const attachmentsDir = () => {
+    const dir = join(dirname(dbPathOf()), 'attachments')
+    mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
+  // The path is not hidden: this is a single-user tool on localhost, repository
+  // paths are printed on every other screen, and the agent needs it to open the
+  // file. Hiding it would only have forced a second endpoint to reveal it.
+  const publicAttachment = (a) => a
+
+  /**
+   * Put a file into the process.
+   *
+   * The loop already sends what a pass produced up to the judging conversation.
+   * Nothing came the other way, so the most natural way to steer a visual
+   * project — "make it look like this" — had nowhere to go but a sentence
+   * describing the picture.
+   *
+   * Base64 through JSON rather than multipart: one dependency fewer, and the
+   * body limit already covers a screenshot several times over.
+   */
+  api.post('/projects/:slug/attachments', (req, res) => {
+    const p = projectBy(req.params.slug)
+    const b = req.body ?? {}
+    if (!['brief', 'run', 'project'].includes(b.kind)) {
+      throw new Rejected('Attach it to a brief, a run, or the project.')
+    }
+    const name = String(b.name ?? '').trim()
+    if (!name || /[/\\]/.test(name)) throw new Rejected('A file name, without a path.')
+
+    const data = Buffer.from(String(b.data ?? ''), 'base64')
+    if (!data.length) throw new Rejected('The file arrived empty.')
+    if (data.length > 24 * 1024 * 1024) throw new Rejected('Too big — 24 MB at most.')
+
+    // The stored name is ours; the original is kept for display. A name chosen by
+    // whoever uploads must never decide where the bytes land.
+    const safe = `${Date.now()}-${createHash('sha1').update(data).digest('hex').slice(0, 12)}${extname(name).slice(0, 12)}`
+    const absolute = join(attachmentsDir(), safe)
+    writeFileSync(absolute, data)
+
+    const r = db()
+      .prepare(
+        `INSERT INTO attachments (project_id, kind, owner_id, name, mime, bytes, path, note)
+         VALUES (?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        p.id,
+        b.kind,
+        b.owner_id ? Number(b.owner_id) : null,
+        name,
+        b.mime ?? null,
+        data.length,
+        absolute,
+        b.note?.toString().trim() || null,
+      )
+    res
+      .status(201)
+      .json(publicAttachment(db().prepare('SELECT * FROM attachments WHERE id = ?').get(r.lastInsertRowid)))
+  })
+
+  api.get('/projects/:slug/attachments', (req, res) => {
+    const p = projectBy(req.params.slug)
+    const { kind, owner_id: owner } = req.query
+    res.json(
+      db()
+        .prepare(
+          `SELECT * FROM attachments WHERE project_id = ?
+           ${kind ? 'AND kind = @kind' : ''} ${owner ? 'AND owner_id = @owner' : ''}
+           ORDER BY id DESC`,
+        )
+        .all(p.id, { kind, owner })
+        .map(publicAttachment),
+    )
+  })
+
+  api.get('/attachments/:id/file', (req, res) => {
+    const a = db().prepare('SELECT * FROM attachments WHERE id = ?').get(req.params.id)
+    if (!a || !existsSync(a.path)) throw new Rejected('This file is not here any more.', 404)
+    res.set('Content-Type', a.mime || 'application/octet-stream')
+    res.set('Content-Disposition', `inline; filename="${basename(a.name)}"`)
+    const width = nombre(req.query.w, 0)
+    const small = width > 0 && String(a.mime).startsWith('image/') ? thumbnail(a.path, width) : null
+    if (small) res.set('Content-Type', 'image/jpeg')
+    createReadStream(small ?? a.path).pipe(res)
+  })
+
+  api.delete('/attachments/:id', (req, res) => {
+    const a = db().prepare('SELECT * FROM attachments WHERE id = ?').get(req.params.id)
+    if (!a) throw new Rejected('This file is not here any more.', 404)
+    // The row goes; the bytes stay until something sweeps them. Deleting a file an
+    // agent may be reading mid-pass is worse than leaving it on disk.
+    db().prepare('DELETE FROM attachments WHERE id = ?').run(a.id)
+    res.json({ removed: a.id })
+  })
 
   // ---- setup ---------------------------------------------------------------
 

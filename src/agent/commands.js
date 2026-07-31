@@ -82,7 +82,11 @@ function loadConfig() {
     // harness bounds its access to the working directory, and an `ls` on Unity's
     // log is refused even when Bash is entirely allowed. Three passes were lost to
     // this, blaming the permissions.
-    readDirs: project.readDirs ?? [],
+    // The attachments directory is always readable: a file someone put into the
+    // process is useless if the agent cannot open it. It lives outside the
+    // repository on purpose — a person's screenshot in a working tree becomes a
+    // change to review.
+    readDirs: [...(project.readDirs ?? []), join(homedir(), '.orchestrator', 'attachments')],
     unity: project.unity ?? null,
   }
 }
@@ -320,6 +324,28 @@ const commands = {
           lines.push('Stay off what belongs to it. Touch only what your own objective needs, and')
           lines.push('do not revert, reformat or tidy anything you did not come here to change —')
           lines.push('the diff you leave is attributed to you, and so is the one you undo.')
+        }
+
+        /**
+         * Files a person put into the process, named with their paths.
+         *
+         * Storing them was the easy half. An agent that is not told they exist
+         * will not go looking in a directory it has never heard of, and a
+         * mock-up nobody opens is a mock-up nobody matched.
+         */
+        const attached = await call(
+          'GET',
+          `/projects/${config.project}/attachments?kind=project`,
+          null,
+          { soft: true },
+        ).catch(() => null)
+        if (attached?.length) {
+          lines.push('')
+          lines.push('Files provided for this project — read them before you start:')
+          for (const a of attached.slice(0, 12)) {
+            lines.push(`  ${a.name}${a.note ? ` — ${a.note}` : ''}`)
+            lines.push(`    ${a.path}`)
+          }
         }
 
         const declared = Object.keys(config.proofs ?? {})
