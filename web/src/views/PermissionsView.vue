@@ -95,8 +95,9 @@ const decisionLabel: Record<Decision, string> = {
           <p class="text-halt mt-2 max-w-3xl text-[12px]">
             True of Claude. <strong>Not of Codex</strong>: it is launched with approvals and sandbox
             bypassed — the only way it reaches Unity unattended — so it is never handed this list.
-            Its rules below are documentation, not a barrier. To hold one for real, enforce it in
-            the repository itself.
+            Its rules below are documentation, not a barrier — except pushing, which some
+            repositories now refuse on their own. Check the blockers on the overview: they read the
+            hook from disk rather than take anyone's word for it.
           </p>
         </div>
         <input

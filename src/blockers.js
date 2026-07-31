@@ -134,31 +134,55 @@ function emptyPermissions(db) {
  * though something were holding the line, is not.
  */
 function codexRulesNotEnforced(db) {
-  const rules = db
+  return db
     .prepare(
-      `SELECT p.slug, p.name, COUNT(*) AS denied
+      `SELECT p.slug, p.name, p.repo_path, COUNT(*) AS denied
        FROM permissions pe JOIN projects p ON p.id = pe.project_id
        WHERE pe.harness = 'codex' AND pe.decision = 'deny'
-       GROUP BY p.slug, p.name`,
+       GROUP BY p.slug, p.name, p.repo_path`,
     )
     .all()
     .filter((p) => p.denied > 0)
+    .map((p) => {
+      // Looked for, not assumed. A hook someone deleted is a hook that is gone,
+      // and a screen that keeps claiming it is there is worse than one that
+      // never claimed anything.
+      const held = p.repo_path && guardedAgainstPush(p.repo_path)
+      return {
+        kind: 'codex_rules_not_enforced',
+        severity: WARNING,
+        project: p.slug,
+        objective: null,
+        title: held
+          ? `On ${p.name}, pushing is held by the repository — the other rules are not`
+          : `The ${p.denied} rules shown for Codex on ${p.name} are not enforced`,
+        detail: held
+          ? 'A pre-push hook refuses to publish unless ORCHESTRATOR_ALLOW_PUSH=1 is set on the ' +
+            'command, so pushes and tag pushes are stopped for every harness — Codex included, ' +
+            'sandbox bypassed or not. `sudo` and `rm -rf` are not git operations and nothing ' +
+            'inside a repository can catch them.'
+          : 'Codex runs with approvals and sandbox bypassed — the only way it can reach Unity ' +
+            'without someone at the screen. It is never handed this list, so nothing here stops ' +
+            'it pushing, tagging or deleting. The rules are a wish, not a barrier.',
+        action: held
+          ? 'Nothing further here. To hold sudo or rm -rf you would have to run the harness as a ' +
+            'user that cannot do them — the repository is the wrong place for it.'
+          : 'To hold these for real, enforce them in the repository itself (a pre-push hook binds ' +
+            'every harness, sandboxed or not) — or accept them as documentation and say so.',
+        since: null,
+      }
+    })
+}
 
-  return rules.map((p) => ({
-    kind: 'codex_rules_not_enforced',
-    severity: WARNING,
-    project: p.slug,
-    objective: null,
-    title: `The ${p.denied} rules shown for Codex on ${p.name} are not enforced`,
-    detail:
-      'Codex runs with approvals and sandbox bypassed — the only way it can reach Unity without ' +
-      'someone at the screen. It is never handed this list, so nothing here stops it pushing, ' +
-      'tagging or deleting. The rules are a wish, not a barrier.',
-    action:
-      'To hold these four for real, enforce them in the repository itself (a pre-push hook binds ' +
-      'every harness, sandboxed or not) — or accept them as documentation and say so.',
-    since: null,
-  }))
+/** Does this repository refuse to publish on its own? Read from disk, every time. */
+function guardedAgainstPush(repoPath) {
+  const hook = join(repoPath, '.git', 'hooks', 'pre-push')
+  if (!existsSync(hook)) return false
+  try {
+    return readFileSync(hook, 'utf8').includes('ORCHESTRATOR_ALLOW_PUSH')
+  } catch {
+    return false
+  }
 }
 
 /** What an agent asked for and nobody decided. */
