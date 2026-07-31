@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import type { Project } from '../api'
 
@@ -28,13 +28,33 @@ const shown = computed(() => {
   return props.projects.filter((p) => `${p.name} ${p.slug}`.toLowerCase().includes(q))
 })
 
+/**
+ * Close on a click anywhere else — via the document, not a full-screen overlay.
+ *
+ * The overlay was `fixed inset-0`, which is the viewport only when no ancestor
+ * establishes a containing block. The header carries `backdrop-blur`, and a
+ * backdrop filter does establish one: the overlay was confined to the bar, so
+ * clicking the page below did nothing at all.
+ */
+const root = ref<HTMLElement | null>(null)
+
+function onDocumentPointerDown(e: PointerEvent) {
+  if (!root.value?.contains(e.target as Node)) open.value = false
+}
+
 watch(open, async (isOpen) => {
   filter.value = ''
-  if (!isOpen) return
+  if (!isOpen) {
+    document.removeEventListener('pointerdown', onDocumentPointerDown)
+    return
+  }
+  document.addEventListener('pointerdown', onDocumentPointerDown)
   // Typing straight away is the whole point once there are more than a screenful.
   await new Promise((r) => setTimeout(r, 0))
   field.value?.focus()
 })
+
+onUnmounted(() => document.removeEventListener('pointerdown', onDocumentPointerDown))
 
 function go(slug: string) {
   open.value = false
@@ -43,7 +63,7 @@ function go(slug: string) {
 </script>
 
 <template>
-  <div class="relative">
+  <div ref="root" class="relative">
     <button
       class="flex items-center gap-2 px-2.5 py-1 rounded text-[12px] whitespace-nowrap"
       :class="current ? 'bg-ink-700 text-ink-100' : 'text-ink-400 hover:text-ink-100'"
@@ -53,10 +73,6 @@ function go(slug: string) {
       <span class="num text-ink-500 text-[10px]">{{ projects.length }}</span>
       <span class="text-ink-500 text-[9px]">▾</span>
     </button>
-
-    <!-- Clicking anywhere else closes it: a menu that needs its own button to
-         dismiss is a menu you end up trapped in. -->
-    <div v-if="open" class="fixed inset-0 z-10" @click="open = false" />
 
     <div
       v-if="open"

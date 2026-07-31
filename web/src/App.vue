@@ -33,7 +33,11 @@ onMounted(async () => {
           <span class="tracking-[0.2em] text-[12px] text-ink-100">ORCHESTRATOR</span>
         </RouterLink>
 
-        <nav class="flex items-center gap-1 overflow-x-auto">
+        <!-- No `overflow-x-auto` here any more. It was there to scroll a long list
+             of project links; that list is gone, and an overflow container clips
+             every absolutely positioned child — which is why the switcher's menu
+             opened and was cut off at the height of the bar. -->
+        <nav class="flex items-center gap-1">
           <RouterLink
             to="/"
             class="px-2.5 py-1 rounded text-[12px] whitespace-nowrap"
