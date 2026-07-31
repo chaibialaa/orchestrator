@@ -202,6 +202,13 @@ grouping on a field nobody sends, calling `.length` on a `Set`, matching
 `conforme` inside `non conforme`. Each reads as agreement, silently. When a check
 never fires, suspect the material before the rule.
 
+That shape accounted for seven of the ten defects fixed on 31 July, and none of
+them failed a typecheck: TypeScript believes a declaration, and JavaScript does
+not object to reading a key that is not there. `test/screens.test.js` compares
+what every template READS against what the API actually SENDS, and runs against
+a live server — start one first, or those checks skip and say so rather than
+passing quietly.
+
 ## License
 
 [PolyForm Noncommercial 1.0.0](LICENSE.md) — free for any **noncommercial
