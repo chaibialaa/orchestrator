@@ -749,7 +749,15 @@ export function createServer() {
     const noms = Object.keys(champs)
     if (noms.length) {
       db()
-        .prepare(`UPDATE objectives SET ${noms.map((n) => `${n} = @${n}`).join(', ')}, updated_at = @maj WHERE id = @id`)
+        .prepare(
+          `UPDATE objectives SET ${noms.map((n) => `${n} = @${n}`).join(', ')}, updated_at = @maj` +
+            // Stamped only when the CRITERION moves: rewriting what would prove an
+            // objective is a new attempt at it, and the convergence count has to
+            // start again — otherwise the one way out of a `not_converging` halt
+            // leaves the gate refusing exactly as before.
+            (noms.includes('proof_spec') ? ', proof_spec_changed_at = @maj' : '') +
+            ' WHERE id = @id',
+        )
         .run({ ...champs, maj: nowStamp(), id: o.id })
     }
     res.json(objectiveBy(o.id))

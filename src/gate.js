@@ -261,12 +261,20 @@ export function canStart(objectiveId) {
 export function attemptsSinceProof(objectiveId) {
   const db = base()
 
-  const lastProof = db
-    .prepare(
-      `SELECT MAX(e.created_at) AS at FROM evidences e
-       WHERE e.objective_id = ? AND e.verdict = 'pass'`,
-    )
-    .get(objectiveId)?.at
+  // The clock restarts on whichever came last: a passing proof, or a rewrite of
+  // the criterion. Both mean the attempts before them were answering a different
+  // question, and counting them against the current one would leave the halt
+  // unclearable — its only remedy is the rewrite.
+  const { at: lastProof } =
+    db
+      .prepare(
+        `SELECT MAX(at) AS at FROM (
+           SELECT created_at AS at FROM evidences WHERE objective_id = @id AND verdict = 'pass'
+           UNION ALL
+           SELECT proof_spec_changed_at FROM objectives WHERE id = @id
+         )`,
+      )
+      .get({ id: objectiveId }) ?? {}
 
   const { n, spent } = db
     .prepare(

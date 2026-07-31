@@ -98,6 +98,9 @@ function addMissingColumns(db) {
     // WHO the connected account belongs to. Derived from the token, never typed:
     // a storage with no readable owner drops proofs somewhere nobody can name.
     ['storages', 'account', 'TEXT'],
+    // When the criterion itself last changed. `updated_at` moves for a retitle
+    // too, and a retitle is not a new attempt at anything.
+    ['objectives', 'proof_spec_changed_at', 'TEXT'],
     ['runs', 'jump', 'INTEGER NOT NULL DEFAULT 0'],
     // Queued knowingly beside another pass on the same repository. The mission is
     // told, so the agent can keep off what the other one is holding.

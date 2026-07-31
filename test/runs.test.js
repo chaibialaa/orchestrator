@@ -177,8 +177,17 @@ test('an objective that stops proving anything is refused another attempt', asyn
   assert.equal(blocked.reason, 'not_converging')
   assert.equal(attemptsSinceProof(40).attempts, 7)
 
-  // A passing proof resets it: an objective that proved something two attempts
-  // ago is progressing, however long it has been open.
+  // Rewriting the criterion resets it too, and it has to: the rewrite is the only
+  // remedy this halt has, and without the reset the gate would refuse exactly as
+  // before — leaving the halt unclearable.
+  db.prepare("UPDATE objectives SET proof_spec_changed_at = datetime('now','+1 second') WHERE id = 40").run()
+  assert.equal(attemptsSinceProof(40).attempts, 0)
+  assert.equal(canStart(40).ok, true)
+
+  // And a passing proof resets it: an objective that proved something two
+  // attempts ago is progressing, however long it has been open.
+  db.prepare("UPDATE objectives SET proof_spec_changed_at = NULL WHERE id = 40").run()
+  assert.equal(attemptsSinceProof(40).attempts, 7)
   db.prepare(
     `INSERT INTO evidences (objective_id,type,label,verdict,created_at)
      VALUES (40,'test','it passed','pass',datetime('now','+1 second'))`,
