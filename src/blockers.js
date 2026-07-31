@@ -29,7 +29,7 @@ export function blockers() {
   // panel only carries what was visible NOWHERE.
   out.push(...unityClosed(db))
   out.push(...emptyPermissions(db))
-  out.push(...codexUnenforced(db))
+  out.push(...codexRulesNotEnforced(db))
   out.push(...undecidedRefusals(db))
   out.push(...storages(db))
 
@@ -124,40 +124,41 @@ function emptyPermissions(db) {
 }
 
 /**
- * Codex is launched with `--dangerously-bypass-approvals-and-sandbox`, so its
- * allow list is never consulted. Two things follow, and both are worth saying
- * out loud: the pass is refused before it starts for want of an allowed tool,
- * and the rules the screen displays for Codex protect nothing.
+ * Codex is launched with `--dangerously-bypass-approvals-and-sandbox`, so the
+ * rules the screen shows for it are never handed to it and never apply.
  *
- * This is not a rule to relax quietly — granting Codex its list would let it
- * work unsandboxed on the repository. That is the reader's call, so the tool
- * states the situation instead of resolving it.
+ * The bypass was chosen knowingly: in non-interactive mode every MCP tool call
+ * is refused for want of approval, and the only flag that unblocks it also
+ * removes the sandbox — without it there is no autopilot on a Unity project.
+ * That trade is defensible. Displaying `deny Bash(git push*)` beside it, as
+ * though something were holding the line, is not.
  */
-function codexUnenforced(db) {
-  return db
+function codexRulesNotEnforced(db) {
+  const rules = db
     .prepare(
-      `SELECT p.slug, p.name,
-              (SELECT COUNT(*) FROM permissions WHERE project_id = p.id AND harness = 'codex' AND decision = 'allow') AS allowed,
-              (SELECT COUNT(*) FROM objectives WHERE project_id = p.id AND status NOT IN ('proven','abandoned')) AS open_objectives
-       FROM projects p`,
+      `SELECT p.slug, p.name, COUNT(*) AS denied
+       FROM permissions pe JOIN projects p ON p.id = pe.project_id
+       WHERE pe.harness = 'codex' AND pe.decision = 'deny'
+       GROUP BY p.slug, p.name`,
     )
     .all()
-    .filter((p) => p.open_objectives > 0 && p.allowed === 0)
-    .map((p) => ({
-      kind: 'codex_no_tools',
-      severity: BLOCKING,
-      project: p.slug,
-      objective: null,
-      title: `${p.name}: every pass routed to Codex fails before it starts`,
-      detail:
-        'Codex has no allowed tool here, so the pass is cancelled the moment the judge picks it — ' +
-        'which is why work appears to go to Claude by choice rather than by default. Note what ' +
-        'granting the list does and does not do: Codex runs with approvals and sandbox bypassed, ' +
-        'so the per-tool rules shown for it are never enforced. The list unblocks the pass; it does ' +
-        'not constrain what Codex then does.',
-      action: 'Decide whether Codex may work unsandboxed on this repository before allowing its tools.',
-      since: null,
-    }))
+    .filter((p) => p.denied > 0)
+
+  return rules.map((p) => ({
+    kind: 'codex_rules_not_enforced',
+    severity: WARNING,
+    project: p.slug,
+    objective: null,
+    title: `The ${p.denied} rules shown for Codex on ${p.name} are not enforced`,
+    detail:
+      'Codex runs with approvals and sandbox bypassed — the only way it can reach Unity without ' +
+      'someone at the screen. It is never handed this list, so nothing here stops it pushing, ' +
+      'tagging or deleting. The rules are a wish, not a barrier.',
+    action:
+      'To hold these four for real, enforce them in the repository itself (a pre-push hook binds ' +
+      'every harness, sandboxed or not) — or accept them as documentation and say so.',
+    since: null,
+  }))
 }
 
 /** What an agent asked for and nobody decided. */

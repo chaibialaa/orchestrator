@@ -109,5 +109,7 @@ test('the unseeded-tools rule actually fires', async () => {
     .filter((b) => b.project === 'p')
     .map((b) => b.kind)
   assert.ok(kinds.includes('permissions_unseeded'), 'a project with open work and no tools is blocked')
-  assert.ok(kinds.includes('codex_no_tools'), 'and Codex having no tools is said out loud')
+  // Codex is not blocked by an empty list — it is never handed one. What is worth
+  // saying is that the rules displayed for it hold nothing back.
+  assert.ok(!kinds.includes('codex_no_tools'))
 })

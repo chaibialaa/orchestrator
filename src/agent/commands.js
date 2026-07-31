@@ -105,6 +105,12 @@ function editeurUnityVivant() {
 
 const config = loadConfig()
 
+/**
+ * Harnesses that are actually given their allow list, and therefore constrained
+ * by it. Anything not in here shows rules on screen that nothing enforces.
+ */
+const ENFORCED_ALLOWLIST = new Set(['claude'])
+
 async function call(method, path, body, { soft = false } = {}) {
   const upload = () =>
     fetch(`${config.apiUrl}${path}`, {
@@ -3084,7 +3090,13 @@ async function runHarness(harness, task) {
     )
   }
 
-  if (!perms.allow?.length) {
+  // Only for harnesses whose list is actually handed to them. Claude receives
+  // `--allowed-tools`, so an empty list really does mean every call is refused
+  // and the pass would bill for nothing. Codex is launched with approvals and
+  // sandbox bypassed and never sees the list at all — applying a Claude-shaped
+  // rule to it blocked a harness that had just produced fourteen advancing
+  // passes, in the name of a protection that was not in force.
+  if (ENFORCED_ALLOWLIST.has(harness) && !perms.allow?.length) {
     throw new Error(
       `No tool allowed for “${harness}” on this project — pass cancelled. ` +
         'In a non-interactive session a tool off the list is refused without asking: nothing could succeed.',

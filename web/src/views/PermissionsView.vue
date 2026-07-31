@@ -91,6 +91,13 @@ const decisionLabel: Record<Decision, string> = {
             A session running with nobody at the screen cannot ask for anything: whatever is not
             allowed here is simply refused.
           </p>
+          <!-- Rules that hold nothing back must not look like rules that do. -->
+          <p class="text-halt mt-2 max-w-3xl text-[12px]">
+            True of Claude. <strong>Not of Codex</strong>: it is launched with approvals and sandbox
+            bypassed — the only way it reaches Unity unattended — so it is never handed this list.
+            Its rules below are documentation, not a barrier. To hold one for real, enforce it in
+            the repository itself.
+          </p>
         </div>
         <input
           v-model="filter"
