@@ -232,6 +232,8 @@ export interface Activity {
 /** What is in the way, derived from traces — never typed. Every entry names its action. */
 export interface Blocker {
   kind: string
+  /** The same title without the project's name, so N projects share one card. */
+  group?: string
   severity: 'blocking' | 'warning'
   project: string | null
   objective: number | null

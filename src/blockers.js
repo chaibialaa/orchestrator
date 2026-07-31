@@ -75,6 +75,7 @@ function unityClosed(db) {
 
   return expecting.map((p) => ({
     kind: 'unity_closed',
+      group: 'The Unity editor is closed',
     severity: BLOCKING,
     project: p.slug,
     objective: null,
@@ -111,6 +112,7 @@ function emptyPermissions(db) {
     .filter((p) => p.open_objectives > 0 && p.allowed < FLOOR)
     .map((p) => ({
       kind: 'permissions_unseeded',
+      group: 'No allowed tools — a pass cannot do anything',
       severity: BLOCKING,
       project: p.slug,
       objective: null,
@@ -150,6 +152,7 @@ function codexRulesNotEnforced(db) {
       const held = p.repo_path && guardedAgainstPush(p.repo_path)
       return {
         kind: 'codex_rules_not_enforced',
+        group: held ? 'Pushing is held by the repository — the other rules are not' : 'Codex’s rules are not enforced',
         severity: WARNING,
         project: p.slug,
         objective: null,
@@ -197,6 +200,7 @@ function undecidedRefusals(db) {
     .all()
     .map((r) => ({
       kind: 'refusal_pending',
+      group: 'An agent asked for something and nobody answered',
       severity: WARNING,
       project: r.slug,
       objective: null,
@@ -215,6 +219,7 @@ function storages(db) {
     if (!s.credentials) {
       out.push({
         kind: 'storage_unconnected',
+        group: 'A storage was declared but never connected',
         severity: WARNING,
         project: null,
         objective: null,
@@ -230,6 +235,7 @@ function storages(db) {
     if (s.last_status === 'refused' || s.last_status === 'absent') {
       out.push({
         kind: 'storage_refused',
+        group: 'A storage is refusing what we send it',
         severity: WARNING,
         project: null,
         objective: null,

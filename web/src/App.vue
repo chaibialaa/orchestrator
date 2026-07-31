@@ -2,6 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, type Project } from './api'
+import ProjectSwitcher from './components/ProjectSwitcher.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -41,19 +42,7 @@ onMounted(async () => {
             Overview
           </RouterLink>
           <span class="text-ink-700 px-1">·</span>
-          <RouterLink
-            v-for="p in projects"
-            :key="p.id"
-            :to="`/p/${p.slug}`"
-            class="px-2.5 py-1 rounded text-[12px] whitespace-nowrap"
-            :class="
-              route.params.slug === p.slug
-                ? 'bg-ink-700 text-ink-100'
-                : 'text-ink-400 hover:text-ink-100'
-            "
-          >
-            {{ p.name }}
-          </RouterLink>
+          <ProjectSwitcher :projects="projects" />
         </nav>
 
         <div class="ml-auto flex items-center gap-3 text-[11px] text-ink-400">

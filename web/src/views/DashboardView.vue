@@ -171,13 +171,24 @@ const segColor: Record<string, string> = {
       </dl>
     </header>
 
-    <!-- ═══ THE ONLY PART THAT ASKS SOMETHING OF YOU ═══ -->
-    <section>
+    <p v-if="!needsYou" class="text-ink-500 -mt-4">
+      <span class="label">Needs you</span>
+      — nothing. The loop handles what it can handle on its own.
+    </p>
+
+    <!-- Two columns because these are two different questions, and stacking them
+         full-width made the second look like more of the first. On the left, what
+         wants a decision from you; on the right, conditions that will make a pass
+         fail before it starts. Below 1280px they stack — there is no honest way to
+         put two columns on a narrow screen. -->
+    <div
+      class="grid grid-cols-1 gap-8 items-start"
+      :class="needsYou ? 'xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]' : 'max-w-4xl'"
+    >
+    <section v-if="needsYou">
       <h2 class="label mb-3">
         Needs you
-        <span v-if="needsYou" class="text-halt normal-case tracking-normal text-[12px] ml-1"
-          >— {{ needsYou }}</span
-        >
+        <span class="text-halt normal-case tracking-normal text-[12px] ml-1">— {{ needsYou }}</span>
       </h2>
 
       <button
@@ -189,9 +200,7 @@ const segColor: Record<string, string> = {
         notify me
       </button>
 
-      <p v-if="!needsYou" class="text-ink-500 text-[12px]">
-        Nothing. The loop handles what it can handle on its own.
-      </p>
+
 
       <div v-else class="space-y-2.5">
         <!-- Verdicts: everything is there, only the judgement is missing. -->
@@ -278,8 +287,9 @@ const segColor: Record<string, string> = {
       </div>
     </section>
 
-    <!-- ═══ WHAT IS IN THE WAY, AND WHAT IS MOVING ═══ -->
-    <Blockers />
+      <Blockers class="xl:sticky xl:top-16" />
+    </div>
+
     <ActivityFeed compact />
 
     <!-- ═══ WHERE THE PROJECTS STAND ═══ -->
@@ -288,12 +298,15 @@ const segColor: Record<string, string> = {
         <h2 class="label">Projects — {{ data.projects.length }}</h2>
         <NewProject class="ml-auto" @created="load" />
       </div>
-      <div class="card divide-y divide-ink-850">
+      <!-- Cards on a grid rather than a stack of full-width rows. A project is a
+           thing you compare against other projects; laid out one per line at 1400px
+           you compare a name on the left with a repository path a screen away. -->
+      <div class="grid gap-3 grid-cols-1 md:grid-cols-2 2xl:grid-cols-3">
         <RouterLink
           v-for="p in data.projects"
           :key="p.slug"
           :to="`/p/${p.slug}`"
-          class="p-4 block hover:bg-ink-850/40 transition-colors"
+          class="card p-4 block hover:border-ink-600 transition-colors"
         >
           <div class="flex items-baseline gap-3 flex-wrap">
             <span class="text-ink-100 text-[14px]">{{ p.name }}</span>
@@ -311,7 +324,7 @@ const segColor: Record<string, string> = {
             >
               {{ p.invariants.breached }} out of bounds
             </span>
-            <span class="ml-auto text-ink-600 text-[11px]">{{ ago(p.last_activity) }}</span>
+            <span class="ml-auto text-ink-600 text-[11px] shrink-0">{{ ago(p.last_activity) }}</span>
           </div>
 
           <!-- The bar IS the project: what is proven, what is moving, what is stuck. -->
@@ -329,7 +342,7 @@ const segColor: Record<string, string> = {
             <span class="num">{{ p.passages }} attempts</span>
             <span v-if="p.tokens" class="num">{{ formatTokens(p.tokens) }} tokens</span>
             <span v-if="p.cost_usd" class="num">${{ p.cost_usd.toFixed(2) }}</span>
-            <code v-if="p.repo_path" class="ml-auto truncate max-w-[20rem]">{{ p.repo_path }}</code>
+            <code v-if="p.repo_path" class="num w-full truncate text-ink-700">{{ p.repo_path }}</code>
           </div>
         </RouterLink>
       </div>

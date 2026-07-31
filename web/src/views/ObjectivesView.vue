@@ -218,7 +218,7 @@ function story(o: Objective): string {
     <!-- THE SUBJECT OF THE PAGE: the work branched — what was asked for, what it
          split into, and every attempt each part took. -->
     <section v-if="tree.length" class="space-y-4">
-      <RunQueue :slug="slug" :objectives="objectives" />
+      <RunQueue class="max-w-5xl" :slug="slug" :objectives="objectives" />
 
     <ProjectTree :nodes="tree" :slug="slug" />
     </section>

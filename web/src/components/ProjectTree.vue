@@ -91,7 +91,17 @@ function when(iso: string) {
 </script>
 
 <template>
-  <div v-for="root in roots" :key="root.id" class="card px-5 py-4">
+  <!-- Chapters side by side. Each is an independent block, and one per line meant
+       a card 1456px wide carrying text that ends a third of the way across —
+       every row asking the eye to travel past a screen of nothing. The tree
+       inside a card is unaffected: it reads top to bottom either way.
+
+       CSS columns rather than a grid: a grid aligns rows, so a short chapter
+       beside a long one leaves a hole the height of the difference. Columns pack.
+       The order becomes down-then-across, which is what a column of chapters
+       reads like anyway. -->
+  <div class="xl:columns-2 gap-4 [column-fill:balance]">
+  <div v-for="root in roots" :key="root.id" class="card px-5 py-4 mb-4 break-inside-avoid">
     <!-- ROOT — what was asked for -->
     <div class="relative pl-7">
       <span
@@ -198,5 +208,6 @@ function when(iso: string) {
       <span class="absolute left-[3px] top-1 text-ink-700 text-[9px] leading-none">▽</span>
       <span class="label text-ink-600">start</span>
     </div>
+  </div>
   </div>
 </template>

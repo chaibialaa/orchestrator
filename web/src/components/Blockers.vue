@@ -32,6 +32,32 @@ onUnmounted(() => window.clearInterval(timer))
 const blocking = computed(() => list.value.filter((b) => b.severity === 'blocking'))
 const warnings = computed(() => list.value.filter((b) => b.severity === 'warning'))
 
+/**
+ * One card per KIND, with the projects it affects listed inside.
+ *
+ * Six entries filled the screen with the same paragraph written out four times,
+ * once per project — the reader had to compare four blocks to notice they were
+ * identical. The condition is the thing; which projects have it is a detail of it.
+ */
+const groups = computed(() => {
+  const out = new Map<string, { key: string; severity: string; title: string; detail: string; action: string; items: Blocker[] }>()
+  for (const b of [...blocking.value, ...warnings.value]) {
+    const key = `${b.kind}:${b.group ?? b.title}`
+    const g = out.get(key)
+    if (g) g.items.push(b)
+    else
+      out.set(key, {
+        key,
+        severity: b.severity,
+        title: b.group ?? b.title,
+        detail: b.detail,
+        action: b.action,
+        items: [b],
+      })
+  }
+  return [...out.values()]
+})
+
 function ago(iso: string | null) {
   if (!iso) return null
   const s = Math.round((Date.now() - new Date(iso.replace(' ', 'T') + 'Z').getTime()) / 1000)
@@ -61,31 +87,35 @@ function ago(iso: string | null) {
 
     <ul class="mt-4 space-y-2.5">
       <li
-        v-for="(b, i) in [...blocking, ...warnings]"
-        :key="`${b.kind}-${b.project}-${i}`"
+        v-for="g in groups"
+        :key="g.key"
         class="border rounded p-3"
-        :class="b.severity === 'blocking' ? 'border-fail/40 bg-fail/5' : 'border-ink-800'"
+        :class="g.severity === 'blocking' ? 'border-fail/40 bg-fail/5' : 'border-ink-800'"
       >
         <div class="flex items-baseline gap-2.5 flex-wrap">
           <span
             class="w-1.5 h-1.5 rounded-full self-center shrink-0"
-            :class="b.severity === 'blocking' ? 'bg-fail' : 'bg-ink-600'"
+            :class="g.severity === 'blocking' ? 'bg-fail' : 'bg-ink-600'"
           />
-          <span class="text-ink-100 text-[13px]">{{ b.title }}</span>
-          <RouterLink
-            v-if="b.objective"
-            :to="`/o/${b.objective}`"
-            class="label text-run hover:underline"
+          <span class="text-ink-100 text-[13px]">{{ g.title }}</span>
+
+          <!-- Who it applies to, as a list rather than as N repetitions. -->
+          <span
+            v-for="b in g.items"
+            :key="`${b.project}-${b.objective ?? ''}`"
+            class="chip border-ink-700 text-ink-400"
           >
-            open #{{ b.objective }}
-          </RouterLink>
-          <span v-if="b.project" class="label text-ink-600">{{ b.project }}</span>
-          <span v-if="ago(b.since)" class="label text-ink-600 ml-auto">{{ ago(b.since) }}</span>
+            {{ b.project ?? 'everywhere' }}
+            <RouterLink v-if="b.objective" :to="`/o/${b.objective}`" class="text-run hover:underline">
+              #{{ b.objective }}
+            </RouterLink>
+            <span v-if="ago(b.since)" class="text-ink-600">{{ ago(b.since) }}</span>
+          </span>
         </div>
 
-        <p class="text-ink-400 text-[12px] mt-1.5 leading-relaxed">{{ b.detail }}</p>
-        <!-- The action is the point of the whole panel: it reads as an instruction. -->
-        <p class="text-ink-200 text-[12px] mt-1.5">→ {{ b.action }}</p>
+        <!-- Said once, at a length a person reads rather than scans past. -->
+        <p class="text-ink-400 text-[12px] mt-1.5 leading-relaxed max-w-[68ch]">{{ g.detail }}</p>
+        <p class="text-ink-200 text-[12px] mt-1.5 max-w-[68ch]">→ {{ g.action }}</p>
       </li>
     </ul>
 

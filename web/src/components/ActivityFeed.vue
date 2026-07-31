@@ -84,7 +84,10 @@ const lines = computed(() => (props.compact ? feed.value.slice(0, 6) : feed.valu
 </script>
 
 <template>
-  <section>
+  <!-- Capped rather than stretched. At 1456px the title's `flex-1` pushed the
+       project and the cost to the far edge, and a row you have to read across the
+       whole screen is a row you stop reading. -->
+  <section class="max-w-5xl">
     <h2 class="text-ink-300 text-[14px] mb-1">
       What is happening
       <span v-if="busyOn.length" class="text-run">— {{ busyOn.length }} running</span>
@@ -99,22 +102,25 @@ const lines = computed(() => (props.compact ? feed.value.slice(0, 6) : feed.valu
         v-for="(e, i) in lines"
         :key="`${e.type}-${e.objective_id}-${e.at}-${i}`"
         :to="`/o/${e.objective_id}`"
-        class="flex items-baseline gap-3 px-4 py-2.5 hover:bg-ink-850/40 transition-colors"
+        class="grid items-baseline gap-3 px-4 py-2.5 hover:bg-ink-850/40 transition-colors
+               grid-cols-[auto_3.25rem_minmax(0,auto)_minmax(0,1fr)_auto]"
       >
         <span class="w-1.5 h-1.5 rounded-full shrink-0 self-center" :class="ROW[e.type].dot" />
-        <span class="text-ink-600 text-[11px] w-14 shrink-0 tabular-nums">
+        <span class="text-ink-600 text-[11px] tabular-nums">
           {{ e.type === 'live' ? since(e.started_at ?? e.at) : since(e.at) }}
         </span>
-        <span class="text-[12px] shrink-0" :class="ROW[e.type].color">{{ phrase(e) }}</span>
-        <span class="text-ink-300 text-[12px] flex-1 truncate">
+        <span class="text-[12px] truncate" :class="ROW[e.type].color">{{ phrase(e) }}</span>
+        <span class="text-ink-300 text-[12px] truncate">
           <span class="text-ink-600">#{{ e.objective_id }}</span> {{ e.objective_title }}
         </span>
-        <span v-if="!slug && e.project" class="label text-ink-600 shrink-0">{{ e.project }}</span>
-        <span v-if="e.tokens" class="text-ink-600 text-[11px] shrink-0">{{ formatTokens(e.tokens) }}</span>
-        <span v-if="cost(e)" class="text-ink-500 text-[11px] shrink-0 tabular-nums">{{ cost(e) }}</span>
+        <span class="flex items-baseline gap-3 justify-end">
+          <span v-if="e.tokens" class="text-ink-600 text-[11px]">{{ formatTokens(e.tokens) }}</span>
+          <span v-if="cost(e)" class="text-ink-500 text-[11px] tabular-nums">{{ cost(e) }}</span>
+          <span v-if="!slug && e.project" class="label text-ink-600">{{ e.project }}</span>
+        </span>
       </RouterLink>
 
-      <p v-if="!lines.length" class="px-4 py-4 text-ink-500 text-[12px]">
+      <p v-if="!lines.length" class="px-4 py-4 text-ink-500 text-[12px] block">
         Nothing yet. The feed fills up as soon as an agent starts.
       </p>
     </div>
