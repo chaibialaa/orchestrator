@@ -10,6 +10,7 @@ import { evaluateGate, canStart, HUMAN_HALTS } from './gate.js'
 import { encrypt, decrypt, keyHint } from './crypto.js'
 import { upload, checkStorage, createDriveFolder } from './storage.js'
 import { blockers } from './blockers.js'
+import { signedIn } from './agent/relay.js'
 import {
   consentUrl,
   exchangeCode,
@@ -1309,7 +1310,7 @@ export function createServer() {
    */
   api.get('/setup', async (_req, res) => {
     const port = 9222
-    let browser = { listening: false, judgeTab: null }
+    let browser = { listening: false, judgeTab: null, signedIn: null }
     try {
       const tabs = await (await fetch(`http://127.0.0.1:${port}/json`, {
         signal: AbortSignal.timeout(2500),
@@ -1317,6 +1318,8 @@ export function createServer() {
       browser = {
         listening: true,
         judgeTab: tabs.find((t) => t.type === 'page' && String(t.url).includes('chatgpt.com'))?.url ?? null,
+        // A tab is not a session. Asked of the page, never inferred from the URL.
+        signedIn: await signedIn(port).catch(() => null),
       }
     } catch {
       /* not listening: that IS the answer */

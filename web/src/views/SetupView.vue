@@ -126,14 +126,31 @@ const requirements = computed(() => {
     fix: 'Nothing to do — a worker starts it itself, on a profile separate from the one you browse with.',
   })
 
+  // Asked of the page, not inferred from a URL: a tab parked on the sign-in
+  // screen satisfies "a chatgpt.com tab exists" perfectly, and the first pass
+  // would then run head-first into a form.
   list.push({
     key: 'tab',
-    met: Boolean(s.browser.judgeTab),
-    title: 'A signed-in ChatGPT tab is open',
-    evidence: s.browser.judgeTab ?? 'no chatgpt.com tab in that browser',
+    met: s.browser.signedIn === true,
+    title: 'The browser is signed in to ChatGPT',
+    evidence:
+      s.browser.signedIn === true
+        ? 'session live in the tool’s profile'
+        : s.browser.signedIn === false
+          ? 'signed out — the page is showing a login wall'
+          : s.browser.listening
+            ? 'no chatgpt.com tab to ask'
+            : 'browser not reachable, so not knowable',
+    // Only ask for a sign-in when there is one to do. Telling someone to sign in
+    // because a tab happens to be closed sends them to fix the wrong thing.
     fix:
-      'Open chatgpt.com in that Chrome and sign in, once. The session then lives in that profile ' +
-      'and the loop reuses it; signing in is yours to do, and a password is never the tool’s to type.',
+      s.browser.signedIn === false
+        ? 'Sign in once in that Chrome — the one the tool started, not the one you browse with. ' +
+          'The session then lives in that profile and every run reuses it. A password is never ' +
+          'the tool’s to type.'
+        : s.browser.listening
+          ? 'Nothing to do — the loop opens the conversation itself when it needs one.'
+          : 'Nothing to do — a worker starts the browser itself.',
   })
 
   list.push({

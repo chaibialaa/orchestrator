@@ -248,6 +248,46 @@ async function attachTo(tab) {
   return { evaluate, reload, url: tab.url, close: () => ws.close() }
 }
 
+/**
+ * Is this browser signed in to the conversation, or looking at a login wall?
+ *
+ * "A chatgpt.com tab exists" was the test, and it is not the same question: a
+ * tab parked on the sign-in page satisfies it perfectly, so the walkthrough
+ * would report the browser ready and the first pass would fail against a form.
+ *
+ * The composer is the signal, checked rather than assumed — a probe on the live
+ * page showed the account button selectors matching nothing at all, so guessing
+ * would have inverted the answer. Returns null when the browser cannot be
+ * reached: not signed in and not knowable are different states, and reporting
+ * "signed out" for a browser that is simply absent would send someone off to fix
+ * the wrong thing.
+ */
+export async function signedIn(port = CDP_PORT) {
+  let page
+  try {
+    page = await attach('chatgpt.com', port)
+  } catch {
+    return null
+  }
+  try {
+    const raw = await page.evaluate(
+      `JSON.stringify({
+        url: location.href,
+        composer: Boolean(document.querySelector('#prompt-textarea, [contenteditable="true"]')),
+        login: /log in|sign up|create account/i.test(document.body.innerText.slice(0, 2000)),
+      })`,
+      { timeoutMs: 8000, retries: 0 },
+    )
+    const seen = JSON.parse(raw)
+    if (/auth\.openai\.com|\/auth\/login/.test(seen.url)) return false
+    return seen.composer && !seen.login
+  } catch {
+    return null
+  } finally {
+    page.close()
+  }
+}
+
 /** The assistant's last message, as displayed. */
 export const JS_LAST_ASSISTANT = `
 (() => {

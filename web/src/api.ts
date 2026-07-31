@@ -289,7 +289,8 @@ export interface Setup {
   controller: 'claude' | 'codex' | 'none' | null
   walkthrough_done: boolean
   harnesses: { claude: string | null; codex: string | null }
-  browser: { listening: boolean; judgeTab: string | null; port: number }
+  /** `signedIn` is null when the browser could not be reached — not the same as false. */
+  browser: { listening: boolean; judgeTab: string | null; signedIn: boolean | null; port: number }
   projects: {
     slug: string
     name: string
