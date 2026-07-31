@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { base, json } from './db/index.js'
 import { oauthAppPresent, PROVIDER_OF } from './oauth.js'
+import { mcpServers } from './mcp.js'
 
 /**
  * What is standing in the way, derived — never declared.
@@ -30,6 +31,7 @@ export function blockers() {
   out.push(...unityClosed(db))
   out.push(...emptyPermissions(db))
   out.push(...codexRulesNotEnforced(db))
+  out.push(...mcpVersionsDisagree())
   out.push(...undecidedRefusals(db))
   out.push(...storages(db))
 
@@ -186,6 +188,37 @@ function guardedAgainstPush(repoPath) {
   } catch {
     return false
   }
+}
+
+/**
+ * Two harnesses pointing at different versions of the same MCP server.
+ *
+ * Nothing in a trace explains this. One project's Unity work succeeds and
+ * another's refuses, both "correctly", and the only difference is a version
+ * pinned in a file nobody looks at. mcpforunityserver 10.0.0 cannot target a
+ * named Unity instance: with two editors open it declines to act rather than
+ * write into the wrong one — right behaviour, incomprehensible symptom.
+ */
+function mcpVersionsDisagree() {
+  return mcpServers()
+    .filter((s) => s.disagrees)
+    .map((s) => ({
+      kind: 'mcp_version_split',
+      severity: WARNING,
+      project: null,
+      objective: null,
+      title: `${s.name}: the harnesses are on different versions`,
+      detail:
+        s.entries
+          .filter((e) => e.pin)
+          .map((e) => `${e.harness} ${e.scope ? e.scope.split('/').pop() : 'globally'} → ${e.pin.version}`)
+          .join(' · ') +
+        '. The same tool call can succeed on one and be refused on the other, and no trace says why.',
+      action:
+        'Pin one version everywhere, in the harnesses’ own configuration — ~/.claude.json and ' +
+        '~/.codex/config.toml. Orchestrator reads those files; it does not keep a copy to drift from them.',
+      since: null,
+    }))
 }
 
 /** What an agent asked for and nobody decided. */

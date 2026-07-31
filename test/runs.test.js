@@ -140,3 +140,14 @@ test('the unseeded-tools rule actually fires', async () => {
   // saying is that the rules displayed for it hold nothing back.
   assert.ok(!kinds.includes('codex_no_tools'))
 })
+
+test('a Set has no length, and the version check has to know that', async () => {
+  // `e.versions.length > 1` on a Set is `undefined > 1` — false for every server,
+  // including the one that disagreed. The same shape as `p.family` and
+  // `p.openHaltsOf` before it: a property that does not exist reads as falsy and
+  // the rule quietly never fires.
+  const { mcpServers } = await import('../src/mcp.js')
+  for (const s of mcpServers()) {
+    assert.equal(s.disagrees, s.versions.length > 1, `${s.name} reports its own disagreement`)
+  }
+})

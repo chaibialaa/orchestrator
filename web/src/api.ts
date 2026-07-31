@@ -269,6 +269,23 @@ export type TreeNode = {
   attempts: TreeAttempt[]
 }
 
+/** An MCP server, as each harness's own configuration declares it. */
+export interface McpServer {
+  name: string
+  /** `UnityMCP` and `unityMCP` are one server; the harnesses use them verbatim. */
+  aliases: string[]
+  versions: string[]
+  disagrees: boolean
+  entries: {
+    harness: string
+    /** The project path it is declared for, or null when it is global. */
+    scope: string | null
+    name: string
+    command: string | null
+    pin: { package: string; version: string } | null
+  }[]
+}
+
 /** A file a PERSON put into the process — a mock-up, a screenshot of what broke. */
 export interface Attachment {
   id: number
@@ -512,6 +529,8 @@ export const api = {
   /** Clear the open halts of one KIND on an objective — `resolveHalt` above takes an id. */
   clearHalts: (objectiveId: number, reason: string) =>
     http.post(`/objectives/${objectiveId}/halts/resolve`, { reason }).then((r) => r.data),
+
+  mcp: () => http.get<McpServer[]>('/mcp').then((r) => r.data),
 
   attachments: (slug: string, kind?: string, ownerId?: number) =>
     http

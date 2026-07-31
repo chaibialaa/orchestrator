@@ -11,6 +11,7 @@ import { encrypt, decrypt, keyHint } from './crypto.js'
 import { upload, checkStorage, createDriveFolder } from './storage.js'
 import { blockers } from './blockers.js'
 import { signedIn } from './agent/relay.js'
+import { mcpServers } from './mcp.js'
 import {
   consentUrl,
   exchangeCode,
@@ -1371,6 +1372,9 @@ export function createServer() {
   })
 
   api.get('/blockers', (_req, res) => res.json(blockers()))
+
+  /** What each harness is wired to, read from the harnesses' own configuration. */
+  api.get('/mcp', (_req, res) => res.json(mcpServers()))
 
   // ---- stockages distants -------------------------------------------------
 

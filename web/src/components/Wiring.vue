@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { api, type Wiring } from '../api'
+import { api, type Wiring, type McpServer } from '../api'
 
 /**
  * What is connected, and what is actually used.
@@ -14,11 +14,13 @@ import { api, type Wiring } from '../api'
  * harness traces. Neither is declared, and the screen says which is which.
  */
 const data = ref<Wiring | null>(null)
+const servers = ref<McpServer[]>([])
 let timer: number | undefined
 
 async function load() {
   try {
     data.value = await api.wiring()
+    servers.value = await api.mcp()
   } catch {
     /* the wiring failing to load must not take the page down */
   }
@@ -92,6 +94,49 @@ const shortName = (t: string) => t.replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '')
       <p class="text-ink-600 text-[11px] mt-2">
         Not checked in a while? Run
         <code class="text-ink-500">orchestrator agents:check</code> on the machine concerned.
+      </p>
+    </div>
+
+    <!-- WHAT IS WIRED, as opposed to what was called. A server nobody reached
+         looked exactly like a server that does not exist, and the difference is
+         the whole diagnosis. -->
+    <div v-if="servers.length" class="mt-6">
+      <div class="label mb-2">MCP servers each harness is configured with</div>
+      <div class="divide-y divide-ink-850">
+        <div v-for="s in servers" :key="s.name" class="py-2.5">
+          <div class="flex items-baseline gap-3 flex-wrap">
+            <span
+              class="w-1.5 h-1.5 rounded-full self-center shrink-0"
+              :class="s.disagrees ? 'bg-halt' : 'bg-ink-600'"
+            />
+            <span class="text-ink-100">{{ s.name }}</span>
+            <span v-if="s.aliases.length > 1" class="text-ink-700 text-[11px]">
+              also {{ s.aliases.filter((a) => a !== s.name).join(', ') }}
+            </span>
+            <span v-if="s.disagrees" class="text-halt text-[11px]">versions differ</span>
+            <span v-else-if="s.versions.length" class="num text-ink-500 text-[11px]">
+              {{ s.versions[0] }}
+            </span>
+            <span v-else class="text-ink-700 text-[11px]">no version pinned</span>
+          </div>
+
+          <!-- Only spelled out when it matters: who is on what. -->
+          <div v-if="s.disagrees" class="mt-1.5 pl-4.5 space-y-0.5">
+            <div v-for="(e, i) in s.entries" :key="i" class="flex items-baseline gap-3 text-[11px]">
+              <span class="text-ink-400 w-14">{{ e.harness }}</span>
+              <span class="num text-ink-600 flex-1 truncate">
+                {{ e.scope ? e.scope.split('/').pop() : 'globally' }}
+              </span>
+              <span class="num" :class="e.pin ? 'text-ink-300' : 'text-ink-700'">
+                {{ e.pin ? e.pin.version : '—' }}
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="text-ink-600 text-[11px] mt-2 max-w-[68ch]">
+        Read from the harnesses' own files — ~/.claude.json and ~/.codex/config.toml. Orchestrator
+        keeps no copy: one would drift the first time somebody edited the real thing.
       </p>
     </div>
 
