@@ -875,6 +875,76 @@ export function createServer() {
     res.json(objectiveBy(o.id))
   })
 
+  /**
+   * How a chapter began and how it ended — derived, like everything else.
+   *
+   * Asked for as "the starting state and the final state, with the proof of
+   * each". None of it needs declaring: the first visual proof attached to a
+   * chapter or its children IS the before, the last one is the after, and what
+   * it cost sits in the attempts. A field somebody has to remember to fill would
+   * be empty on every chapter that mattered.
+   *
+   * Counts the chapter AND its children: a chapter's evidence is mostly produced
+   * by its steps, and asking only about the parent returned an empty history for
+   * a chapter that had thirty passes behind it.
+   */
+  api.get('/objectives/:id/closure', (req, res) => {
+    const o = objectiveBy(req.params.id)
+    const family = { id: o.id }
+
+    const span = db()
+      .prepare(
+        `SELECT MIN(started_at) AS started, MAX(ended_at) AS ended,
+                COUNT(*) AS attempts, COALESCE(SUM(cost_usd),0) AS cost,
+                COALESCE(SUM(tokens),0) AS tokens
+         FROM passages
+         WHERE objective_id = @id OR objective_id IN (SELECT id FROM objectives WHERE parent_id = @id)`,
+      )
+      .get(family)
+
+    const visual = db()
+      .prepare(
+        `SELECT id, type, label, ref, verdict, created_at FROM evidences
+         WHERE (objective_id = @id OR objective_id IN (SELECT id FROM objectives WHERE parent_id = @id))
+           AND type IN ('render','screenshot')
+         ORDER BY created_at`,
+      )
+      .all(family)
+      .map(sortirPreuve)
+
+    const passing = db()
+      .prepare(
+        `SELECT id, type, label, ref, verdict, created_at FROM evidences
+         WHERE objective_id = @id AND verdict = 'pass' ORDER BY created_at DESC`,
+      )
+      .all(family)
+      .map(sortirPreuve)
+
+    const steps = db()
+      .prepare('SELECT id, title, status, proof_spec FROM objectives WHERE parent_id = ? ORDER BY priority')
+      .all(o.id)
+
+    res.json({
+      objective: { id: o.id, title: o.title, status: o.status, proof_spec: o.proof_spec, proven_at: o.proven_at },
+      span: {
+        started: span.started,
+        ended: span.ended,
+        attempts: span.attempts,
+        cost_usd: Number(span.cost),
+        tokens: Number(span.tokens),
+      },
+      // Named `before`/`after` rather than first/last: what the reader wants is
+      // the comparison, and two identical-looking fields invite reading them the
+      // wrong way round.
+      before: visual[0] ?? null,
+      after: visual.length > 1 ? visual[visual.length - 1] : null,
+      visual_count: visual.length,
+      // What actually settled it, as opposed to what merely came out.
+      settled_by: passing,
+      steps,
+    })
+  })
+
   // ---- tentatives et preuves ---------------------------------------------
 
   api.post('/objectives/:id/passages', (req, res) => {

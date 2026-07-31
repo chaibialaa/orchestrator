@@ -272,6 +272,19 @@ export type TreeNode = {
   attempts: TreeAttempt[]
 }
 
+/** How a chapter began, how it ended, and what settled it — all derived. */
+export interface Closure {
+  objective: { id: number; title: string; status: string; proof_spec: string | null; proven_at: string | null }
+  span: { started: string | null; ended: string | null; attempts: number; cost_usd: number; tokens: number }
+  /** First and last visual proof, in time order. `after` is null when there is only one. */
+  before: Evidence | null
+  after: Evidence | null
+  visual_count: number
+  /** Passing proofs on the chapter itself — not the same set as what came out. */
+  settled_by: Evidence[]
+  steps: { id: number; title: string; status: string; proof_spec: string | null }[]
+}
+
 /** An MCP server, as each harness's own configuration declares it. */
 export interface McpServer {
   name: string
@@ -536,6 +549,7 @@ export const api = {
     http.post(`/objectives/${objectiveId}/halts/resolve`, { reason }).then((r) => r.data),
 
   mcp: () => http.get<McpServer[]>('/mcp').then((r) => r.data),
+  closure: (id: number) => http.get<Closure>(`/objectives/${id}/closure`).then((r) => r.data),
 
   attachments: (slug: string, kind?: string, ownerId?: number) =>
     http

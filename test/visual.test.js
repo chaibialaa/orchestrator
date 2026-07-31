@@ -1,37 +1,37 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 
 const { measureImage, compareToReference } = await import('../src/visual.js')
 
-const CACHE = '/Users/macbook/.claude/image-cache/b3c9ebee-6e9d-4ef6-a3db-f9bb4c58ee71'
-const START = `${CACHE}/12.png`
-const TARGET = `${CACHE}/11.png`
-const available = existsSync(START) && existsSync(TARGET)
+// Two images written by test/fixtures/make.js: same masses, same green share,
+// one flat and one varied. The first version of this test read images from the
+// conversation's cache, which is swept — so it silently skipped and protected
+// nothing. A test that depends on a file somebody else's housekeeping deletes is
+// not a test.
+const here = dirname(fileURLToPath(import.meta.url))
+const FLAT = join(here, 'fixtures/flat.png')
+const VARIED = join(here, 'fixtures/varied.png')
 
-test('colour variety discriminates where the obvious measure does not', { skip: !available }, () => {
-  // The finding this module exists for. On the same scene, the share of green
-  // pixels was 30.8% at the starting point and 31.2% on the target — so "it needs
-  // more vegetation" was simply false, and any criterion written on it would have
-  // passed on day one. Distinct colours told the real story: 564 against 1889.
-  const start = measureImage(START)
-  const target = measureImage(TARGET)
+test('colour variety discriminates where the obvious measure does not', () => {
+  // The finding this module exists for. On three real renderings of one scene the
+  // share of green was 30.8% at the starting point and 31.2% on the target — so
+  // "it needs more vegetation" was false, and a criterion written on it would
+  // have passed on day one. Distinct colours told the real story: 564 to 1889.
+  // The fixtures reproduce exactly that: identical green, variety far apart.
+  const flat = measureImage(FLAT)
+  const varied = measureImage(VARIED)
 
-  assert.ok(
-    Math.abs(start.greenShare - target.greenShare) < 0.05,
-    'green share cannot tell these two apart',
-  )
-  assert.ok(
-    target.distinctColours > start.distinctColours * 2,
-    'colour variety can: it is where the gap actually is',
-  )
+  assert.equal(flat.greenShare, varied.greenShare, 'green cannot tell them apart')
+  assert.ok(varied.distinctColours > flat.distinctColours * 2, 'variety can')
 })
 
-test('the comparison names each gap rather than averaging them away', { skip: !available }, () => {
+test('the comparison names each gap rather than averaging them away', () => {
   // One number invites "we are at 72/100", which is what a session then announces
-  // about its own work. It also cannot say WHICH of six things is missing.
-  const c = compareToReference(START, TARGET)
+  // about its own work — and it cannot say WHICH of six things is missing.
+  const c = compareToReference(FLAT, VARIED)
   assert.ok(c.ratios.distinctColours < 0.5, 'variety is far off')
-  assert.ok(c.ratios.greenShare > 0.9, 'and greenery is already there')
+  assert.equal(c.ratios.greenShare, 1, 'and greenery is already there')
   assert.equal(typeof c.caveat, 'string', 'the limit of the measure travels with it')
 })

@@ -21,6 +21,8 @@ const props = withDefaults(
     objectiveId?: number
     mode?: 'chapter' | 'plan'
     label?: string
+    /** Absent means the gate will refuse: better to say so than to offer a button. */
+    proofSpec?: string | null
   }>(),
   { mode: 'chapter' },
 )
@@ -140,6 +142,15 @@ function since(iso: string | null) {
       <button class="chip border-ink-600 text-ink-400 hover:text-fail hover:border-fail/60" @click="stop">
         {{ live.cancel_asked ? 'stopping after this turn…' : 'stop' }}
       </button>
+    </template>
+
+    <!-- Nothing to start: the gate refuses an objective that does not say how it
+         would be proven, and offering the button anyway teaches people that this
+         tool's buttons do not work. -->
+    <template v-if="mode === 'chapter' && proofSpec !== undefined && !proofSpec?.trim()">
+      <span class="text-ink-600">
+        Nothing can run this until someone writes what would prove it.
+      </span>
     </template>
 
     <!-- Idle: start it, and say how before you do. -->

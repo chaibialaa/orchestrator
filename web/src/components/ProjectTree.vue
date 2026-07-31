@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ChapterClosure from './ChapterClosure.vue'
 import { computed, ref } from 'vue'
 import { haltLabel, harnessLabel } from '../labels'
 import type { TreeNode, TreeAttempt } from '../api'
@@ -18,6 +19,9 @@ import RunControl from './RunControl.vue'
  */
 
 const props = defineProps<{ nodes: TreeNode[]; slug: string }>()
+
+/** Which chapter's before-and-after is open, if any. */
+const showing = ref<number | null>(null)
 
 /** Which steps show their attempts. A tree that expands everything is a list. */
 const opened = ref<Set<number>>(new Set())
@@ -118,6 +122,16 @@ function when(iso: string) {
       <RouterLink :to="`/o/${root.id}`" class="text-ink-100 text-[14px] hover:text-run transition-colors">
         {{ root.title }}
       </RouterLink>
+      <!-- Where a finished chapter earns a second look: what it was, what it
+           became, and which proof actually settled it. -->
+      <button
+        v-if="root.status === 'proven'"
+        class="label text-ink-600 hover:text-proof ml-2"
+        title="before and after, and what settled it"
+        @click="showing = root.id"
+      >
+        before / after
+      </button>
       <div class="text-[12px] mt-0.5" :class="stateOf(root).color">
         {{ stateOf(root).word }}
         <span v-if="root.attempts.length" class="text-ink-500">
@@ -128,7 +142,7 @@ function when(iso: string) {
 
       <!-- Start it from here. The whole point of the tool. -->
       <div class="mt-2 pb-3">
-        <RunControl :slug="slug" :objective-id="root.id" />
+        <RunControl :slug="slug" :objective-id="root.id" :proof-spec="root.proof_spec" />
       </div>
     </div>
 
@@ -210,4 +224,6 @@ function when(iso: string) {
     </div>
   </div>
   </div>
+
+  <ChapterClosure v-if="showing" :objective-id="showing" @close="showing = null" />
 </template>
