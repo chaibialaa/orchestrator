@@ -257,6 +257,30 @@ export type TreeNode = {
   attempts: TreeAttempt[]
 }
 
+/** A run the interface asked for; a local worker carries it out. */
+export interface Run {
+  id: number
+  project: string
+  project_id: number
+  objective_id: number | null
+  objective_title: string | null
+  mode: 'chapter' | 'plan'
+  max_turns: number
+  budget: number | null
+  budget_without_progress: number
+  post: boolean
+  hold_between_turns: boolean
+  status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
+  cancel_asked: boolean
+  machine: string | null
+  turn: number
+  note: string | null
+  error: string | null
+  requested_at: string
+  taken_at: string | null
+  ended_at: string | null
+}
+
 export interface Storage {
   id: number
   provider: 'gdrive' | 'dropbox'
@@ -419,6 +443,23 @@ export const api = {
       .then((r) => r.data),
 
   blockers: () => http.get<Blocker[]>('/blockers').then((r) => r.data),
+
+  runs: (slug?: string) =>
+    http.get<Run[]>(`/runs${slug ? `?project=${slug}` : ''}`).then((r) => r.data),
+  startRun: (
+    slug: string,
+    payload: {
+      objective?: number
+      mode?: 'chapter' | 'plan'
+      max_turns?: number
+      budget?: number | null
+      budget_without_progress?: number
+      post?: boolean
+      hold_between_turns?: boolean
+    },
+  ) => http.post<Run>(`/projects/${slug}/runs`, payload).then((r) => r.data),
+  cancelRun: (id: number) => http.post<Run>(`/runs/${id}/cancel`).then((r) => r.data),
+  continueRun: (id: number) => http.post<Run>(`/runs/${id}/continue`).then((r) => r.data),
   /** The project branched: chapters, their steps, and every attempt each one took. */
   tree: (slug: string) =>
     http

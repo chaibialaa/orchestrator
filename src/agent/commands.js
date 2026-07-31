@@ -1880,12 +1880,90 @@ const commands = {
     }
   },
 
+  /**
+   * The worker: it takes the runs the interface asked for and carries them out.
+   *
+   * The server records intents and executes nothing — that rule is what would make
+   * a hosted version defensible, and it is not negotiable. So a process on the
+   * machine that actually holds the repository polls for work, claims it, and runs
+   * the loop. Same shape as `plan --watch`, for the same reason.
+   *
+   * Until this existed, every run had to be typed into a terminal and the
+   * interface was a read-only mirror of work started somewhere else — which is not
+   * a tool, it is a dashboard.
+   *
+   * usage: orchestrator work [--every 5]
+   */
+  async work(...argv) {
+    const opts = parseFlags(argv)
+    if (!config.project) fail('no project: run this from a repository that has .orchestrator.json')
+
+    const every = Math.max(2, Number(opts.every ?? 5)) * 1000
+    console.log(`\n  worker on ${config.project} — checking every ${every / 1000} s\n`)
+
+    for (;;) {
+      const claimed = await call(
+        'POST',
+        `/projects/${config.project}/runs/claim`,
+        { machine: hostname(), pid: process.pid },
+        { soft: true },
+      ).catch(() => null)
+
+      const run = claimed?.run
+      if (!run) {
+        await pause(every)
+        continue
+      }
+
+      console.log(
+        `  run #${run.id} — ${run.mode}${run.objective_id ? ` on #${run.objective_id}` : ''}` +
+          `${run.post ? '' : ' · read only'}`,
+      )
+
+      const argsFor =
+        run.mode === 'plan'
+          ? ['--once']
+          : [
+              '--objective',
+              String(run.objective_id),
+              '--max-turns',
+              String(run.max_turns),
+              '--budget',
+              String(run.budget ?? 0),
+              '--budget-sans-progres',
+              String(run.budget_without_progress),
+              ...(run.post ? ['--post'] : []),
+              '--run',
+              String(run.id),
+            ]
+
+      try {
+        await commands[run.mode === 'plan' ? 'plan' : 'chapter'](...argsFor)
+        await call('PATCH', `/runs/${run.id}`, { status: 'done' }, { soft: true }).catch(() => {})
+        console.log(`  run #${run.id} — finished\n`)
+      } catch (e) {
+        // A run that throws must not take the worker with it: the next one in the
+        // queue has nothing to do with this failure.
+        await call(
+          'PATCH',
+          `/runs/${run.id}`,
+          { status: 'failed', error: String(e.message).slice(0, 500) },
+          { soft: true },
+        ).catch(() => {})
+        console.error(`  run #${run.id} — failed: ${String(e.message).slice(0, 160)}\n`)
+      }
+    }
+  },
+
   async chapter(...argv) {
     // Inside a loop, a gate refusal is information to act on, not a reason to die:
     // it is in fact exactly what we are trying to produce.
     process.env.ORCHESTRATOR_BOUCLE = '1'
     const opts = parseFlags(argv)
     const chapterId = Number(opts.objective ?? opts.chapter)
+    // Set when the interface asked for this run: it is what lets the loop report
+    // its turn and be stopped from the screen rather than from a terminal.
+    const runId = opts.run ? Number(opts.run) : null
     if (!chapterId) fail('usage: orchestrator chapter --objective <id> [--budget 60] [--max-turns 12] [--post]')
 
     let budget = Number(opts.budget ?? 0)
@@ -2222,6 +2300,41 @@ const commands = {
       }
 
       console.log(`  turn ${turn} — ${directive.harness}${budget ? ` · $${remaining.toFixed(2)} left` : ''}`)
+
+      // A run launched from the interface reports where it is, and obeys a stop
+      // asked for from there. Between two turns, never inside one: killing a
+      // session mid-flight throws away work already paid for.
+      if (runId) {
+        const state = await call(
+          'PATCH',
+          `/runs/${runId}`,
+          { turn, note: `turn ${turn} — ${directive.harness} on #${directive.task.match(/#(\d+)/)?.[1] ?? '?'}` },
+          { soft: true },
+        ).catch(() => null)
+
+        if (state?.cancel_asked) {
+          console.log('\n  STOP asked from the interface — the loop ends here.\n')
+          await call('PATCH', `/runs/${runId}`, { status: 'cancelled' }, { soft: true }).catch(() => {})
+          break
+        }
+
+        if (state?.hold_between_turns) {
+          console.log('  holding — waiting for "carry on" from the interface')
+          for (;;) {
+            await pause(5000)
+            const now = await call('GET', `/runs`, null, { soft: true }).catch(() => null)
+            const mine = (now ?? []).find((r) => r.id === runId)
+            if (!mine || mine.cancel_asked || !mine.hold_between_turns) break
+          }
+          const after = ((await call('GET', '/runs', null, { soft: true }).catch(() => null)) ?? []).find(
+            (r) => r.id === runId,
+          )
+          if (after?.cancel_asked) {
+            await call('PATCH', `/runs/${runId}`, { status: 'cancelled' }, { soft: true }).catch(() => {})
+            break
+          }
+        }
+      }
 
       // 3. Execute — never without --post, same default as the relay: a mode
       //    announced as "read only" must start no real session.

@@ -208,6 +208,129 @@ export function createServer() {
     })
   })
 
+  // ---- runs: what the interface asks for, a local worker carries out ---------
+
+  const publicRun = (r) =>
+    r && {
+      ...r,
+      post: Boolean(r.post),
+      hold_between_turns: Boolean(r.hold_between_turns),
+      cancel_asked: Boolean(r.cancel_asked),
+    }
+
+  api.get('/runs', (req, res) => {
+    const slug = req.query.project
+    const p = slug ? projectBy(String(slug)) : null
+    res.json(
+      db()
+        .prepare(
+          `SELECT r.*, o.title AS objective_title, pr.slug AS project
+           FROM runs r
+           JOIN projects pr ON pr.id = r.project_id
+           LEFT JOIN objectives o ON o.id = r.objective_id
+           ${p ? 'WHERE r.project_id = @project' : ''}
+           ORDER BY r.id DESC LIMIT 25`,
+        )
+        .all(p ? { project: p.id } : {})
+        .map(publicRun),
+    )
+  })
+
+  api.post('/projects/:slug/runs', (req, res) => {
+    const p = projectBy(req.params.slug)
+    const b = req.body ?? {}
+
+    if (b.mode && !['chapter', 'plan'].includes(b.mode)) {
+      throw new Rejected('Unknown run mode: chapter or plan.')
+    }
+
+    // One run per objective at a time. Two loops on the same objective fight over
+    // the same repository and the same conversation — which happened, and cost a
+    // Unity scene.
+    if (b.objective) {
+      const busy = db()
+        .prepare("SELECT id FROM runs WHERE objective_id = ? AND status IN ('pending','running')")
+        .get(b.objective)
+      if (busy) throw new Rejected(`A run is already queued or running on this objective (#${busy.id}).`)
+    }
+
+    const r = db()
+      .prepare(
+        `INSERT INTO runs (project_id, objective_id, mode, max_turns, budget,
+                           budget_without_progress, post, hold_between_turns)
+         VALUES (?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        p.id,
+        b.objective ?? null,
+        b.mode ?? 'chapter',
+        Number(b.max_turns ?? 8),
+        b.budget ? Number(b.budget) : null,
+        Number(b.budget_without_progress ?? 120),
+        b.post === false ? 0 : 1,
+        b.hold_between_turns ? 1 : 0,
+      )
+
+    res.status(201).json(publicRun(db().prepare('SELECT * FROM runs WHERE id = ?').get(r.lastInsertRowid)))
+  })
+
+  /** A worker claims the oldest pending run for a project. Atomic: two workers
+   *  polling at the same second must not both take it. */
+  api.post('/projects/:slug/runs/claim', (req, res) => {
+    const p = projectBy(req.params.slug)
+    const taken = db().transaction(() => {
+      const r = db()
+        .prepare("SELECT * FROM runs WHERE project_id = ? AND status = 'pending' ORDER BY id LIMIT 1")
+        .get(p.id)
+      if (!r) return null
+      db()
+        .prepare("UPDATE runs SET status='running', machine=?, pid=?, taken_at=? WHERE id=?")
+        .run(req.body?.machine ?? null, req.body?.pid ?? null, nowStamp(), r.id)
+      return db().prepare('SELECT * FROM runs WHERE id = ?').get(r.id)
+    })()
+    res.json({ run: publicRun(taken) })
+  })
+
+  api.patch('/runs/:id', (req, res) => {
+    const r = db().prepare('SELECT * FROM runs WHERE id = ?').get(req.params.id)
+    if (!r) throw new Rejected('This run does not exist.', 404)
+    const b = req.body ?? {}
+    const fields = {}
+    for (const k of ['status', 'turn', 'note', 'error', 'ended_at']) if (k in b) fields[k] = b[k]
+    if ('hold_between_turns' in b) fields.hold_between_turns = b.hold_between_turns ? 1 : 0
+    if (fields.status && ['done', 'failed', 'cancelled'].includes(fields.status) && !fields.ended_at) {
+      fields.ended_at = nowStamp()
+    }
+    const names = Object.keys(fields)
+    if (names.length) {
+      db()
+        .prepare(`UPDATE runs SET ${names.map((n) => `${n} = @${n}`).join(', ')} WHERE id = @id`)
+        .run({ ...fields, id: r.id })
+    }
+    res.json(publicRun(db().prepare('SELECT * FROM runs WHERE id = ?').get(r.id)))
+  })
+
+  /** Asking to stop is not stopping: the worker sees the flag between two turns
+   *  and finishes what it is doing. Killing mid-session would lose paid work. */
+  api.post('/runs/:id/cancel', (req, res) => {
+    const r = db().prepare('SELECT * FROM runs WHERE id = ?').get(req.params.id)
+    if (!r) throw new Rejected('This run does not exist.', 404)
+    if (r.status === 'pending') {
+      db().prepare("UPDATE runs SET status='cancelled', ended_at=? WHERE id=?").run(nowStamp(), r.id)
+    } else {
+      db().prepare('UPDATE runs SET cancel_asked=1 WHERE id=?').run(r.id)
+    }
+    res.json(publicRun(db().prepare('SELECT * FROM runs WHERE id = ?').get(r.id)))
+  })
+
+  /** "Carry on" — the answer to a run holding between turns. */
+  api.post('/runs/:id/continue', (req, res) => {
+    const r = db().prepare('SELECT * FROM runs WHERE id = ?').get(req.params.id)
+    if (!r) throw new Rejected('This run does not exist.', 404)
+    db().prepare("UPDATE runs SET note = NULL, hold_between_turns = 0 WHERE id = ?").run(r.id)
+    res.json(publicRun(db().prepare('SELECT * FROM runs WHERE id = ?').get(r.id)))
+  })
+
   api.get('/projects/:slug/stats', (req, res) => {
     const p = projectBy(req.params.slug)
     const objectives = db().prepare('SELECT id, status FROM objectives WHERE project_id = ?').all(p.id)

@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { haltLabel, harnessLabel } from '../labels'
 import type { TreeNode, TreeAttempt } from '../api'
+import RunControl from './RunControl.vue'
 
 /**
  * The project as a tree, drawn bottom to top.
@@ -16,7 +17,7 @@ import type { TreeNode, TreeAttempt } from '../api'
  * line rather than a border pretending to be one.
  */
 
-const props = defineProps<{ nodes: TreeNode[] }>()
+const props = defineProps<{ nodes: TreeNode[]; slug: string }>()
 
 /** Which steps show their attempts. A tree that expands everything is a list. */
 const opened = ref<Set<number>>(new Set())
@@ -107,12 +108,17 @@ function when(iso: string) {
       <RouterLink :to="`/o/${root.id}`" class="text-ink-100 text-[14px] hover:text-run transition-colors">
         {{ root.title }}
       </RouterLink>
-      <div class="text-[12px] mt-0.5 pb-3" :class="stateOf(root).color">
+      <div class="text-[12px] mt-0.5" :class="stateOf(root).color">
         {{ stateOf(root).word }}
         <span v-if="root.attempts.length" class="text-ink-500">
           · {{ root.attempts.length }} attempt{{ root.attempts.length > 1 ? 's' : '' }} on the chapter
           itself
         </span>
+      </div>
+
+      <!-- Start it from here. The whole point of the tool. -->
+      <div class="mt-2 pb-3">
+        <RunControl :slug="slug" :objective-id="root.id" />
       </div>
     </div>
 

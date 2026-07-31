@@ -182,7 +182,7 @@ function story(o: Objective): string {
     <!-- THE SUBJECT OF THE PAGE: the work branched — what was asked for, what it
          split into, and every attempt each part took. -->
     <section v-if="tree.length" class="space-y-4">
-      <ProjectTree :nodes="tree" />
+      <ProjectTree :nodes="tree" :slug="slug" />
     </section>
 
     <p v-if="autoResumed.length" class="text-ink-600 text-[12px]">

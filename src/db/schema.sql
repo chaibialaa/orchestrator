@@ -284,3 +284,43 @@ CREATE TABLE IF NOT EXISTS evidence_remotes (
   sent_at     TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE (evidence_id, storage_id)
 );
+
+-- A run the interface asked for, and a local worker will carry out.
+--
+-- The server NEVER executes anything: it records the intent, a worker on the
+-- machine that holds the repository claims it and runs the loop. Same pattern as
+-- briefs, and for the same reason — a hosted server that could run commands on
+-- someone's machine is indefensible.
+--
+-- Without this table the tool did not replace anything: every run still had to be
+-- typed into a terminal, and the interface was a read-only mirror of work started
+-- elsewhere.
+CREATE TABLE IF NOT EXISTS runs (
+  id           INTEGER PRIMARY KEY,
+  project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  objective_id INTEGER REFERENCES objectives(id) ON DELETE CASCADE,
+  -- `chapter` closes a chapter; `plan` breaks a brief down. What the worker runs.
+  mode         TEXT NOT NULL DEFAULT 'chapter' CHECK (mode IN ('chapter','plan')),
+  max_turns    INTEGER NOT NULL DEFAULT 8,
+  budget       REAL,
+  budget_without_progress REAL NOT NULL DEFAULT 120,
+  -- Whether the run may write into the driving conversation and execute. False is
+  -- a dry read, and it is the default everywhere else in this tool.
+  post         INTEGER NOT NULL DEFAULT 1,
+  -- After each turn, does the loop carry straight on, or stop and wait for a
+  -- person to say "next"? The autopilot is the point, but not everyone wants it
+  -- on every chapter.
+  hold_between_turns INTEGER NOT NULL DEFAULT 0,
+  status       TEXT NOT NULL DEFAULT 'pending'
+               CHECK (status IN ('pending','running','done','failed','cancelled')),
+  -- Set by a person while it runs; the worker checks it between turns.
+  cancel_asked INTEGER NOT NULL DEFAULT 0,
+  machine      TEXT,
+  pid          INTEGER,
+  turn         INTEGER NOT NULL DEFAULT 0,
+  note         TEXT,
+  error        TEXT,
+  requested_at TEXT NOT NULL DEFAULT (datetime('now')),
+  taken_at     TEXT,
+  ended_at     TEXT
+);
