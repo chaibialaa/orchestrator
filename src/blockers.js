@@ -32,6 +32,7 @@ export function blockers() {
   out.push(...emptyPermissions(db))
   out.push(...codexRulesNotEnforced(db))
   out.push(...mcpVersionsDisagree())
+  out.push(...projectHasNoContext(db))
   out.push(...undecidedRefusals(db))
   out.push(...storages(db))
 
@@ -217,6 +218,46 @@ function mcpVersionsDisagree() {
       action:
         'Pin one version everywhere, in the harnesses’ own configuration — ~/.claude.json and ' +
         '~/.codex/config.toml. Orchestrator reads those files; it does not keep a copy to drift from them.',
+      since: null,
+    }))
+}
+
+/**
+ * A project that has told the tool nothing about itself.
+ *
+ * A breakdown is only as good as what it knows. Iberis carries no decision and
+ * no document, so a plan for it would say "log in and test" — while the way to
+ * test it here is to forge a JWT, never a password. That knowledge exists in
+ * somebody's head and in a conversation; the plan generator cannot reach either.
+ *
+ * Not blocking: a plan can be written without it. Worth saying, because the plan
+ * will be confidently wrong rather than visibly incomplete, and that costs more.
+ */
+function projectHasNoContext(db) {
+  return db
+    .prepare(
+      `SELECT p.slug, p.name,
+              (SELECT COUNT(*) FROM decisions WHERE project_id = p.id) AS decisions,
+              (SELECT COUNT(*) FROM resources WHERE project_id = p.id) AS documents,
+              (SELECT COUNT(*) FROM objectives WHERE project_id = p.id AND status NOT IN ('proven','abandoned')) AS open
+       FROM projects p`,
+    )
+    .all()
+    .filter((p) => p.open > 0 && p.decisions === 0 && p.documents === 0)
+    .map((p) => ({
+      kind: 'no_project_context',
+      severity: WARNING,
+      project: p.slug,
+      objective: null,
+      title: `${p.name} has told the tool nothing about itself`,
+      detail:
+        'No decision, no document. A breakdown for this project can only produce what it would ' +
+        'produce for any project — and the things that make a plan right here are exactly the ' +
+        'ones nothing has recorded: how to authenticate in local testing, which database it ' +
+        'talks to, what must never be touched.',
+      action:
+        'Record what a newcomer would get wrong, as decisions on the project. The breakdown reads ' +
+        'them and stops contradicting what was already settled.',
       since: null,
     }))
 }

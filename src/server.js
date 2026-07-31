@@ -2276,8 +2276,15 @@ export function createServer() {
     const b = db().prepare('SELECT * FROM briefs WHERE id = ?').get(req.params.id)
     if (!b) throw new Rejected('This brief does not exist.', 404)
     const prop = req.body?.proposal
-    if (prop && (!prop.chapter || !Array.isArray(prop.steps) || !prop.steps.length)) {
-      throw new Rejected('Unusable breakdown: it needs a chapter and at least one step.')
+    if (prop) {
+      // One chapter or several. The breakdown learned to return `chapters` this
+      // morning and this guard was not told, so a plan of eighteen chapters would
+      // have been refused here — after being paid for.
+      const chapters = Array.isArray(prop.chapters) && prop.chapters.length ? prop.chapters : [prop]
+      const usable = chapters.every((c) => c?.chapter && Array.isArray(c.steps) && c.steps.length)
+      if (!usable) {
+        throw new Rejected('Unusable breakdown: every chapter needs a title and at least one step.')
+      }
     }
     db()
       .prepare('UPDATE briefs SET proposal=?, error=?, status=? WHERE id=?')

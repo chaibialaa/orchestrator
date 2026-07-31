@@ -23,9 +23,13 @@ async function load() {
         draft.value = {
           ...draft.value,
           [b.id]: {
-            chapter: b.proposal.chapter,
-            intent: b.proposal.intent ?? '',
-            steps: b.proposal.steps.map((e) => ({ ...e })),
+            // A multi-chapter plan is shown through its first chapter here; the
+            // rest is applied whole. Reading `.chapter` on a `{chapters:[…]}`
+            // proposal gave `undefined` and an empty step list — the shape that
+            // has cost this project seven defects today.
+            chapter: b.proposal.chapter ?? b.proposal.chapters?.[0]?.chapter ?? '',
+            intent: b.proposal.intent ?? b.proposal.chapters?.[0]?.intent ?? '',
+            steps: (b.proposal.steps ?? b.proposal.chapters?.[0]?.steps ?? []).map((e) => ({ ...e })),
           },
         }
       }
@@ -156,6 +160,45 @@ const busyOn = (b: Brief) => b.status === 'pending' || b.status === 'running'
         <p v-if="busyOn(b)" class="text-ink-500 text-[12px] mt-2">
           {{ b.body.slice(0, 160) }}{{ b.body.length > 160 ? '…' : '' }}
         </p>
+
+        <!-- What it had to decide that you did not say.
+             This is what replaces the back-and-forth: instead of reading a plan
+             and guessing where it misunderstood, you disagree with one line. A
+             wrong assumption here costs a sentence; the same one discovered
+             three chapters in costs the chapters. -->
+        <section v-if="b.proposal?.assumptions?.length" class="mt-3">
+          <span class="label">What it assumed</span>
+          <ul class="mt-1.5 space-y-1">
+            <li
+              v-for="(a, i) in b.proposal.assumptions"
+              :key="i"
+              class="text-ink-300 text-[12px] flex items-baseline gap-2 max-w-[68ch]"
+            >
+              <span class="text-ink-600 shrink-0">·</span>
+              <span>{{ a }}</span>
+            </li>
+          </ul>
+          <p class="text-ink-600 text-[11px] mt-1.5 max-w-[68ch]">
+            Wrong on any of these? Say so in a new brief rather than correcting the steps — the
+            plan follows from them.
+          </p>
+        </section>
+
+        <!-- What it could not settle. Naming a gap beats filling it with a guess
+             that reads like a decision. -->
+        <section v-if="b.proposal?.unknowns?.length" class="mt-3">
+          <span class="label text-halt">What it could not settle</span>
+          <ul class="mt-1.5 space-y-1">
+            <li
+              v-for="(u, i) in b.proposal.unknowns"
+              :key="i"
+              class="text-halt text-[12px] flex items-baseline gap-2 max-w-[68ch]"
+            >
+              <span class="shrink-0">·</span>
+              <span>{{ u }}</span>
+            </li>
+          </ul>
+        </section>
 
         <pre
           v-if="b.status === 'failed'"

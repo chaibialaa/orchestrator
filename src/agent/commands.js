@@ -1780,6 +1780,40 @@ const commands = {
        * a different number of weeks. Knowing changes the plan, so it belongs in
        * the breakdown and not only in the session that executes it.
        */
+      /**
+       * The reference material, measured rather than described.
+       *
+       * "Make it look like this image" is the most natural way to state a visual
+       * target and the least usable one: a breakdown that only reads the sentence
+       * writes "improve the vegetation", which is satisfied on day one. Attached
+       * images are measured here, so the target arrives as numbers the plan can
+       * put in a criterion.
+       */
+      const attached = await call(
+        'GET',
+        `/projects/${config.project}/attachments?kind=project`,
+        null,
+        { soft: true },
+      ).catch(() => null)
+
+      let references = ''
+      for (const a of (attached ?? []).slice(0, 6)) {
+        const line = `- ${a.name}${a.note ? ` — ${a.note}` : ''}\n  ${a.path}`
+        if (!/\.(png|jpe?g|webp)$/i.test(a.name)) {
+          references += `${line}\n`
+          continue
+        }
+        try {
+          const { measureImage } = await import('../visual.js')
+          const m = measureImage(a.path)
+          references +=
+            `${line}\n  measured: saturation ${m.saturation}, ${m.hues} hues, ` +
+            `${m.distinctColours} distinct colours, ${(m.greenShare * 100).toFixed(1)}% green\n`
+        } catch {
+          references += `${line}\n`
+        }
+      }
+
       const agents = await call('GET', '/agents', null, { soft: true }).catch(() => null)
       const sources = (agents ?? [])
         .filter((a) => a.enabled && a.kind === 'source')
@@ -1811,11 +1845,26 @@ const commands = {
         brief.body,
         '--- FIN ---',
         '',
+        references
+          ? `\nReference material provided for this project. Where an image is measured,` +
+            ` use those numbers in the criteria — a target stated as a picture becomes a target` +
+            ` a command can check:\n${references}`
+          : '',
+        '',
+        'Two things you must return besides the plan, and they matter as much:',
+        '- `assumptions`: everything you had to decide that the request did not say.',
+        '  Write each one as a sentence somebody can contradict in five words. "The grass',
+        '  is animated, not a static texture" is useful; "high quality" is not. This is',
+        '  what replaces a conversation: the reader disagrees with one line instead of',
+        '  rejecting the whole plan.',
+        '- `unknowns`: what you could not settle and what would settle it. Naming a gap',
+        '  is worth more than filling it with a guess that reads like a decision.',
+        '',
         'Reply ONLY with a JSON object, with no text around it and no code fence.',
         'One chapter:',
-        '{"chapter":"…","intent":"…","steps":[{"title":"…","proof_spec":"…","blast_radius":"feature"}]}',
+        '{"chapter":"…","intent":"…","assumptions":["…"],"unknowns":["…"],"steps":[{"title":"…","proof_spec":"…","blast_radius":"feature"}]}',
         'Several:',
-        '{"chapters":[{"chapter":"…","intent":"…","steps":[…]}]}',
+        '{"chapters":[{"chapter":"…","intent":"…","steps":[…]}],"assumptions":["…"],"unknowns":["…"]}',
       ]
         .filter(Boolean)
         .join('\n')

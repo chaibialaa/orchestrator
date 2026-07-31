@@ -262,3 +262,47 @@ test('a declared source reaches the breakdown, not just the session', async () =
   const refused = await post('/agents', { name: 'nope', label: 'x', kind: 'invented' })
   assert.equal(refused.status, 422, 'an unknown kind is refused out loud, not silently nulled')
 })
+
+test('a plan of several chapters survives the guard that stores it', async () => {
+  // The breakdown learned to return `chapters` in the morning; this guard was not
+  // told, and would have refused an eighteen-chapter plan AFTER paying for it.
+  const brief = await (await post('/projects/p/briefs', {
+    body: 'A request long enough to be taken seriously by the length check.',
+  })).json()
+
+  const res = await fetch(url(`/briefs/${brief.id}/propose`), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      proposal: {
+        chapters: [
+          { chapter: 'one', steps: [{ title: 'a', proof_spec: 'x' }] },
+          { chapter: 'two', steps: [{ title: 'b', proof_spec: 'y' }] },
+        ],
+        assumptions: ['the grass is animated, not a static texture'],
+        unknowns: ['what crowd density are we aiming for?'],
+      },
+    }),
+  })
+  const stored = await res.json()
+  assert.equal(stored.status, 'proposed')
+  assert.equal(stored.proposal.chapters.length, 2)
+
+  // The assumptions are the point: they are what a reader disagrees with, one
+  // line at a time, instead of rejecting a whole plan.
+  assert.equal(stored.proposal.assumptions.length, 1)
+  assert.equal(stored.proposal.unknowns.length, 1)
+})
+
+test('a chapter with no steps is still refused, however it is wrapped', async () => {
+  const brief = await (await post('/projects/p/briefs', {
+    body: 'Another request, long enough to pass the length check on the body.',
+  })).json()
+
+  const res = await fetch(url(`/briefs/${brief.id}/propose`), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ proposal: { chapters: [{ chapter: 'empty', steps: [] }] } }),
+  })
+  assert.equal(res.status, 422)
+})

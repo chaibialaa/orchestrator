@@ -151,7 +151,19 @@ export interface Brief {
   project_id: number
   body: string
   status: 'pending' | 'running' | 'proposed' | 'applied' | 'failed'
-  proposal: { chapter: string; intent?: string | null; steps: ProposedStep[] } | null
+  proposal:
+    | {
+        chapter?: string
+        intent?: string | null
+        steps?: ProposedStep[]
+        /** Several chapters when the request was already a plan. */
+        chapters?: { chapter: string; intent?: string | null; steps: ProposedStep[] }[]
+        /** What it had to decide that the request did not say — each contradictable in a few words. */
+        assumptions?: string[]
+        /** What it could not settle, and what would settle it. */
+        unknowns?: string[]
+      }
+    | null
   error: string | null
   harness: string | null
   created_at: string
