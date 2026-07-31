@@ -15,7 +15,6 @@ interface Perm {
   note: string | null
   requested: number
   last_requested_at: string | null
-  family: string
 }
 
 const perms = ref<Perm[]>([])
@@ -52,9 +51,16 @@ const visible = computed(() =>
     : perms.value,
 )
 
+/**
+ * By family of tool, which is what `label` holds.
+ *
+ * This grouped on `p.family` — a field declared on the interface and sent by
+ * nobody. TypeScript believed the declaration, so every rule fell into a single
+ * group whose heading read, in full: “undefined 66”.
+ */
 const grouped = computed(() => {
   const out: Record<string, Perm[]> = {}
-  for (const p of visible.value) (out[p.family] ??= []).push(p)
+  for (const p of visible.value) (out[p.label ?? 'Ungrouped'] ??= []).push(p)
   return out
 })
 

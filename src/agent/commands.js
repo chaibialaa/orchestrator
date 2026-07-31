@@ -2696,6 +2696,8 @@ const commands = {
         await resolveHalts(outcome.objectiveId)
       }
 
+      await shareNewProofs()
+
       await pause(4000)
     }
 
@@ -2821,6 +2823,29 @@ function parseFlags(argv) {
 const HUMAN_HALTS = ['blast_radius', 'no_provable_criterion', 'invariant_regression', 'budget', 'human_request']
 
 /** Clears the halts the loop knows how to handle, so it does not block itself. */
+/**
+ * Send whatever proof this turn produced to the shared storages.
+ *
+ * It was a button on the Tools screen and nothing else, so proofs reached a
+ * teammate's Drive only when somebody remembered to press it. A loop meant to
+ * run overnight cannot depend on that. The upload itself stays on the server —
+ * the credentials live there and must not travel — so this only asks.
+ *
+ * Bounded, soft and silent on failure: sharing is a courtesy to whoever reads
+ * the results later, never a reason to fail a turn that has already been paid
+ * for. The button remains, for the backlog that predates this.
+ */
+async function shareNewProofs() {
+  const storages = await call('GET', '/storages', null, { soft: true }).catch(() => null)
+  for (const st of storages ?? []) {
+    if (!st.enabled || !st.has_credentials) continue
+    const r = await call('POST', `/storages/${st.id}/sync`, { limite: 25 }, { soft: true }).catch(
+      () => null,
+    )
+    if (r?.uploaded?.length) console.log(`    ↗ ${r.uploaded.length} proof(s) shared to ${st.label}`)
+  }
+}
+
 async function resolveHalts(objectiveId) {
   if (!objectiveId) return
   const o = await call('GET', `/objectives/${objectiveId}`, null, { soft: true }).catch(() => null)

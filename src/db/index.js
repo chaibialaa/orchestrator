@@ -144,6 +144,8 @@ function renameLegacyColumns(db) {
   translateRoleValues(db)
   widenHaltReasons(db)
   widenRunModes(db)
+  translatePermissionLabels(db)
+  translateAgentLabels(db)
 }
 
 /**
@@ -187,6 +189,59 @@ function rebuildTable(db, name, marker) {
     db.exec(`ALTER TABLE ${name}_migrated RENAME TO ${name}`)
   })()
   db.exec('PRAGMA foreign_keys = ON')
+}
+
+/**
+ * Permission families and their notes are STORED VALUES shown on screen.
+ *
+ * The translation pass renamed identifiers and code strings and stopped there,
+ * so an English interface presented “Outils de base”, “Interdits” and four
+ * sentences of French to anyone who opened Permissions. Matched on the exact
+ * old text: a value already translated, or one someone wrote themselves, is
+ * left alone.
+ */
+function translateAgentLabels(db) {
+  // Same oversight, one table over: labels and capabilities are stored values the
+  // screen prints. `juge` also outlived the role rename, so the wiring view
+  // announced a capability spelled in a language nothing else on the page uses.
+  const labels = {
+    'GPT (conversation qui pilote)': 'GPT (the driving conversation)',
+    'RunPod (génération 3D)': 'RunPod (3D generation)',
+    'Nano Banana (images, web)': 'Nano Banana (images, web interface)',
+  }
+  const set = db.prepare('UPDATE agents SET label = ? WHERE label = ?')
+  db.transaction(() => {
+    for (const [from, to] of Object.entries(labels)) set.run(to, from)
+    for (const a of db.prepare('SELECT id, capabilities FROM agents').all()) {
+      if (!a.capabilities?.includes('"juge"')) continue
+      db.prepare('UPDATE agents SET capabilities = ? WHERE id = ?').run(
+        a.capabilities.replace('"juge"', '"judge"'),
+        a.id,
+      )
+    }
+  })()
+}
+
+function translatePermissionLabels(db) {
+  const labels = {
+    'Outils de base': 'Core tools',
+    Interdits: 'Never',
+    'Interdits absolus': 'Never',
+  }
+  const notes = {
+    'Lecture, ecriture et shell non destructif.': 'Reading, writing, and a shell that destroys nothing.',
+    'Autorise en non interactif : une session pilotee par le relais ne peut demander aucune validation. Les gardes s appliquent apres, sur le diff.':
+      'Allowed unattended: a session driven by the relay cannot ask for approval. The guards apply afterwards, on the diff.',
+    'Pousser, taguer, supprimer, elever les privileges, builder ou toucher aux paquets : jamais sans toi.':
+      'Pushing, tagging, deleting, elevating privileges, building or touching packages: never without you.',
+    'sort du dépôt ou ne se rattrape pas': 'leaves the repository, or cannot be taken back',
+  }
+  const set = db.prepare('UPDATE permissions SET label = ? WHERE label = ?')
+  const setNote = db.prepare('UPDATE permissions SET note = ? WHERE note = ?')
+  db.transaction(() => {
+    for (const [from, to] of Object.entries(labels)) set.run(to, from)
+    for (const [from, to] of Object.entries(notes)) setNote.run(to, from)
+  })()
 }
 
 function widenHaltReasons(db) {

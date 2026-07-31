@@ -1,10 +1,11 @@
 import express from 'express'
 import { execFileSync } from 'node:child_process'
 const { X_OK } = constants
-import { existsSync, statSync, createReadStream, accessSync, constants } from 'node:fs'
+import { existsSync, statSync, createReadStream, accessSync, constants, mkdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { resolve as path, join, extname, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { base, json, nowStamp } from './db/index.js'
+import { base, json, nowStamp, dbPath as dbPathOf } from './db/index.js'
 import { evaluateGate, canStart, HUMAN_HALTS } from './gate.js'
 import { encrypt, decrypt, keyHint } from './crypto.js'
 import { upload, checkStorage, createDriveFolder } from './storage.js'
@@ -1049,6 +1050,37 @@ export function createServer() {
    * client: only a path already recorded, and only while it stays under the
    * project repository's root.
    */
+  /**
+   * A downscaled copy, cached on disk, or null to serve the original.
+   *
+   * `sips` ships with macOS and this tool is already bound to it — Unity paths,
+   * `pgrep`, `open -a`. Anything that goes wrong here returns null rather than
+   * throwing: a thumbnail that cannot be made is worth serving full size, not
+   * worth failing the request over.
+   */
+  const thumbnail = (absolute, width) => {
+    try {
+      const cacheDir = join(dirname(dbPathOf()), 'thumbs')
+      mkdirSync(cacheDir, { recursive: true })
+      // The mtime is in the name: a rendering that is redone regenerates rather
+      // than serving the old one for as long as the cache survives.
+      const stamp = statSync(absolute).mtimeMs
+      const out = join(cacheDir, `${createHash('sha1').update(`${absolute}:${width}:${stamp}`).digest('hex')}.jpg`)
+      if (existsSync(out)) return out
+      // JPEG, not PNG: these are renderings of 3D scenes, which is the one thing
+      // PNG compresses badly. Same picture, a fifth of the bytes, at a size where
+      // the difference is not visible anyway.
+      execFileSync(
+        '/usr/bin/sips',
+        ['-Z', String(width), '-s', 'format', 'jpeg', '-s', 'formatOptions', '72', absolute, '--out', out],
+        { stdio: 'ignore', timeout: 15000 },
+      )
+      return existsSync(out) ? out : null
+    } catch {
+      return null
+    }
+  }
+
   api.get('/evidences/:id/file', (req, res) => {
     const e = db().prepare('SELECT * FROM evidences WHERE id = ?').get(req.params.id)
     if (!e) throw new Rejected('This proof does not exist.', 404)
@@ -1074,15 +1106,20 @@ export function createServer() {
     res.set('Content-Type', mime)
     res.set('Content-Disposition', `inline; filename="${basename(absolute)}"`)
     res.set('Cache-Control', 'public, max-age=3600')
-    createReadStream(absolute).pipe(res)
+
+    // The screen asks for a 480px thumbnail; this route used to ignore the ask and
+    // send the original. On an objective with 54 renderings that is seventy
+    // megabytes to draw a contact sheet — which is why the thumbnails were still
+    // blank grey squares long after the page had loaded.
+    const width = nombre(req.query.w, 0)
+    const small = width > 0 && mime.startsWith('image/') ? thumbnail(absolute, width) : null
+    // The thumbnail is a JPEG whatever the original was: say so, or the browser is
+    // handed a PNG header over JPEG bytes.
+    if (small) res.set('Content-Type', 'image/jpeg')
+    createReadStream(small ?? absolute).pipe(res)
   })
 
 
-  /**
-   * What is in the way, as a list of actions. Every entry cost real money before
-   * it was visible anywhere but a log file: that is this route's whole reason to
-   * exist.
-   */
   // ---- setup ---------------------------------------------------------------
 
   const setting = (key) => db().prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value ?? null

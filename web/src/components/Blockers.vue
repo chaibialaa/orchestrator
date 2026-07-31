@@ -10,6 +10,8 @@ import { api, type Blocker } from '../api'
  * stopped an hour ago. Each of those cost money before anyone noticed. The
  * panel earns its place only if it names the action, so it always does.
  */
+withDefaults(defineProps<{ columns?: number }>(), { columns: 1 })
+
 const list = ref<Blocker[]>([])
 const failed = ref(false)
 let timer: number | undefined
@@ -85,11 +87,11 @@ function ago(iso: string | null) {
       section below.
     </p>
 
-    <ul class="mt-4 space-y-2.5">
+    <ul class="mt-4 space-y-2.5" :class="columns > 1 ? 'lg:columns-2 lg:space-y-0 gap-2.5' : ''">
       <li
         v-for="g in groups"
         :key="g.key"
-        class="border rounded p-3"
+        class="border rounded p-3 break-inside-avoid mb-2.5"
         :class="g.severity === 'blocking' ? 'border-fail/40 bg-fail/5' : 'border-ink-800'"
       >
         <div class="flex items-baseline gap-2.5 flex-wrap">

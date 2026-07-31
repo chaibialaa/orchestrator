@@ -183,7 +183,7 @@ const segColor: Record<string, string> = {
          put two columns on a narrow screen. -->
     <div
       class="grid grid-cols-1 gap-8 items-start"
-      :class="needsYou ? 'xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]' : 'max-w-4xl'"
+      :class="needsYou ? 'xl:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]' : ''"
     >
     <section v-if="needsYou">
       <h2 class="label mb-3">
@@ -287,7 +287,9 @@ const segColor: Record<string, string> = {
       </div>
     </section>
 
-      <Blockers class="xl:sticky xl:top-16" />
+      <!-- Alone, it gets the width instead of a 900px card holding 68 characters
+           of text: two caps fighting each other left a third of every card empty. -->
+      <Blockers :columns="needsYou ? 1 : 2" :class="needsYou ? 'xl:sticky xl:top-16' : ''" />
     </div>
 
     <ActivityFeed compact />
