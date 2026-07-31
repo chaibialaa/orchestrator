@@ -174,6 +174,86 @@ function git(...args) {
   }
 }
 
+/**
+ * Can this repository be committed to at all?
+ *
+ * Nothing here may assume a git repository, let alone a configured one. These
+ * projects have both; somebody else's may have neither, and a loop that fails
+ * because `user.email` is unset would be failing at the wrong thing entirely.
+ *
+ * Returns why it cannot, rather than a bare false — a safety net that quietly
+ * does nothing is the worst kind.
+ */
+function gitReady() {
+  if (git('rev-parse', '--git-dir') === null) return { ok: false, why: 'not a git repository' }
+  if (!git('config', 'user.email') || !git('config', 'user.name')) {
+    return { ok: false, why: 'git has no user.name / user.email here' }
+  }
+  return { ok: true }
+}
+
+/**
+ * A commit of everything currently uncommitted, WITHOUT touching the working
+ * tree, the index, or any branch.
+ *
+ * `git stash create` builds the commit object and hands back its hash; nothing
+ * moves. Verified on Blockrise: 167 changed entries before, 167 after, and a
+ * 127-file commit to fall back on. Kept alive under `refs/orchestrator/` so
+ * garbage collection cannot take it.
+ *
+ * What it does NOT cover, said out loud because it matters: files git does not
+ * track. Blockrise has forty of those. A restore point that silently omits them
+ * would be worse than none, because it would be trusted.
+ */
+function restorePoint(label) {
+  const ready = gitReady()
+  if (!ready.ok) return { made: false, why: ready.why }
+
+  const dirty = git('status', '--porcelain')
+  if (!dirty) return { made: false, why: 'nothing uncommitted to save' }
+
+  const sha = git('stash', 'create', `orchestrator: before ${label}`)
+  if (!sha || sha.length < 40) return { made: false, why: 'git could not build one' }
+
+  const ref = `refs/orchestrator/${label.replace(/[^\w.-]+/g, '-')}`
+  git('update-ref', ref, sha)
+
+  const untracked = dirty.split('\n').filter((l) => l.startsWith('??')).length
+  return { made: true, sha: sha.slice(0, 12), ref, untracked }
+}
+
+/**
+ * Commit the work an accepted verdict has just blessed.
+ *
+ * An accepted objective is the one moment where the tree is known good — proved
+ * and judged — which makes it the only honest place to put a marker. Between
+ * two of them the state is provisional, and committing it would be recording a
+ * guess.
+ *
+ * Committed, never pushed: publishing is a decision, and a pre-push hook already
+ * refuses to do it unattended.
+ *
+ * Silent when git is not there or not configured. These projects have both, but
+ * somebody else's may have neither, and a loop that fell over because
+ * `user.email` was unset would be failing at entirely the wrong thing.
+ */
+function commitAccepted(objectiveId) {
+  const ready = gitReady()
+  if (!ready.ok) return
+
+  if (!git('status', '--porcelain')) return // nothing to record
+
+  git('add', '-A')
+  const done = git(
+    'commit',
+    '-m',
+    `orchestrator: #${objectiveId} accepted`,
+    '-m',
+    'Committed at the verdict, the one moment the tree is known good — proved and\njudged. Not pushed: publishing is a decision.',
+  )
+  if (done !== null) console.log(`    ✓ committed — #${objectiveId} accepted`)
+}
+
 /** The real state comes from git, never from an agent's report. */
 function head() {
   return git('rev-parse', 'HEAD')
@@ -2510,6 +2590,7 @@ const commands = {
             tokensWithoutProgress = 0
             sterile = 0
             provenBefore = null
+            commitAccepted(verdict.id)
           }
         }
       }
@@ -3377,6 +3458,25 @@ async function runHarness(harness, task) {
   const before = head()
   const startedAt = Date.now()
 
+  /**
+   * A way back, before anything runs.
+   *
+   * The rules shown for Codex include "no rm -rf", and they have never stopped
+   * anything — it runs sandbox-bypassed and is never handed the list. Rather
+   * than reword a prohibition that cannot be enforced, make the damage
+   * reversible: what cannot be forbidden can at least be undone.
+   *
+   * It costs nothing when there is nothing to save, and says nothing when git is
+   * absent or unconfigured — somebody else's project may have neither.
+   */
+  const saved = restorePoint(`${harness}-${before?.slice(0, 7) ?? 'nohead'}`)
+  if (saved.made) {
+    console.log(
+      `    ↩ restore point ${saved.sha}` +
+        (saved.untracked ? ` — ${saved.untracked} untracked file(s) NOT covered` : ''),
+    )
+  }
+
   // The working tree may already be dirty: photograph its state first, otherwise
   // we charge the session for what somebody else left lying around.
   const dirtyBefore = new Set(
@@ -3909,4 +4009,4 @@ function buildReport(turn, directive, outcome) {
 // This file is no longer an entry point: the package's single CLI calls these
 // commands. That is what lets `orchestrator serve` and `orchestrator chapter` be
 // the same command, installed once.
-export { commands, Refusal }
+export { commands, Refusal, gitReady, restorePoint }

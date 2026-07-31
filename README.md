@@ -143,6 +143,21 @@ the same repository is refused, and names the run that holds it. You can queue i
 alongside on purpose, and the mission then opens with who else is in the
 checkout and what not to touch.
 
+### A way back
+
+Before a pass runs, everything uncommitted is captured into a commit object that
+touches neither the working tree nor any branch — `git stash create`, kept alive
+under `refs/orchestrator/`. At an accepted verdict, the work is committed for
+real: that is the one moment the tree is known good, proved and judged. Never
+pushed — publishing is a decision.
+
+Both are silent where they cannot work. No git repository, or no configured
+identity, and nothing happens: your project may have neither, and a loop that
+fell over on an unset `user.email` would be failing at the wrong thing.
+
+The hole, stated because a net that hides one is worse than no net: files git
+does not track are not covered.
+
 ### What it repairs on its own
 
 - **No browser.** It starts Chrome on its own profile — never the one you browse
