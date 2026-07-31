@@ -348,6 +348,22 @@ const commands = {
           }
         }
 
+        // Named in the plan by the breakdown, and unknown to the agent doing the
+        // work unless it is told here too — a source nobody mentions is a source
+        // nobody uses, and the step gets modelled from scratch anyway.
+        const known = await call('GET', '/agents', null, { soft: true }).catch(() => null)
+        const usable = (known ?? []).filter((a) => a.enabled && a.kind === 'source')
+        if (usable.length) {
+          lines.push('')
+          lines.push('Material available to draw on rather than make:')
+          for (const a of usable) {
+            lines.push(
+              `  ${a.label}${a.capabilities?.length ? ` — ${a.capabilities.join(', ')}` : ''}` +
+                (a.last_detail ? ` · ${String(a.last_detail).slice(0, 140)}` : ''),
+            )
+          }
+        }
+
         const declared = Object.keys(config.proofs ?? {})
         if (declared.length) {
           lines.push('')
@@ -1676,6 +1692,21 @@ const commands = {
         .map(([k, v]) => `- ${k} : ${v}`)
         .join('\n')
 
+      /**
+       * What this project can DRAW ON, not only what it can run.
+       *
+       * A breakdown that does not know an asset library is available plans to
+       * model everything from scratch — a different chapter, a different budget,
+       * a different number of weeks. Knowing changes the plan, so it belongs in
+       * the breakdown and not only in the session that executes it.
+       */
+      const agents = await call('GET', '/agents', null, { soft: true }).catch(() => null)
+      const sources = (agents ?? [])
+        .filter((a) => a.enabled && a.kind === 'source')
+        .map((a) => `- ${a.label}${a.capabilities?.length ? ` (${a.capabilities.join(', ')})` : ''}` +
+          (a.last_detail ? ` — ${String(a.last_detail).slice(0, 120)}` : ''))
+        .join('\n')
+
       const memoryInstruction = [
         'Break the request below into chapters and their execution steps.',
         '',
@@ -1690,6 +1721,10 @@ const commands = {
         '- between 2 and 12 steps per chapter. If a chapter only justifies one, do not invent more;',
         '- blast_radius: cosmetic (visual), feature (visible function), api (data or shared interface), critical (money, payroll, production).',
         proofs ? `\nProof commands declared by this project — reuse them as they are when they fit:\n${proofs}` : '',
+        sources
+          ? `\nMaterial this project can draw on rather than make. Prefer taking and adapting over` +
+            ` building from nothing, and say in the step which source you mean to use:\n${sources}`
+          : '',
         constraints ? `\nConstraints already settled on this project — do not contradict them:\n${constraints}` : '',
         '',
         '--- LA DEMANDE ---',

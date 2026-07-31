@@ -153,6 +153,7 @@ function renameLegacyColumns(db) {
   translateRoleValues(db)
   widenHaltReasons(db)
   widenRunModes(db)
+  widenAgentKinds(db)
   translatePermissionLabels(db)
   translateAgentLabels(db)
 }
@@ -258,6 +259,11 @@ function widenHaltReasons(db) {
 }
 
 /** `judge` renews the driving conversation — a mode the original CHECK forbade. */
+/** `source` — asset libraries — was not an allowed kind when agents was created. */
+function widenAgentKinds(db) {
+  rebuildTable(db, 'agents', "'source'")
+}
+
 function widenRunModes(db) {
   rebuildTable(db, 'runs', "'judge'")
 }

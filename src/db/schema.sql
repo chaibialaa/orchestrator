@@ -232,7 +232,11 @@ CREATE TABLE IF NOT EXISTS agents (
   -- keeps billing; an image service refuses on quota and says nothing useful.
   -- Capability says "it can do images"; kind says "and it is a web service you
   -- drive through a tab".
-  kind        TEXT CHECK (kind IS NULL OR kind IN ('model','machine','service','browser')),
+  -- `source` supplies MATERIAL rather than work: an asset library, a texture
+  -- site, a store. Knowing one exists changes the plan itself — download and
+  -- adapt is a different chapter from model from scratch — so it has to reach
+  -- the breakdown, not only the session that executes.
+  kind        TEXT CHECK (kind IS NULL OR kind IN ('model','machine','service','browser','source')),
   enabled     INTEGER NOT NULL DEFAULT 1,
   priority    INTEGER NOT NULL DEFAULT 50,
   api_key     TEXT,          -- encrypted at rest, never returned to the browser

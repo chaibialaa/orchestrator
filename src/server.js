@@ -1795,17 +1795,24 @@ export function createServer() {
     if (!/^[a-z0-9-]+$/.test(b.name ?? '')) {
       throw new Rejected('A technical name takes only lowercase letters, digits and hyphens.')
     }
-    if (!b.label?.trim()) throw new Rejected("L'agent doit porter un nom lisible.")
+    if (!b.label?.trim()) throw new Rejected('The agent needs a readable name.')
+    const KINDS = ['model', 'machine', 'service', 'browser', 'source']
+    if (b.kind && !KINDS.includes(b.kind)) {
+      throw new Rejected(`Unknown kind: ${KINDS.join(', ')}.`)
+    }
     if (db().prepare('SELECT 1 FROM agents WHERE name = ?').get(b.name)) {
       throw new Rejected('An agent already has that technical name.')
     }
     const r = db()
       .prepare(
-        `INSERT INTO agents (name,label,reach,role,enabled,priority,api_key,settings,capabilities,env_var,endpoint)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO agents (name,label,kind,reach,role,enabled,priority,api_key,settings,capabilities,env_var,endpoint)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
-        b.name, b.label, b.reach ?? 'cli', b.role ?? 'executant',
+        // `kind` was in the schema, on the screen, and dropped here in silence:
+        // every agent created through this route came back `null`. Validated
+        // rather than passed through, so an unknown one is refused out loud.
+        b.name, b.label, b.kind ?? null, b.reach ?? 'cli', b.role ?? 'executant',
         b.enabled === false ? 0 : 1, nombre(b.priority, 50),
         encrypt(b.api_key), json.write(b.settings ?? null),
         json.write(b.capabilities ?? []), b.env_var ?? null, b.endpoint ?? null,

@@ -162,7 +162,8 @@ export interface Agent {
   name: string
   label: string
   /** What it IS: a model, a machine billed by the hour, a service, a web interface. */
-  kind: 'model' | 'machine' | 'service' | 'browser' | null
+  /** `source` supplies material rather than work: an asset library, a store. */
+  kind: 'model' | 'machine' | 'service' | 'browser' | 'source' | null
   reach: 'cli' | 'browser' | 'api'
   role: 'executant' | 'judge' | 'both'
   enabled: boolean

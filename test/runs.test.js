@@ -236,3 +236,29 @@ test('a series can be told to carry on through a failure', async () => {
   })
   assert.equal(db.prepare('SELECT status FROM runs WHERE id = ?').get(queued[1]).status, 'pending')
 })
+
+test('a declared source reaches the breakdown, not just the session', async () => {
+  // A breakdown that does not know an asset library exists plans to model
+  // everything from scratch — a different chapter, a different budget. And the
+  // `kind` field was accepted by this route and dropped in silence, so every
+  // source created through it came back as `null` and matched no filter.
+  const res = await post('/agents', {
+    name: 'test-source',
+    label: 'A library of things',
+    kind: 'source',
+    reach: 'browser',
+    capabilities: ['3d'],
+  })
+  const made = await res.json()
+  assert.equal(made.kind, 'source', 'the kind survives the insert')
+
+  const listed = await (await fetch(url('/agents'))).json()
+  const sources = listed.filter((a) => a.enabled && a.kind === 'source')
+  assert.ok(
+    sources.some((a) => a.name === 'test-source'),
+    'and it is findable by the filter the breakdown uses',
+  )
+
+  const refused = await post('/agents', { name: 'nope', label: 'x', kind: 'invented' })
+  assert.equal(refused.status, 422, 'an unknown kind is refused out loud, not silently nulled')
+})

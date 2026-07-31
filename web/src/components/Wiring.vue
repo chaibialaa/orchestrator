@@ -44,6 +44,7 @@ const KIND = {
   machine: 'machine, billed by the hour',
   service: 'service',
   browser: 'web interface',
+  source: 'material to draw on',
 } as const
 
 const opened = ref<Set<string>>(new Set())
