@@ -304,6 +304,8 @@ export interface Run {
   cancel_asked: boolean
   /** Slipped in front of what was already waiting. */
   jump: boolean
+  /** Queued knowingly beside another pass in the same checkout. */
+  alongside: boolean
   /** Why it was slipped in front — written when it was queued. */
   reason: string | null
   machine: string | null
@@ -534,6 +536,7 @@ export const api = {
       budget_without_progress?: number
       post?: boolean
       jump?: boolean
+      alongside?: boolean
       reason?: string
       hold_between_turns?: boolean
     },

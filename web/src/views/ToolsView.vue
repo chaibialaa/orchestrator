@@ -5,7 +5,7 @@ import Storages from '../components/Storages.vue'
 </script>
 
 <template>
-  <div class="space-y-7">
+  <div class="space-y-7 max-w-5xl">
     <section class="card p-4 border-ink-800">
       <h1 class="text-ink-100 text-[15px]">Tools</h1>
       <p class="text-ink-400 mt-1.5 leading-relaxed max-w-3xl">

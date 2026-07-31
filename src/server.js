@@ -278,6 +278,7 @@ export function createServer() {
       hold_between_turns: Boolean(r.hold_between_turns),
       cancel_asked: Boolean(r.cancel_asked),
       jump: Boolean(r.jump),
+      alongside: Boolean(r.alongside),
     }
 
   api.get('/runs', (req, res) => {
@@ -316,6 +317,37 @@ export function createServer() {
       throw new Rejected('A chapter run needs an objective to work on.')
     }
 
+    /**
+     * Two passes on the same PROJECT touch the same working tree.
+     *
+     * The guard below only ever covered the same objective, which misses the case
+     * that actually hurts: two objectives of one project, two agents, one
+     * checkout. They overwrite each other's edits, and each one's `git status`
+     * charges it for what the other left lying around.
+     *
+     * Refused rather than warned — a warning on a screen nobody is watching at
+     * three in the morning is not a guard. Queue it `alongside` to take the risk
+     * knowingly; the mission is then told what the other pass is holding.
+     */
+    if (mode === 'chapter' && !b.alongside) {
+      const busyElsewhere = db()
+        .prepare(
+          `SELECT r.id, r.objective_id, o.title
+           FROM runs r LEFT JOIN objectives o ON o.id = r.objective_id
+           WHERE r.project_id = ? AND r.mode = 'chapter' AND r.status IN ('pending','running')
+             AND (r.objective_id IS NULL OR r.objective_id != ?)`,
+        )
+        .get(p.id, b.objective ?? -1)
+      if (busyElsewhere) {
+        throw new Rejected(
+          `Another pass is already working this repository — run #${busyElsewhere.id} on ` +
+            `#${busyElsewhere.objective_id} “${busyElsewhere.title ?? ''}”. Two agents in one ` +
+            `checkout overwrite each other's edits. Wait for it to finish, or queue this one ` +
+            `alongside on purpose.`,
+        )
+      }
+    }
+
     // One run per objective at a time. Two loops on the same objective fight over
     // the same repository and the same conversation — which happened, and cost a
     // Unity scene.
@@ -333,8 +365,8 @@ export function createServer() {
     const r = db()
       .prepare(
         `INSERT INTO runs (project_id, objective_id, mode, max_turns, budget,
-                           budget_without_progress, post, hold_between_turns, jump, reason)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+                           budget_without_progress, post, hold_between_turns, jump, reason, alongside)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         p.id,
@@ -350,6 +382,7 @@ export function createServer() {
         // just broken something, the fix cannot wait behind six queued chapters.
         b.jump ? 1 : 0,
         b.reason?.toString().trim() || null,
+        b.alongside ? 1 : 0,
       )
 
     res.status(201).json(publicRun(db().prepare('SELECT * FROM runs WHERE id = ?').get(r.lastInsertRowid)))

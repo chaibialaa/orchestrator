@@ -56,7 +56,7 @@ const shortName = (t: string) => t.replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '')
 </script>
 
 <template>
-  <section v-if="data" class="card p-5">
+  <section v-if="data" class="card p-5 max-w-5xl">
     <h2 class="text-ink-100 text-[14px]">What is wired up</h2>
     <p class="text-ink-400 mt-1.5 max-w-3xl">
       Reachability is measured on the machine, not ticked in a form. Use is counted from what the

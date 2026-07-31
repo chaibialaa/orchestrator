@@ -300,6 +300,28 @@ const commands = {
         // "deliverable produced", which is `inconclusive` — and a chapter whose
         // criterion needs a passing proof could never conclude. On one chapter
         // that cost $133 across six attempts to keep rediscovering.
+        /**
+         * Another agent is in this same checkout right now.
+         *
+         * Two passes on one repository overwrite each other's edits, and each
+         * one's `git status` charges it for what the other left lying around.
+         * The queue refuses this by default; when it was accepted knowingly, the
+         * least we owe the agent is the name of what is already being held.
+         */
+        const others = (await call('GET', `/runs?project=${config.project}`, null, { soft: true }).catch(
+          () => null,
+        ))?.filter((r) => r.status === 'running' && r.objective_id && r.objective_id !== objective?.id)
+        if (others?.length) {
+          lines.push('')
+          lines.push('ANOTHER AGENT IS WORKING IN THIS SAME CHECKOUT, right now:')
+          for (const r of others) {
+            lines.push(`  #${r.objective_id} — ${r.objective_title ?? ''} (turn ${r.turn})`)
+          }
+          lines.push('Stay off what belongs to it. Touch only what your own objective needs, and')
+          lines.push('do not revert, reformat or tidy anything you did not come here to change —')
+          lines.push('the diff you leave is attributed to you, and so is the one you undo.')
+        }
+
         const declared = Object.keys(config.proofs ?? {})
         if (declared.length) {
           lines.push('')

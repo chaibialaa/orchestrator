@@ -61,19 +61,25 @@ onMounted(() => {
 })
 onUnmounted(() => window.clearInterval(timer))
 
-async function start() {
+/** Set when the queue refused because another pass holds this checkout. */
+const clash = ref(false)
+
+async function start(alongside = false) {
   busy.value = true
   error.value = null
   try {
     await api.startRun(props.slug, {
+      ...(alongside ? { alongside: true } : {}),
       mode: props.mode,
       ...(props.mode === 'plan' ? {} : { objective: props.objectiveId }),
       ...options.value,
     })
     showOptions.value = false
+    clash.value = false
     await load()
   } catch (e: any) {
     error.value = e?.response?.data?.message ?? 'could not start it'
+    clash.value = /alongside on purpose/.test(error.value ?? '')
   } finally {
     busy.value = false
   }
@@ -138,7 +144,7 @@ function since(iso: string | null) {
 
     <!-- Idle: start it, and say how before you do. -->
     <template v-else>
-      <button class="chip border-run/50 text-run hover:bg-run/10" :disabled="busy" @click="start">
+      <button class="chip border-run/50 text-run hover:bg-run/10" :disabled="busy" @click="start()">
         {{ busy ? '…' : (label ?? 'Run this chapter') }}
       </button>
       <button class="text-ink-600 hover:text-ink-300" @click="showOptions = !showOptions">
@@ -150,7 +156,17 @@ function since(iso: string | null) {
       </span>
     </template>
 
-    <span v-if="error" class="text-fail">{{ error }}</span>
+    <span v-if="error" class="text-fail max-w-[60ch] leading-relaxed">{{ error }}</span>
+
+    <!-- The refusal names the way through, so the way through is a button. -->
+    <button
+      v-if="clash"
+      class="chip border-halt text-halt hover:bg-halt/10"
+      :disabled="busy"
+      @click="start(true)"
+    >
+      run it alongside anyway
+    </button>
   </div>
 
   <!-- The choices that change what a run costs and how far it goes. Folded,

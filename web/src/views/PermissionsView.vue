@@ -36,8 +36,8 @@ async function setDecision(p: Perm, decision: Decision) {
   Object.assign(p, updated)
 }
 
-async function setFamily(family: string, decision: Decision) {
-  const targets = grouped.value[family].filter((p) => p.decision !== decision)
+async function setFamily(harness: string, family: string, decision: Decision) {
+  const targets = grouped.value[harness][family].filter((p) => p.decision !== decision)
   for (const p of targets) await setDecision(p, decision)
 }
 
@@ -52,15 +52,21 @@ const visible = computed(() =>
 )
 
 /**
- * By family of tool, which is what `label` holds.
+ * By harness first, then by family of tool.
  *
- * This grouped on `p.family` — a field declared on the interface and sent by
- * nobody. TypeScript believed the declaration, so every rule fell into a single
- * group whose heading read, in full: “undefined 66”.
+ * Two things were wrong here. It grouped on `p.family` — a field declared on the
+ * interface and sent by nobody, so all 66 rules fell into one group headed, in
+ * full, “undefined 66”. And it interleaved harnesses with nothing to tell them
+ * apart, so `Bash(git push*)` appeared as allowed under “Never” and refused
+ * under another heading, reading as a contradiction. It is not one: Claude may
+ * push here, Codex may not. Whose rule it is was the missing word.
  */
 const grouped = computed(() => {
-  const out: Record<string, Perm[]> = {}
-  for (const p of visible.value) (out[p.label ?? 'Ungrouped'] ??= []).push(p)
+  const out: Record<string, Record<string, Perm[]>> = {}
+  for (const p of visible.value) {
+    const byFamily = (out[p.harness] ??= {})
+    ;(byFamily[p.label ?? 'Ungrouped'] ??= []).push(p)
+  }
   return out
 })
 
@@ -153,45 +159,70 @@ const decisionLabel: Record<Decision, string> = {
 
     <div v-if="loading" class="text-ink-400">loading…</div>
 
-    <section v-for="(list, family) in grouped" :key="family">
-      <div class="flex items-baseline gap-3 mb-2">
-        <h2 class="text-ink-100 text-[14px]">{{ family }}</h2>
-        <span class="text-ink-600 text-[11px]">{{ list.length }}</span>
-        <div class="ml-auto flex gap-1">
-          <button class="chip border-ink-600 text-ink-400 hover:text-proof" @click="setFamily(family, 'allow')">
-            allow all
-          </button>
-          <button class="chip border-ink-600 text-ink-400 hover:text-fail" @click="setFamily(family, 'deny')">
-            refuse all
-          </button>
-        </div>
+    <section v-for="(families, harness) in grouped" :key="harness" class="space-y-5">
+      <div class="flex items-baseline gap-3 border-b border-ink-800 pb-1.5">
+        <h2 class="text-ink-100 text-[15px]">{{ harness }}</h2>
+        <span class="num text-ink-600 text-[11px]">
+          {{ Object.values(families).flat().length }} rules
+        </span>
+        <!-- Said where it changes what you are looking at, not only at the top. -->
+        <span v-if="harness === 'codex'" class="text-halt text-[11px]">
+          never handed to it — these are documentation
+        </span>
       </div>
 
-      <div class="card divide-y divide-ink-800">
-        <div v-for="p in list" :key="p.id" class="p-2.5 flex items-center gap-3 flex-wrap">
-          <span
-            class="w-1.5 h-1.5 rounded-full shrink-0"
-            :class="{
-              'bg-proof': p.decision === 'allow',
-              'bg-fail': p.decision === 'deny',
-              'bg-halt': p.decision === 'ask',
-            }"
-          />
-          <code class="text-ink-300 flex-1 break-all">{{ p.pattern }}</code>
-          <span v-if="p.label" class="text-ink-600 text-[11px]">{{ p.label }}</span>
-          <div class="flex gap-1 shrink-0">
+      <section v-for="(list, family) in families" :key="`${harness}-${family}`">
+        <div class="flex items-baseline gap-3 mb-2">
+          <h3 class="text-ink-300 text-[13px]">{{ family }}</h3>
+          <span class="num text-ink-600 text-[11px]">{{ list.length }}</span>
+          <div class="ml-auto flex gap-1.5">
             <button
-              v-for="d in (['allow', 'ask', 'deny'] as Decision[])"
-              :key="d"
-              class="chip"
-              :class="p.decision === d ? decisionStyle[d] : 'border-ink-700 text-ink-600 hover:text-ink-300'"
-              @click="setDecision(p, d)"
+              class="chip border-ink-700 text-ink-500 hover:text-proof"
+              @click="setFamily(harness, family, 'allow')"
             >
-              {{ decisionLabel[d] }}
+              allow all
+            </button>
+            <button
+              class="chip border-ink-700 text-ink-500 hover:text-fail"
+              @click="setFamily(harness, family, 'deny')"
+            >
+              refuse all
             </button>
           </div>
         </div>
-      </div>
+
+        <!-- Rules on a grid. One per line meant a 20-character pattern stretched
+             across 900px to reach its three buttons, and a family of 45 rules
+             that scrolled for three screens. -->
+        <div class="grid gap-x-3 md:grid-cols-2 2xl:grid-cols-3 card p-1.5">
+          <div
+            v-for="p in list"
+            :key="p.id"
+            class="px-2 py-1.5 flex items-center gap-3 rounded hover:bg-ink-850/40 transition-colors"
+          >
+            <span
+              class="w-1.5 h-1.5 rounded-full shrink-0"
+              :class="{
+                'bg-proof': p.decision === 'allow',
+                'bg-fail': p.decision === 'deny',
+                'bg-halt': p.decision === 'ask',
+              }"
+            />
+            <code class="text-ink-300 flex-1 truncate" :title="p.pattern">{{ p.pattern }}</code>
+            <div class="flex gap-1 shrink-0">
+              <button
+                v-for="d in (['allow', 'ask', 'deny'] as Decision[])"
+                :key="d"
+                class="chip"
+                :class="p.decision === d ? decisionStyle[d] : 'border-ink-700 text-ink-600 hover:text-ink-300'"
+                @click="setDecision(p, d)"
+              >
+                {{ decisionLabel[d] }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
     </section>
 
     <p v-if="!loading && !perms.length" class="text-ink-600">

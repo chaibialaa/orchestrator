@@ -51,8 +51,16 @@ test('a run put in front is taken before what was already waiting', async () => 
      VALUES (20,1,'first','x','feature','ready'), (21,1,'urgent','x','feature','ready')`,
   ).run()
 
-  await post('/projects/p/runs', { mode: 'chapter', objective: 20 })
-  await post('/projects/p/runs', { mode: 'chapter', objective: 21, jump: true, reason: 'it broke the scene' })
+  // `alongside` because both are deliberately queued on one repository — which the
+  // guard below refuses by default.
+  await post('/projects/p/runs', { mode: 'chapter', objective: 20, alongside: true })
+  await post('/projects/p/runs', {
+    mode: 'chapter',
+    objective: 21,
+    jump: true,
+    alongside: true,
+    reason: 'it broke the scene',
+  })
 
   const claimed = await (await post('/projects/p/runs/claim', { machine: 'm', pid: 1 })).json()
   assert.equal(claimed.run.objective_id, 21)
@@ -60,6 +68,25 @@ test('a run put in front is taken before what was already waiting', async () => 
 
   const next = await (await post('/projects/p/runs/claim', { machine: 'm', pid: 1 })).json()
   assert.equal(next.run.objective_id, 20) // the one it jumped is not lost, only later
+})
+
+test('a second pass on the same repository is refused, and can be forced', async () => {
+  // Two agents in one checkout overwrite each other's edits, and each one's
+  // `git status` charges it for what the other left lying around.
+  db.prepare("DELETE FROM runs WHERE status IN ('pending','running')").run()
+  db.prepare(
+    `INSERT INTO objectives (id,project_id,title,proof_spec,blast_radius,status)
+     VALUES (30,1,'a','x','feature','ready'), (31,1,'b','x','feature','ready')`,
+  ).run()
+
+  await post('/projects/p/runs', { mode: 'chapter', objective: 30 })
+
+  const refused = await post('/projects/p/runs', { mode: 'chapter', objective: 31 })
+  assert.equal(refused.status, 422)
+  assert.match((await refused.json()).message, /already working this repository/)
+
+  const forced = await post('/projects/p/runs', { mode: 'chapter', objective: 31, alongside: true })
+  assert.equal((await forced.json()).alongside, true)
 })
 
 test('releasing frees only the runs named, never a neighbour', async () => {

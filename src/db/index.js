@@ -99,6 +99,9 @@ function addMissingColumns(db) {
     // a storage with no readable owner drops proofs somewhere nobody can name.
     ['storages', 'account', 'TEXT'],
     ['runs', 'jump', 'INTEGER NOT NULL DEFAULT 0'],
+    // Queued knowingly beside another pass on the same repository. The mission is
+    // told, so the agent can keep off what the other one is holding.
+    ['runs', 'alongside', 'INTEGER NOT NULL DEFAULT 0'],
     // Why this run was slipped in front. Written by whoever queued it, read by
     // whoever wonders later why the order was not the order.
     ['runs', 'reason', 'TEXT'],

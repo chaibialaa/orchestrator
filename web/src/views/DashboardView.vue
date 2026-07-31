@@ -202,7 +202,10 @@ const segColor: Record<string, string> = {
 
 
 
-      <div v-else class="space-y-2.5">
+      <!-- Not `v-else`: the paragraph it paired with moved out of this section,
+           and a `v-else` whose `v-if` is gone is dropped by the compiler without a
+           word. The heading kept counting two things and showed neither. -->
+      <div class="space-y-2.5">
         <!-- Verdicts: everything is there, only the judgement is missing. -->
         <article
           v-for="o in review?.ready ?? []"
