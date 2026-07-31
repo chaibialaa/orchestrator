@@ -20,6 +20,12 @@ the report back. The judge accepts or rejects, and the loop carries on.
 
 And it **refuses to close an objective until its proof is in.**
 
+It is meant to run unattended. The browser it drives is started, reopened and
+reloaded by the loop itself; a conversation that fills up is replaced without
+anyone being asked; work is queued from the screen rather than typed into a
+terminal. What stays yours is what genuinely is a decision: signing in,
+installing a harness, and saying whether a criterion is met.
+
 ## The idea
 
 "Done" is not a field an agent writes, it is a **condition you evaluate**. An
@@ -53,6 +59,25 @@ npm start              # http://localhost:4747
 One process serves the interface **and** the API. Data lives in a SQLite file
 under `~/.orchestrator/` — no database to install, and a backup is a copy of that
 file; `orchestrator where` tells you which one.
+
+On a first run the interface opens a walkthrough at `/setup`. It measures rather
+than asks: where each harness actually is on this machine, whether the browser is
+reachable, whether it is **signed in** — asked of the page, since a tab parked on
+a login screen satisfies "a tab exists" perfectly. What is missing is followed by
+the one command that changes it.
+
+Then, in every repository you drive, leave a worker running:
+
+```bash
+cd my-project
+orchestrator work --every 5
+```
+
+The server records what you ask for; the worker on the machine that holds the
+repository claims it and carries it out. That separation is deliberate: a server
+able to run commands on your machine would be a far worse thing to expose. It
+also means the interface can replace the terminal — start a chapter, stop it,
+carry on turn by turn, put an urgent command in front of the queue.
 
 ## Declaring a project
 
@@ -110,12 +135,45 @@ nohup orchestrator chapter --objective 42 --budget 60 --post \
   > chapter-42.log 2>&1 < /dev/null & disown
 ```
 
+Or start it from the screen and let the worker carry it — same run, visible
+turn by turn, stoppable without a terminal.
+
+Two passes are never allowed to share a working tree by accident: a second one on
+the same repository is refused, and names the run that holds it. You can queue it
+alongside on purpose, and the mission then opens with who else is in the
+checkout and what not to touch.
+
+### What it repairs on its own
+
+- **No browser.** It starts Chrome on its own profile — never the one you browse
+  with — and waits for it to answer.
+- **A closed tab.** It reopens the conversation the project drives.
+- **A wedged page.** Asking again more politely does not unwedge a renderer, so
+  it reloads and waits for the messages to be drawn back.
+- **A conversation that has filled up.** Every turn re-reads the whole thread, so
+  a long one gets slower, dearer and worse at remembering its own rules. Past its
+  cap the loop opens a fresh conversation, posts the state into it, keeps the new
+  address, and carries on.
+
+### What goes in, what comes out
+
+Renders, JSON and markdown produced by a pass are attached to the judging
+conversation automatically. The other way works too: attach a mock-up to match, a
+screenshot of what broke, a spec. It lands in the tool's own directory — never in
+the repository, where it would become a change to review — and every session is
+told the files exist and where to open them.
+
+Proofs are also pushed to a shared storage as they are produced, so a teammate
+reads them without cloning anything. Everyone connects their own account.
+
 ## Commands
 
 ```
 orchestrator serve            the interface and the API
+orchestrator work --every 5   carry out what the interface asked for, here
 orchestrator chapter          the loop: judge, execute, prove, report
 orchestrator plan --watch     break a free-form brief into provable steps
+orchestrator judge:renew      open a fresh driving conversation and hand it the state
 orchestrator do <harness>     a single instruction, outside the loop (--probe: no objective)
 orchestrator agents:check     establish what is reachable on this machine
 orchestrator inventory        what the repository actually contains
@@ -135,8 +193,14 @@ npm test             # the gate rules, locked down
 ```
 
 The tests cover what must never give way: the conditions under which an objective
-closes, and how verdicts are read. A rule loosened by accident is a promise
-broken.
+closes, how verdicts are read, which run the queue takes next, and the guards
+that keep two agents out of one working tree. A rule loosened by accident is a
+promise broken.
+
+Several of them exist because a rule was right about material that was wrong —
+grouping on a field nobody sends, calling `.length` on a `Set`, matching
+`conforme` inside `non conforme`. Each reads as agreement, silently. When a check
+never fires, suspect the material before the rule.
 
 ## License
 
