@@ -59,36 +59,52 @@ const shortName = (t: string) => t.replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '')
 </script>
 
 <template>
-  <section v-if="data" class="card p-5 max-w-5xl">
+  <section v-if="data" class="card p-5">
     <h2 class="text-ink-100 text-[14px]">What is wired up</h2>
     <p class="text-ink-400 mt-1.5 max-w-3xl">
       Reachability is measured on the machine, not ticked in a form. Use is counted from what the
       harnesses actually called.
     </p>
 
+    <div class="mt-5 grid gap-x-8 gap-y-6 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] items-start">
     <!-- WHO CAN WORK -->
-    <div class="mt-5">
+    <div>
       <div class="label mb-2">Connected AI</div>
       <div class="divide-y divide-ink-850">
-        <div v-for="a in data.agents" :key="a.name" class="py-2.5 flex items-baseline gap-3 flex-wrap">
+        <!-- A grid, not a wrapping row. With `flex-wrap` a long label — "Poly
+             Haven — HDRI, textures, modèles CC0" — pushed its own reachability
+             onto a second line and left its use count stranded, so one entry read
+             as two. Fixed tracks keep every column under its own heading. -->
+        <div
+          v-for="a in data.agents"
+          :key="a.name"
+          class="py-2 grid items-baseline gap-x-3 gap-y-0.5
+                 grid-cols-[auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_minmax(0,1fr)_9rem_auto]"
+        >
           <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" :class="REACH[a.reachable].dot" />
-          <span class="text-ink-100 min-w-[11rem]" :class="a.enabled ? '' : 'opacity-50'">
+
+          <span class="text-ink-100 truncate" :class="a.enabled ? '' : 'opacity-50'" :title="a.label">
             {{ a.label }}
           </span>
-          <span class="text-ink-500 text-[11px] w-[13rem]">{{ a.kind ? KIND[a.kind] : '—' }}</span>
-          <span class="text-[11px]" :class="REACH[a.reachable].color">{{ REACH[a.reachable].word }}</span>
 
-          <span v-if="a.capabilities.length" class="text-ink-600 text-[11px]">
-            {{ a.capabilities.join(' · ') }}
+          <span class="hidden sm:block text-[11px] truncate" :class="REACH[a.reachable].color">
+            {{ REACH[a.reachable].word }}
           </span>
 
           <!-- Declared vs exercised. A capability nobody has run is a guess. -->
           <span
-            class="num text-[11px] ml-auto"
+            class="num text-[11px] text-right"
             :class="a.passes ? 'text-ink-400' : 'text-ink-700'"
             :title="a.passes ? 'attempts actually run by this harness' : 'never used yet'"
           >
             {{ a.passes ? `${a.passes} passes` : 'never used' }}
+          </span>
+
+          <!-- The second line carries what a person reads only when curious. -->
+          <span class="col-start-2 col-span-2 sm:col-span-3 text-ink-600 text-[11px] truncate">
+            {{ a.kind ? KIND[a.kind] : '—' }}<template v-if="a.capabilities.length">
+              · {{ a.capabilities.join(' · ') }}</template
+            ><span class="sm:hidden" :class="REACH[a.reachable].color"> · {{ REACH[a.reachable].word }}</span>
           </span>
         </div>
       </div>
@@ -101,7 +117,7 @@ const shortName = (t: string) => t.replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '')
     <!-- WHAT IS WIRED, as opposed to what was called. A server nobody reached
          looked exactly like a server that does not exist, and the difference is
          the whole diagnosis. -->
-    <div v-if="servers.length" class="mt-6">
+    <div v-if="servers.length">
       <div class="label mb-2">MCP servers each harness is configured with</div>
       <div class="divide-y divide-ink-850">
         <div v-for="s in servers" :key="s.name" class="py-2.5">
@@ -139,6 +155,8 @@ const shortName = (t: string) => t.replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '')
         Read from the harnesses' own files — ~/.claude.json and ~/.codex/config.toml. Orchestrator
         keeps no copy: one would drift the first time somebody edited the real thing.
       </p>
+    </div>
+
     </div>
 
     <!-- WHAT THEY REACHED THROUGH -->

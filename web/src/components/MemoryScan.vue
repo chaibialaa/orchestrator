@@ -189,11 +189,19 @@ function waited(min: number) {
     </div>
 
     <div v-if="latest?.result" class="mt-6 space-y-3">
-      <div class="label">What was drawn out of it — attach it, or do not</div>
+      <div class="flex items-baseline gap-3">
+        <span class="label">What was drawn out of it — attach it, or do not</span>
+        <span class="num text-ink-600 text-[11px]">{{ Object.keys(latest.result).length }}</span>
+      </div>
+
+      <!-- Two columns, and each card packed rather than aligned: ten of these
+           read as one wall of identical blocks, three screens tall, on a page
+           where nothing else was competing for the width. -->
+      <div class="lg:columns-2 gap-3 [column-fill:balance]">
       <article
         v-for="(bloc, name) in latest.result"
         :key="name"
-        class="border border-ink-800 rounded p-3.5"
+        class="border border-ink-800 rounded p-3.5 mb-3 break-inside-avoid"
         :class="bloc.error ? 'border-fail/40' : ''"
       >
         <header class="flex items-baseline gap-3 flex-wrap">
@@ -266,6 +274,7 @@ function waited(min: number) {
           </div>
         </div>
       </article>
+      </div>
     </div>
   </section>
 </template>
