@@ -29,6 +29,7 @@ export function blockers() {
   // panel only carries what was visible NOWHERE.
   out.push(...unityClosed(db))
   out.push(...emptyPermissions(db))
+  out.push(...codexUnenforced(db))
   out.push(...undecidedRefusals(db))
   out.push(...storages(db))
 
@@ -100,21 +101,61 @@ function emptyPermissions(db) {
     .prepare(
       `SELECT p.id, p.slug, p.name,
               (SELECT COUNT(*) FROM permissions WHERE project_id = p.id AND harness = 'claude' AND decision = 'allow') AS allowed,
-              (SELECT COUNT(*) FROM objectives WHERE project_id = p.id AND status NOT IN ('proven','abandoned')) AS ouverts
+              (SELECT COUNT(*) FROM objectives WHERE project_id = p.id AND status NOT IN ('proven','abandoned')) AS open_objectives
        FROM projects p`,
     )
     .all()
-    .filter((p) => p.openHaltsOf > 0 && p.allowed < FLOOR)
+    // This read `p.openHaltsOf`, a column no query ever selected: `undefined > 0`
+    // is false, so the rule written to catch a project running on 4 of its 60
+    // tools never fired once — including on the day that happened.
+    .filter((p) => p.open_objectives > 0 && p.allowed < FLOOR)
     .map((p) => ({
       kind: 'permissions_unseeded',
       severity: BLOCKING,
       project: p.slug,
       objective: null,
-      title: `${p.name} has only ${p.allowed} allowed tool${p.allowed === 1 ? '' : 's'}`,
+      title: `${p.name} has only ${p.allowed} allowed tool${p.allowed === 1 ? '' : 's'} for Claude`,
       detail:
         'A non-interactive session cannot ask for anything: a tool that is not on the allow list is ' +
         'refused silently. The pass runs, bills, and produces nothing.',
       action: 'Open Permissions and allow what this project actually needs, or copy another project’s list.',
+      since: null,
+    }))
+}
+
+/**
+ * Codex is launched with `--dangerously-bypass-approvals-and-sandbox`, so its
+ * allow list is never consulted. Two things follow, and both are worth saying
+ * out loud: the pass is refused before it starts for want of an allowed tool,
+ * and the rules the screen displays for Codex protect nothing.
+ *
+ * This is not a rule to relax quietly — granting Codex its list would let it
+ * work unsandboxed on the repository. That is the reader's call, so the tool
+ * states the situation instead of resolving it.
+ */
+function codexUnenforced(db) {
+  return db
+    .prepare(
+      `SELECT p.slug, p.name,
+              (SELECT COUNT(*) FROM permissions WHERE project_id = p.id AND harness = 'codex' AND decision = 'allow') AS allowed,
+              (SELECT COUNT(*) FROM objectives WHERE project_id = p.id AND status NOT IN ('proven','abandoned')) AS open_objectives
+       FROM projects p`,
+    )
+    .all()
+    .filter((p) => p.open_objectives > 0 && p.allowed === 0)
+    .map((p) => ({
+      kind: 'codex_no_tools',
+      severity: BLOCKING,
+      project: p.slug,
+      objective: null,
+      title: `${p.name}: every pass routed to Codex fails before it starts`,
+      detail:
+        'Codex has no allowed tool here, so the pass is cancelled the moment the judge picks it — ' +
+        'which is why work appears to go to Claude by choice rather than by default. Note what ' +
+        'granting the list does and does not do: Codex runs with approvals and sandbox bypassed, ' +
+        'so the per-tool rules shown for it are never enforced. The list unblocks the pass; it does ' +
+        'not constrain what Codex then does.',
+      action: 'Decide whether Codex may work unsandboxed on this repository before allowing its tools.',
       since: null,
     }))
 }

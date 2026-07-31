@@ -14,7 +14,16 @@ import { api, type Run } from '../api'
  * finishes the one it is in — cutting a session mid-flight throws away work that
  * has already been paid for.
  */
-const props = defineProps<{ slug: string; objectiveId: number; label?: string }>()
+const props = withDefaults(
+  defineProps<{
+    slug: string
+    /** Absent in `plan` mode: a breakdown is asked of the project, not of one objective. */
+    objectiveId?: number
+    mode?: 'chapter' | 'plan'
+    label?: string
+  }>(),
+  { mode: 'chapter' },
+)
 
 const runs = ref<Run[]>([])
 const busy = ref(false)
@@ -24,17 +33,18 @@ let timer: number | undefined
 
 const options = ref({ max_turns: 8, budget_without_progress: 120, post: true, hold_between_turns: false })
 
-/** The run that concerns this objective right now, if any. */
-const live = computed(
-  () =>
-    runs.value.find(
-      (r) => r.objective_id === props.objectiveId && ['pending', 'running'].includes(r.status),
-    ) ?? null,
+/** Runs this control is answerable for — one objective, or the project's breakdowns. */
+const mine = computed(() =>
+  runs.value.filter((r) =>
+    props.mode === 'plan' ? r.mode === 'plan' : r.objective_id === props.objectiveId,
+  ),
 )
 
-const last = computed(
-  () => runs.value.find((r) => r.objective_id === props.objectiveId) ?? null,
+const live = computed(
+  () => mine.value.find((r) => ['pending', 'running'].includes(r.status)) ?? null,
 )
+
+const last = computed(() => mine.value[0] ?? null)
 
 async function load() {
   try {
@@ -55,7 +65,11 @@ async function start() {
   busy.value = true
   error.value = null
   try {
-    await api.startRun(props.slug, { objective: props.objectiveId, ...options.value })
+    await api.startRun(props.slug, {
+      mode: props.mode,
+      ...(props.mode === 'plan' ? {} : { objective: props.objectiveId }),
+      ...options.value,
+    })
     showOptions.value = false
     await load()
   } catch (e: any) {
@@ -142,7 +156,7 @@ function since(iso: string | null) {
   <!-- The choices that change what a run costs and how far it goes. Folded,
        because a default that works is the common case. -->
   <div v-if="showOptions && !live" class="mt-2 flex items-center gap-4 flex-wrap text-[11px]">
-    <label class="flex items-center gap-1.5">
+    <label v-if="mode !== 'plan'" class="flex items-center gap-1.5">
       <span class="text-ink-500">turns</span>
       <input
         v-model.number="options.max_turns"
@@ -152,7 +166,11 @@ function since(iso: string | null) {
         class="num w-14 bg-ink-950 border border-ink-800 rounded px-1.5 py-0.5 text-ink-300 focus:outline-none focus:border-run"
       />
     </label>
-    <label class="flex items-center gap-1.5" title="What we tolerate spending without a single objective being proven">
+    <label
+      v-if="mode !== 'plan'"
+      class="flex items-center gap-1.5"
+      title="What we tolerate spending without a single objective being proven"
+    >
       <span class="text-ink-500">stop at $</span>
       <input
         v-model.number="options.budget_without_progress"
@@ -165,9 +183,13 @@ function since(iso: string | null) {
     </label>
     <label class="flex items-center gap-1.5 text-ink-500">
       <input v-model="options.post" type="checkbox" />
-      execute and write to the conversation
+      {{ mode === 'plan' ? 'write the breakdown to the plan' : 'execute and write to the conversation' }}
     </label>
-    <label class="flex items-center gap-1.5 text-ink-500" title="Stop after every turn and wait for you to say carry on">
+    <label
+      v-if="mode !== 'plan'"
+      class="flex items-center gap-1.5 text-ink-500"
+      title="Stop after every turn and wait for you to say carry on"
+    >
       <input v-model="options.hold_between_turns" type="checkbox" />
       pause after each turn
     </label>

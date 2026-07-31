@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { api, type BlastRadius, type Objective } from '../api'
 import { blastLabel, blastHelp, statusLabel } from '../labels'
 import BriefComposer from '../components/BriefComposer.vue'
+import RunControl from '../components/RunControl.vue'
 
 const props = defineProps<{ slug: string }>()
 
@@ -143,6 +144,23 @@ const RISKS: BlastRadius[] = ['cosmetic', 'feature', 'api', 'critical']
     </section>
 
     <BriefComposer :slug="slug" @applied="load" />
+
+    <!-- The breakdown works on the brief above, not on the repository. Running it
+         with nothing written simply reports that nothing is waiting. Without this
+         button it was a terminal command, which defeats the point of the screen. -->
+    <section class="card p-4">
+      <div class="flex items-baseline gap-3 flex-wrap">
+        <h2 class="text-ink-100 text-[14px]">Break the brief down</h2>
+        <div class="ml-auto">
+          <RunControl :slug="slug" mode="plan" label="Break it down" />
+        </div>
+      </div>
+      <p class="text-ink-400 mt-1.5 max-w-3xl">
+        An agent turns the brief above into chapters and steps, each with what would prove it
+        finished. It proposes; nothing runs until you have read it. With no brief waiting, this
+        does nothing and says so.
+      </p>
+    </section>
 
     <p v-if="error" class="card p-3 border-fail/40 text-fail">{{ error }}</p>
 

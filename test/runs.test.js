@@ -43,6 +43,25 @@ test('the objective can be named either way', async () => {
   assert.equal((await res.json()).objective_id, 9)
 })
 
+test('a run put in front is taken before what was already waiting', async () => {
+  // Nothing is interrupted: this only changes which pending run is claimed next.
+  db.prepare("DELETE FROM runs WHERE status = 'pending'").run()
+  db.prepare(
+    `INSERT INTO objectives (id,project_id,title,proof_spec,blast_radius,status)
+     VALUES (20,1,'first','x','feature','ready'), (21,1,'urgent','x','feature','ready')`,
+  ).run()
+
+  await post('/projects/p/runs', { mode: 'chapter', objective: 20 })
+  await post('/projects/p/runs', { mode: 'chapter', objective: 21, jump: true, reason: 'it broke the scene' })
+
+  const claimed = await (await post('/projects/p/runs/claim', { machine: 'm', pid: 1 })).json()
+  assert.equal(claimed.run.objective_id, 21)
+  assert.equal(claimed.run.reason, 'it broke the scene')
+
+  const next = await (await post('/projects/p/runs/claim', { machine: 'm', pid: 1 })).json()
+  assert.equal(next.run.objective_id, 20) // the one it jumped is not lost, only later
+})
+
 test('releasing frees only the runs named, never a neighbour', async () => {
   // Two workers share this machine. Releasing every run on the machine had a
   // starting worker killing its neighbour's live pass.
@@ -81,3 +100,14 @@ test('a refusal throws instead of killing the process', async () => {
 })
 
 test.after(() => serveur.close())
+
+test('the unseeded-tools rule actually fires', async () => {
+  // It filtered on a column no query selected, so `undefined > 0` was false and
+  // the rule never fired — including the day a project ran on 4 of its 60 tools.
+  const { blockers } = await import('../src/blockers.js')
+  const kinds = blockers()
+    .filter((b) => b.project === 'p')
+    .map((b) => b.kind)
+  assert.ok(kinds.includes('permissions_unseeded'), 'a project with open work and no tools is blocked')
+  assert.ok(kinds.includes('codex_no_tools'), 'and Codex having no tools is said out loud')
+})

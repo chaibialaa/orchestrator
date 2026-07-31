@@ -279,6 +279,10 @@ export interface Run {
   hold_between_turns: boolean
   status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
   cancel_asked: boolean
+  /** Slipped in front of what was already waiting. */
+  jump: boolean
+  /** Why it was slipped in front — written when it was queued. */
+  reason: string | null
   machine: string | null
   turn: number
   note: string | null
@@ -493,6 +497,8 @@ export const api = {
       budget?: number | null
       budget_without_progress?: number
       post?: boolean
+      jump?: boolean
+      reason?: string
       hold_between_turns?: boolean
     },
   ) => http.post<Run>(`/projects/${slug}/runs`, payload).then((r) => r.data),

@@ -98,6 +98,10 @@ function addMissingColumns(db) {
     // WHO the connected account belongs to. Derived from the token, never typed:
     // a storage with no readable owner drops proofs somewhere nobody can name.
     ['storages', 'account', 'TEXT'],
+    ['runs', 'jump', 'INTEGER NOT NULL DEFAULT 0'],
+    // Why this run was slipped in front. Written by whoever queued it, read by
+    // whoever wonders later why the order was not the order.
+    ['runs', 'reason', 'TEXT'],
     ['projects', 'judge_message_cap', 'INTEGER NOT NULL DEFAULT 40'],
     // How full the driving conversation was the last time a loop looked. Measured
     // from the page, never declared — and stored so the screen can show it without

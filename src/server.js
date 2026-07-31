@@ -113,24 +113,6 @@ export function createServer() {
 
   api.get('/projects', (_req, res) => res.json(db().prepare('SELECT * FROM projects ORDER BY name').all()))
 
-  api.patch('/projects/:slug', (req, res) => {
-    const p = projectBy(req.params.slug)
-    const b = req.body ?? {}
-    if (b.gate_judge && !['human', 'agent', 'gpt', 'self'].includes(b.gate_judge)) {
-      throw new Rejected('Unknown judge: human, agent, gpt or self.')
-    }
-    const champs = {}
-    for (const k of ['gate_judge', 'name', 'judge_agent', 'judge_url', 'repo_path']) {
-      if (k in b) champs[k] = b[k]
-    }
-    if (Object.keys(champs).length) {
-      db()
-        .prepare(`UPDATE projects SET ${Object.keys(champs).map((n) => `${n} = @${n}`).join(', ')} WHERE id = @id`)
-        .run({ ...champs, id: p.id })
-    }
-    res.json(db().prepare('SELECT * FROM projects WHERE id = ?').get(p.id))
-  })
-
   /**
    * The objective list carries everything the screen needs without inferring it:
    * who is working RIGHT NOW, when it last moved, which halt is open, who did the
@@ -188,6 +170,9 @@ export function createServer() {
   api.patch('/projects/:slug', (req, res) => {
     const p = projectBy(req.params.slug)
     const b = req.body ?? {}
+    if (b.gate_judge && !['human', 'agent', 'gpt', 'self'].includes(b.gate_judge)) {
+      throw new Rejected('Unknown judge: human, agent, gpt or self.')
+    }
     const fields = {}
     for (const k of ['name', 'repo_path', 'gate_judge', 'judge_agent', 'judge_url']) {
       if (k in b) fields[k] = b[k]?.toString().trim() || null
@@ -289,6 +274,7 @@ export function createServer() {
       post: Boolean(r.post),
       hold_between_turns: Boolean(r.hold_between_turns),
       cancel_asked: Boolean(r.cancel_asked),
+      jump: Boolean(r.jump),
     }
 
   api.get('/runs', (req, res) => {
@@ -340,8 +326,8 @@ export function createServer() {
     const r = db()
       .prepare(
         `INSERT INTO runs (project_id, objective_id, mode, max_turns, budget,
-                           budget_without_progress, post, hold_between_turns)
-         VALUES (?,?,?,?,?,?,?,?)`,
+                           budget_without_progress, post, hold_between_turns, jump, reason)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         p.id,
@@ -352,6 +338,11 @@ export function createServer() {
         Number(b.budget_without_progress ?? 120),
         b.post === false ? 0 : 1,
         b.hold_between_turns ? 1 : 0,
+        // Slipped in front of what is already waiting. It does not interrupt the
+        // run in flight — that one finishes; this one goes next. When a loop has
+        // just broken something, the fix cannot wait behind six queued chapters.
+        b.jump ? 1 : 0,
+        b.reason?.toString().trim() || null,
       )
 
     res.status(201).json(publicRun(db().prepare('SELECT * FROM runs WHERE id = ?').get(r.lastInsertRowid)))
@@ -363,7 +354,10 @@ export function createServer() {
     const p = projectBy(req.params.slug)
     const taken = db().transaction(() => {
       const r = db()
-        .prepare("SELECT * FROM runs WHERE project_id = ? AND status = 'pending' ORDER BY id LIMIT 1")
+        .prepare(
+          `SELECT * FROM runs WHERE project_id = ? AND status = 'pending'
+           ORDER BY jump DESC, id LIMIT 1`,
+        )
         .get(p.id)
       if (!r) return null
       db()
@@ -1879,6 +1873,24 @@ export function createServer() {
     const p = projectBy(req.params.slug)
     res.json(db().prepare('SELECT * FROM resources WHERE project_id = ?').all(p.id).map((r) => ({ ...r, included: Boolean(r.included) })))
   })
+
+  /**
+   * Two handlers on the same method and path: the first answers, the second is
+   * dead code, and nothing says so. That is how `PATCH /projects/:slug` came to
+   * exist twice — the second one validated more, saved more fields, and never
+   * ran once. Loud at startup beats silent forever.
+   */
+  {
+    const seen = new Map()
+    for (const layer of api.stack) {
+      if (!layer.route) continue
+      for (const method of Object.keys(layer.route.methods)) {
+        const key = `${method.toUpperCase()} ${layer.route.path}`
+        if (seen.has(key)) throw new Error(`Route declared twice — the second never runs: ${key}`)
+        seen.set(key, true)
+      }
+    }
+  }
 
   app.use('/api', api)
 
