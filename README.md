@@ -205,9 +205,10 @@ never fires, suspect the material before the rule.
 That shape accounted for seven of the ten defects fixed on 31 July, and none of
 them failed a typecheck: TypeScript believes a declaration, and JavaScript does
 not object to reading a key that is not there. `test/screens.test.js` compares
-what every template READS against what the API actually SENDS, and runs against
-a live server — start one first, or those checks skip and say so rather than
-passing quietly.
+what every template READS against what the API actually SENDS. It starts its own
+server on its own database and seeds every endpoint the screens read — a test
+that needs you to have something running is a test that skips, and a skipped
+test protects nothing while looking green.
 
 ## License
 

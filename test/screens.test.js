@@ -1,8 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync, existsSync } from 'node:fs'
+import { readFileSync, readdirSync, existsSync, mkdtempSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { createRequire } from 'node:module'
 
 /**
@@ -20,21 +21,58 @@ import { createRequire } from 'node:module'
  * found by a person looking at a screen — which means the rate does not fall,
  * it just stays invisible while nobody looks.
  *
- * So this reads every template, collects the fields it expects on API data, and
- * compares them with a live response. It runs against the real server when one
- * is up, and skips rather than passing quietly when it is not — a green test
- * that checked nothing is worse than a missing one.
+ * It starts its OWN server on its OWN database. The first version asked whoever
+ * ran the tests to have one up, and skipped when they did not — which is how the
+ * visual tests sat green and checking nothing for hours after their fixtures
+ * were swept. A test that depends on someone else's housekeeping is not a test.
  */
+
+process.env.ORCHESTRATOR_DB = join(mkdtempSync(join(tmpdir(), 'orch-screens-')), 'test.db')
 
 const here = dirname(fileURLToPath(import.meta.url))
 const WEB = join(here, '..', 'web', 'src')
 const require = createRequire(join(here, '..', 'web', 'package.json'))
 
-const API = process.env.ORCHESTRATOR_API ?? 'http://127.0.0.1:4747/api'
-const reachable = await fetch(`${API}/projects`, { signal: AbortSignal.timeout(2000) }).then(
-  () => true,
-  () => false,
-)
+const { base } = await import('../src/db/index.js')
+const { startServer } = await import('../src/server.js')
+
+/**
+ * Enough of everything for each response to carry its real shape.
+ *
+ * An empty table returns `[]`, every field is trivially "not missing", and the
+ * check passes while looking at nothing — the same silence it was written to
+ * break. So every endpoint the screens read gets at least one row.
+ */
+const db = base()
+db.prepare("INSERT INTO projects (id,slug,name,repo_path,gate_judge) VALUES (1,'atlas','Atlas','/tmp','gpt')").run()
+db.prepare(
+  `INSERT INTO objectives (id,project_id,title,proof_spec,blast_radius,status)
+   VALUES (1,1,'a chapter','the test passes','feature','ready')`,
+).run()
+db.prepare(
+  `INSERT INTO permissions (project_id,harness,pattern,label,decision,note)
+   VALUES (1,'claude','Bash(ls *)','Core tools','allow','reading only')`,
+).run()
+db.prepare(
+  `INSERT INTO agents (name,label,kind,reach,role,enabled,priority,capabilities)
+   VALUES ('claude','Claude','model','cli','executant',1,50,'["code"]')`,
+).run()
+db.prepare(
+  `INSERT INTO runs (project_id,objective_id,mode,status,turn,machine,pid)
+   VALUES (1,1,'chapter','running',1,'here',1)`,
+).run()
+// `tools_used` matters: without it `/wiring` reports no tool surfaces at all, and
+// the check on Wiring.vue sees an empty half of the response. Found by this very
+// test, on its own fixtures.
+db.prepare(
+  `INSERT INTO passages (objective_id,harness,started_at,ended_at,cost_usd,tokens,prevented,tools_used)
+   VALUES (1,'claude',datetime('now'),datetime('now'),1.5,1000,0,'{"mcp__UnityMCP__manage_scene":3,"Read":7}')`,
+).run()
+
+const { serveur } = await startServer(0)
+const API = `http://127.0.0.1:${serveur.address().port}/api`
+
+test.after(() => serveur.close())
 
 function vueFiles(dir) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
@@ -163,7 +201,7 @@ const SCREENS = [
 ]
 
 for (const screen of SCREENS) {
-  test(`${screen.what}: every field the screen reads is one the API sends`, { skip: !reachable }, async () => {
+  test(`${screen.what}: every field the screen reads is one the API sends`, async () => {
     const file = join(WEB, screen.file)
     if (!existsSync(file)) return
 
@@ -200,11 +238,24 @@ for (const screen of SCREENS) {
   })
 }
 
-test('the smoke test is actually running against a server', () => {
-  // Said out loud rather than skipped in silence: the visual tests had gone to
-  // skipped when their fixtures were swept, and protected nothing for hours.
-  if (!reachable) {
-    console.log(`    (no server on ${API} — the screen checks did not run)`)
+test('the fixtures cover every endpoint the screens read', async () => {
+  // The check above is only as good as the rows behind it: an endpoint that
+  // returns nothing makes every field trivially present. This fails loudly when
+  // a screen is added and its data is not.
+  for (const screen of SCREENS) {
+    for (const path of screen.paths) {
+      const body = await (await fetch(`${API}${path}`)).json()
+      // Every branch of the response, not just the union: `/wiring` returns
+      // agents AND tool surfaces, and a fixture that filled only the first left
+      // the second silently unexamined. This test found that on its own data.
+      const branches = Array.isArray(body) ? { '': body } : body
+      for (const [key, rows] of Object.entries(branches)) {
+        if (!Array.isArray(rows)) continue
+        assert.ok(
+          rows.length,
+          `${path}${key ? `.${key}` : ''} returned nothing — the check on ${screen.file} saw no data there`,
+        )
+      }
+    }
   }
-  assert.ok(true)
 })
