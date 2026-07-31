@@ -1106,13 +1106,18 @@ export function createServer() {
   })
 
   /**
-   * The tools available to an executor, by capability and by preference.
+   * The tools available to an executor, grouped by what they can do.
    * On ne renvoie JAMAIS de secret : seulement le nom de la variable qui le
    * will fall on the machine that executes.
    */
   api.get('/toolbox', (_req, res) => {
+    // Sorted by NAME, not by priority. Ordering by our preference told the judge
+    // which harness to pick before it had read the mission — and a ranking, once
+    // shown, is obeyed. Which one fits is a question of the work at hand, not of
+    // a number we set months ago. We say what exists and what it can do; the
+    // choice is the judge's.
     const agents = db()
-      .prepare("SELECT * FROM agents WHERE enabled = 1 ORDER BY priority, name")
+      .prepare('SELECT * FROM agents WHERE enabled = 1 ORDER BY name')
       .all()
       .map(sortirAgent)
       .filter((a) => a.capabilities.length)

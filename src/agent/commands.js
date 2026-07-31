@@ -1264,8 +1264,10 @@ const commands = {
 
     const inbox = await call('GET', '/toolbox', null, { soft: true })
     if (inbox && Object.keys(inbox).length) {
-      w('### The tools available to the executor')
-      w('Name them in the mission when it needs them — without that, it improvises.')
+      w('### The tools available')
+      w('Grouped by what they can do, in no particular order — which one fits is')
+      w('yours to decide from the work at hand. Name the one you choose in the')
+      w('mission: without that, the executor improvises.')
       w()
       // Measured, not guessed: a session's context saturates near the context
       // window after roughly 80 tool calls, and every call past that point re-reads
@@ -1290,8 +1292,11 @@ const commands = {
               : 'locally'
           return `${o.label} — ${acces}`
         }).join(' · ')}`)
-        const premier = dispo[0]
-        if (premier.settings?.note) w(`  - worth knowing: ${premier.settings.note}`)
+        // The note belongs to the tool that carries it. Attaching it to whichever
+        // came first put one tool's caveat under another's name.
+        for (const o of dispo) {
+          if (o.settings?.note) w(`  - ${o.label} — worth knowing: ${o.settings.note}`)
+        }
       }
       w()
     }
