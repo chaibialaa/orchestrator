@@ -102,6 +102,9 @@ function addMissingColumns(db) {
     // too, and a retitle is not a new attempt at anything.
     ['objectives', 'proof_spec_changed_at', 'TEXT'],
     ['runs', 'jump', 'INTEGER NOT NULL DEFAULT 0'],
+    // Queued as part of a series: when this one fails, drop what was queued
+    // behind it rather than spending on steps whose ground has moved.
+    ['runs', 'series_stops_on_failure', 'INTEGER NOT NULL DEFAULT 0'],
     // Queued knowingly beside another pass on the same repository. The mission is
     // told, so the agent can keep off what the other one is holding.
     ['runs', 'alongside', 'INTEGER NOT NULL DEFAULT 0'],

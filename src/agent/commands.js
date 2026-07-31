@@ -1677,13 +1677,17 @@ const commands = {
         .join('\n')
 
       const memoryInstruction = [
-        'Break the request below into ONE chapter and its execution steps.',
+        'Break the request below into chapters and their execution steps.',
         '',
         'Rules for the breakdown:',
+        '- ONE chapter if the request is one piece of work. If it is already a plan with',
+        '  its own chapters or phases, keep them — do not flatten a plan of eighteen',
+        '  chapters into one, and do not invent chapters a short request does not have;',
         '- every step must be completable in a single agent session;',
         '- every step carries a VERIFIABLE proof criterion, written as a condition, not as an intention. A command that passes, a number crossing a threshold, a screenshot showing something named. Never "it is clean" or "it works better";',
+        '- a step you cannot write a checkable criterion for gets `proof_spec: null`. That is honest, and the tool refuses to start it until someone writes one. Inventing a criterion nobody can check is what makes a chapter run six times and conclude never;',
         '- the steps are in the order they must be executed;',
-        '- between 2 and 12 steps. If the request only justifies one, do not invent more;',
+        '- between 2 and 12 steps per chapter. If a chapter only justifies one, do not invent more;',
         '- blast_radius: cosmetic (visual), feature (visible function), api (data or shared interface), critical (money, payroll, production).',
         proofs ? `\nProof commands declared by this project — reuse them as they are when they fit:\n${proofs}` : '',
         constraints ? `\nConstraints already settled on this project — do not contradict them:\n${constraints}` : '',
@@ -1692,8 +1696,11 @@ const commands = {
         brief.body,
         '--- FIN ---',
         '',
-        'Reply ONLY with a JSON object, with no text around it and no code fence:',
+        'Reply ONLY with a JSON object, with no text around it and no code fence.',
+        'One chapter:',
         '{"chapter":"…","intent":"…","steps":[{"title":"…","proof_spec":"…","blast_radius":"feature"}]}',
+        'Several:',
+        '{"chapters":[{"chapter":"…","intent":"…","steps":[…]}]}',
       ]
         .filter(Boolean)
         .join('\n')
@@ -1724,7 +1731,13 @@ const commands = {
 
       const proposal = extraireJson(raw)
 
-      if (!proposal?.chapter || !Array.isArray(proposal.steps) || !proposal.steps.length) {
+      // Either shape is accepted and normalised here, so nothing downstream has to
+      // know which one came back.
+      if (Array.isArray(proposal?.chapters) && proposal.chapters.length) {
+        proposal.chapters = proposal.chapters.filter((c) => c?.chapter && Array.isArray(c.steps) && c.steps.length)
+      }
+      const single = proposal?.chapter && Array.isArray(proposal.steps) && proposal.steps.length
+      if (!single && !proposal?.chapters?.length) {
         console.error('    unusable reply: no readable JSON breakdown')
         await call(
           'PATCH',
@@ -1738,7 +1751,9 @@ const commands = {
       const r = await call('PATCH', `/briefs/${brief.id}/propose`, { proposal: proposal }, { soft: true })
       console.log(
         r
-          ? `    → ${proposal.steps.length} step(s) proposed · “${proposal.chapter}”`
+          ? proposal.chapters?.length
+            ? `    → ${proposal.chapters.length} chapters, ${proposal.chapters.reduce((n, c) => n + c.steps.length, 0)} steps proposed`
+            : `    → ${proposal.steps.length} step(s) proposed · “${proposal.chapter}”`
           : `    → the server refused the proposal`,
       )
       const sans = proposal.steps.filter((e) => !e.proof_spec).length

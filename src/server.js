@@ -281,6 +281,7 @@ export function createServer() {
       cancel_asked: Boolean(r.cancel_asked),
       jump: Boolean(r.jump),
       alongside: Boolean(r.alongside),
+      series_stops_on_failure: Boolean(r.series_stops_on_failure),
     }
 
   api.get('/runs', (req, res) => {
@@ -417,6 +418,90 @@ export function createServer() {
 
   /** A worker claims the oldest pending run for a project. Atomic: two workers
    *  polling at the same second must not both take it. */
+  /**
+   * Queue a series of objectives in one go.
+   *
+   * The queue could only ever take one at a time, so running a chapter of eight
+   * steps meant coming back eight times — which is the interruption this tool
+   * exists to remove. They are queued in the order given and the worker takes
+   * them one after another.
+   *
+   * Sequential, and only sequential. Two passes in one working tree overwrite
+   * each other's edits, so "run them in parallel" is not a mode this can offer
+   * honestly on a single repository; what it can offer is not needing anyone
+   * between one step and the next.
+   *
+   * `stop_on_failure` is the real choice: carry on down the list when a step
+   * fails, or stop there. Stopping is the default — a step that failed is often
+   * the reason the next one cannot work either.
+   */
+  api.post('/projects/:slug/runs/series', (req, res) => {
+    const p = projectBy(req.params.slug)
+    const ids = Array.isArray(req.body?.objectives) ? req.body.objectives.map(Number).filter(Boolean) : []
+    if (!ids.length) throw new Rejected('Which objectives should run?')
+    if (ids.length > 40) throw new Rejected('Forty at a time at most — queue the rest afterwards.')
+
+    // Everything is checked BEFORE anything is queued: half a series is worse
+    // than none, because the half that ran has already been paid for.
+    const refused = []
+    for (const id of ids) {
+      const o = db().prepare('SELECT id, project_id, title FROM objectives WHERE id = ?').get(id)
+      if (!o || o.project_id !== p.id) {
+        refused.push({ objective: id, why: 'not an objective of this project' })
+        continue
+      }
+      const start = canStart(id)
+      if (!start.ok) refused.push({ objective: id, title: o.title, why: start.detail })
+    }
+    if (refused.length) {
+      throw new Rejected(
+        `${refused.length} of ${ids.length} cannot start: ` +
+          refused.map((r) => `#${r.objective} ${r.why}`).join(' · '),
+        409,
+        { refused },
+      )
+    }
+
+    const busy = db()
+      .prepare(
+        "SELECT id FROM runs WHERE project_id = ? AND mode = 'chapter' AND status IN ('pending','running')",
+      )
+      .get(p.id)
+    if (busy && !req.body?.alongside) {
+      throw new Rejected(
+        `A pass is already queued or running on this repository (run #${busy.id}). ` +
+          'Wait for it, or queue this series alongside on purpose.',
+      )
+    }
+
+    const b = req.body ?? {}
+    const insert = db().prepare(
+      `INSERT INTO runs (project_id, objective_id, mode, max_turns, budget,
+                         budget_without_progress, post, hold_between_turns, jump, reason, alongside, series_stops_on_failure)
+       VALUES (?,?,'chapter',?,?,?,?,?,0,?,?,?)`,
+    )
+    const made = db().transaction(() =>
+      ids.map((id) =>
+        Number(
+          insert.run(
+            p.id,
+            id,
+            Number(b.max_turns ?? 8),
+            b.budget ? Number(b.budget) : null,
+            Number(b.budget_without_progress ?? 120),
+            b.post === false ? 0 : 1,
+            b.hold_between_turns ? 1 : 0,
+            b.reason?.toString().trim() || null,
+            b.alongside ? 1 : 0,
+            b.stop_on_failure === false ? 0 : 1,
+          ).lastInsertRowid,
+        ),
+      ),
+    )()
+
+    res.status(201).json({ queued: made, objectives: ids })
+  })
+
   api.post('/projects/:slug/runs/claim', (req, res) => {
     const p = projectBy(req.params.slug)
     const taken = db().transaction(() => {
@@ -501,6 +586,33 @@ export function createServer() {
         .prepare(`UPDATE runs SET ${names.map((n) => `${n} = @${n}`).join(', ')} WHERE id = @id`)
         .run({ ...fields, id: r.id })
     }
+
+    /**
+     * A step of a series failed, and the rest was queued behind it.
+     *
+     * Left alone, the queue would spend on every following step against ground
+     * that has just moved — and the failure would be discovered eight times
+     * rather than once. Only what is still waiting is dropped: a run already in
+     * flight has been paid for and finishes.
+     */
+    if (r.series_stops_on_failure && ['failed', 'cancelled'].includes(fields.status)) {
+      const dropped = db()
+        .prepare(
+          `SELECT id FROM runs WHERE project_id = ? AND status = 'pending'
+             AND series_stops_on_failure = 1 AND id > ?`,
+        )
+        .all(r.project_id, r.id)
+      if (dropped.length) {
+        db()
+          .prepare(
+            `UPDATE runs SET status='cancelled', ended_at=?,
+                    error='the step before it failed, and the series was set to stop there'
+             WHERE project_id=? AND status='pending' AND series_stops_on_failure=1 AND id > ?`,
+          )
+          .run(nowStamp(), r.project_id, r.id)
+      }
+    }
+
     res.json(publicRun(db().prepare('SELECT * FROM runs WHERE id = ?').get(r.id)))
   })
 
@@ -2101,41 +2213,60 @@ export function createServer() {
     const b = db().prepare('SELECT * FROM briefs WHERE id = ?').get(req.params.id)
     if (!b) throw new Rejected('This brief does not exist.', 404)
     const d = req.body ?? {}
-    if (!d.chapter?.trim()) throw new Rejected('The chapter must have a title.')
-    if (!Array.isArray(d.steps) || !d.steps.length) throw new Rejected('A chapter with no steps is useless.')
 
-    const chap = db().transaction(() => {
-      const prio =
-        db().prepare('SELECT COALESCE(MAX(priority),0) m FROM objectives WHERE project_id=? AND parent_id IS NULL').get(b.project_id).m + 10
+    // One chapter or several — a request is one piece of work, a plan already has
+    // its own chapters, and flattening eighteen of them into one loses the plan.
+    const chapters = Array.isArray(d.chapters) && d.chapters.length ? d.chapters : [d]
 
-      const c = db()
-        .prepare(
-          `INSERT INTO objectives (project_id,title,intent,blast_radius,priority,status)
-           VALUES (?,?,?,'feature',?,'draft')`,
-        )
-        .run(b.project_id, d.chapter, d.intent ?? null, prio)
+    for (const c of chapters) {
+      if (!c.chapter?.trim()) throw new Rejected('Every chapter must have a title.')
+      if (!Array.isArray(c.steps) || !c.steps.length) {
+        throw new Rejected(`“${c.chapter}” has no steps — a chapter with none is useless.`)
+      }
+    }
 
-      d.steps.forEach((e, i) => {
-        db()
+    const made = db().transaction(() => {
+      let prio =
+        db().prepare('SELECT COALESCE(MAX(priority),0) m FROM objectives WHERE project_id=? AND parent_id IS NULL').get(b.project_id).m
+
+      const ids = []
+      for (const chapter of chapters) {
+        prio += 10
+        const c = db()
           .prepare(
-            `INSERT INTO objectives (project_id,parent_id,title,proof_spec,blast_radius,priority,status)
-             VALUES (?,?,?,?,?,?,?)`,
+            `INSERT INTO objectives (project_id,title,intent,blast_radius,priority,status)
+             VALUES (?,?,?,'feature',?,'draft')`,
           )
-          .run(
-            b.project_id, c.lastInsertRowid, e.title, e.proof_spec ?? null,
-            e.blast_radius ?? 'feature', (i + 1) * 10,
-            e.proof_spec?.trim() ? 'ready' : 'draft',
-          )
-      })
+          .run(b.project_id, chapter.chapter, chapter.intent ?? null, prio)
+
+        chapter.steps.forEach((e, i) => {
+          db()
+            .prepare(
+              `INSERT INTO objectives (project_id,parent_id,title,proof_spec,blast_radius,priority,status)
+               VALUES (?,?,?,?,?,?,?)`,
+            )
+            .run(
+              b.project_id, c.lastInsertRowid, e.title, e.proof_spec ?? null,
+              e.blast_radius ?? 'feature', (i + 1) * 10,
+              // A step with no checkable criterion stays a draft. The gate refuses
+              // to start it and says why — better than a criterion nobody can check,
+              // which is what makes a chapter run six times and conclude never.
+              e.proof_spec?.trim() ? 'ready' : 'draft',
+            )
+        })
+        ids.push(c.lastInsertRowid)
+      }
 
       db().prepare("UPDATE briefs SET status='applied' WHERE id=?").run(b.id)
-      return c.lastInsertRowid
+      return ids
     })()
 
-    res.status(201).json({
-      ...objectiveBy(chap),
-      children: db().prepare('SELECT * FROM objectives WHERE parent_id = ? ORDER BY priority').all(chap),
-    })
+    res.status(201).json(
+      made.map((id) => ({
+        ...objectiveBy(id),
+        children: db().prepare('SELECT * FROM objectives WHERE parent_id = ? ORDER BY priority').all(id),
+      })),
+    )
   })
 
   api.delete('/briefs/:id', (req, res) => {

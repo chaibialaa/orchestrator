@@ -195,3 +195,44 @@ test('an objective that stops proving anything is refused another attempt', asyn
   assert.equal(attemptsSinceProof(40).attempts, 0)
   assert.equal(canStart(40).ok, true)
 })
+
+test('a series is queued whole or not at all, and a failure drops what follows', async () => {
+  db.prepare("DELETE FROM runs").run()
+  db.prepare(
+    `INSERT INTO objectives (id,project_id,title,proof_spec,blast_radius,status)
+     VALUES (50,1,'one','the test passes','feature','ready'),
+            (51,1,'two','the test passes','feature','ready'),
+            (52,1,'no criterion',NULL,'feature','draft')`,
+  ).run()
+
+  // Half a series is worse than none: the half that ran has been paid for.
+  const partly = await post('/projects/p/runs/series', { objectives: [50, 52] })
+  assert.equal(partly.status, 409)
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM runs").get().n, 0, 'nothing was queued')
+
+  const ok = await post('/projects/p/runs/series', { objectives: [50, 51] })
+  const { queued } = await ok.json()
+  assert.equal(queued.length, 2)
+
+  // The first fails; the second was queued behind it and loses its ground.
+  await fetch(url(`/runs/${queued[0]}`), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'failed', error: 'nope' }),
+  })
+  const next = db.prepare('SELECT status, error FROM runs WHERE id = ?').get(queued[1])
+  assert.equal(next.status, 'cancelled')
+  assert.match(next.error, /the step before it failed/)
+})
+
+test('a series can be told to carry on through a failure', async () => {
+  db.prepare("DELETE FROM runs").run()
+  const ok = await post('/projects/p/runs/series', { objectives: [50, 51], stop_on_failure: false })
+  const { queued } = await ok.json()
+  await fetch(url(`/runs/${queued[0]}`), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ status: 'failed' }),
+  })
+  assert.equal(db.prepare('SELECT status FROM runs WHERE id = ?').get(queued[1]).status, 'pending')
+})

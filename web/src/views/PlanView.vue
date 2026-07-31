@@ -5,6 +5,7 @@ import { blastLabel, blastHelp, statusLabel } from '../labels'
 import BriefComposer from '../components/BriefComposer.vue'
 import RunControl from '../components/RunControl.vue'
 import Attachments from '../components/Attachments.vue'
+import RunSeries from '../components/RunSeries.vue'
 
 const props = defineProps<{ slug: string }>()
 
@@ -188,6 +189,11 @@ const RISKS: BlastRadius[] = ['cosmetic', 'feature', 'api', 'critical']
           drop
         </button>
       </header>
+
+      <!-- Launch the whole chapter, rather than returning here between each step. -->
+      <div class="-mt-3 mb-4">
+        <RunSeries :slug="slug" :chapter="chapter" :steps="steps" @queued="load" />
+      </div>
 
       <p v-if="!steps.length" class="text-ink-500 text-[12px] mb-3.5">
         Empty chapter. Add its steps in the order they will run.

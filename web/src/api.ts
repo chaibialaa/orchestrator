@@ -339,6 +339,8 @@ export interface Run {
   cancel_asked: boolean
   /** Slipped in front of what was already waiting. */
   jump: boolean
+  /** Part of a series that drops what follows it when it fails. */
+  series_stops_on_failure: boolean
   /** Queued knowingly beside another pass in the same checkout. */
   alongside: boolean
   /** Why it was slipped in front — written when it was queued. */
@@ -545,6 +547,22 @@ export const api = {
   removeAttachment: (id: number) => http.delete(`/attachments/${id}`).then((r) => r.data),
   attachmentUrl: (id: number, w?: number) =>
     `${http.defaults.baseURL}/attachments/${id}/file${w ? `?w=${w}` : ''}`,
+
+  /** Queue several objectives to run one after another. Whole, or not at all. */
+  startSeries: (
+    slug: string,
+    payload: {
+      objectives: number[]
+      stop_on_failure?: boolean
+      max_turns?: number
+      budget_without_progress?: number
+      post?: boolean
+      alongside?: boolean
+    },
+  ) =>
+    http
+      .post<{ queued: number[]; objectives: number[] }>(`/projects/${slug}/runs/series`, payload)
+      .then((r) => r.data),
 
   setup: () => http.get<Setup>('/setup').then((r) => r.data),
   /** Fill a project's empty rule list from one that already works. Existing rules win. */
