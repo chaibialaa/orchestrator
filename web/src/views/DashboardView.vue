@@ -6,6 +6,7 @@ import ActivityFeed from '../components/ActivityFeed.vue'
 import Blockers from '../components/Blockers.vue'
 import NewProject from '../components/NewProject.vue'
 import JudgeFull from '../components/JudgeFull.vue'
+import NotConverging from '../components/NotConverging.vue'
 import { formatTokens, haltHelp, statusLabel } from '../labels'
 
 const data = ref<Dashboard | null>(null)
@@ -257,9 +258,21 @@ const segColor: Record<string, string> = {
           @done="load"
         />
 
+        <!-- The halt whose tempting answer — run it again — is the very thing
+             that produced it. It gets the two ways out that change something. -->
+        <NotConverging
+          v-for="h in data.open_halts.filter((x) => x.reason === 'not_converging')"
+          :key="`n${h.id}`"
+          :project="h.project"
+          :objective-id="h.objective_id"
+          :title="h.objective_title"
+          :detail="h.detail"
+          @done="load"
+        />
+
         <!-- Halts: the tool stopped on purpose. -->
         <RouterLink
-          v-for="h in data.open_halts.filter((x) => x.reason !== 'judge_conversation_full')"
+          v-for="h in data.open_halts.filter((x) => !['judge_conversation_full', 'not_converging'].includes(x.reason))"
           :key="`h${h.id}`"
           :to="`/o/${h.objective_id}`"
           class="card p-4 block border-halt/35 bg-halt/[0.04] hover:border-halt/60 transition-colors"

@@ -18,7 +18,20 @@ export const HUMAN_HALTS = [
   'no_provable_criterion',
   'invariant_regression',
   'human_request',
+  // Ten attempts that proved nothing are not nine attempts plus bad luck. The
+  // loop cannot fix this by trying again — the criterion or the approach has to
+  // change, and that is a decision.
+  'not_converging',
 ]
+
+/**
+ * Attempts without a passing proof before we stop and ask.
+ *
+ * Not a round number for its own sake: below about six, a hard objective looks
+ * like a stuck one and the loop would be interrupted while it is working. Past
+ * that, the record here shows attempts repeating rather than converging.
+ */
+const NOT_CONVERGING_AFTER = 6
 
 const refuse = (reason, detail) => ({ ok: false, reason, detail, ready: false })
 
@@ -200,6 +213,19 @@ export function canStart(objectiveId) {
     )
   }
 
+  // Before anything else: has this been going nowhere? Relaunching an objective
+  // that has failed ten times in a row is not persistence, it is the same
+  // attempt billed again — and the loop is what keeps relaunching it.
+  const { attempts, spent } = attemptsSinceProof(o.id)
+  if (attempts >= NOT_CONVERGING_AFTER) {
+    return refuse(
+      'not_converging',
+      `${attempts} attempts since the last passing proof` +
+        (spent ? `, $${spent.toFixed(0)} spent` : '') +
+        '. Trying again changes nothing on its own: the criterion or the approach has to change.',
+    )
+  }
+
   const blockingHalt = db
     .prepare(
       `SELECT reason FROM halts WHERE objective_id = ? AND resolved_at IS NULL
@@ -220,6 +246,39 @@ export function canStart(objectiveId) {
  * count. Counting them made the method look at fault when nothing had been
  * attempted at all.
  */
+/**
+ * How long this objective has been running without proving anything.
+ *
+ * `--budget-sans-progres` guards ONE pass and is rearmed by the next, so every
+ * attempt is the first as far as it is concerned. Atlas #11 spent 17 passes,
+ * $462 and 412 M tokens that way without a single guard firing: each one was
+ * within its own budget, and nothing counted across them.
+ *
+ * Counted from the last passing proof rather than from the start — an objective
+ * that proved something two attempts ago is progressing, however long it has
+ * been open. What we are looking for is the absence of learning, not slowness.
+ */
+export function attemptsSinceProof(objectiveId) {
+  const db = base()
+
+  const lastProof = db
+    .prepare(
+      `SELECT MAX(e.created_at) AS at FROM evidences e
+       WHERE e.objective_id = ? AND e.verdict = 'pass'`,
+    )
+    .get(objectiveId)?.at
+
+  const { n, spent } = db
+    .prepare(
+      `SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd), 0) AS spent FROM passages
+       WHERE objective_id = ? AND prevented = 0 AND ended_at IS NOT NULL
+         ${lastProof ? 'AND started_at > @since' : ''}`,
+    )
+    .get(objectiveId, { since: lastProof })
+
+  return { attempts: n, spent: Number(spent), since: lastProof ?? null }
+}
+
 export function isStalling(objectiveId, threshold = 2) {
   const db = base()
   const recentPassages = db

@@ -350,6 +350,31 @@ export function createServer() {
       }
     }
 
+    /**
+     * An objective that is not converging is not queued again.
+     *
+     * `canStart` already refuses this when the attempt opens, but by then the
+     * harness has been launched and the session paid for. Refusing at the door
+     * costs nothing and says the same thing earlier — and it records the halt,
+     * so the reason appears on the overview instead of only in a worker log.
+     */
+    if (mode === 'chapter' && b.objective) {
+      const start = canStart(b.objective)
+      if (!start.ok && start.reason === 'not_converging') {
+        const open = db()
+          .prepare(
+            "SELECT id FROM halts WHERE objective_id = ? AND reason = 'not_converging' AND resolved_at IS NULL",
+          )
+          .get(b.objective)
+        if (!open) {
+          db()
+            .prepare('INSERT INTO halts (objective_id, reason, detail) VALUES (?,?,?)')
+            .run(b.objective, 'not_converging', start.detail)
+        }
+        throw new Rejected(start.detail, 409, { gate: start })
+      }
+    }
+
     // One run per objective at a time. Two loops on the same objective fight over
     // the same repository and the same conversation — which happened, and cost a
     // Unity scene.

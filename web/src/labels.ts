@@ -81,6 +81,10 @@ export const haltLabel: Record<string, string> = {
 }
 
 export const haltHelp: Record<string, string> = {
+  not_converging:
+    'Attempt after attempt, and not one produced a passing proof. This is not a hard objective ' +
+    'having a bad run — it is the same attempt being billed again. What has to change is the ' +
+    'criterion or the approach, and only you can decide which.',
   judge_conversation_full:
     'The driving conversation has grown past what it can carry. Every turn re-reads the whole ' +
     'thread, so it is now slower, dearer, and losing the rules it was given at the top. A fresh ' +

@@ -248,7 +248,7 @@ function translatePermissionLabels(db) {
 }
 
 function widenHaltReasons(db) {
-  rebuildTable(db, 'halts', 'judge_conversation_full')
+  rebuildTable(db, 'halts', "'not_converging'")
 }
 
 /** `judge` renews the driving conversation — a mode the original CHECK forbade. */

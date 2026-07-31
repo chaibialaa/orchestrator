@@ -151,3 +151,38 @@ test('a Set has no length, and the version check has to know that', async () => 
     assert.equal(s.disagrees, s.versions.length > 1, `${s.name} reports its own disagreement`)
   }
 })
+
+test('an objective that stops proving anything is refused another attempt', async () => {
+  // `--budget-sans-progres` guards one pass and is rearmed by the next, so every
+  // attempt is the first as far as it is concerned. Atlas #11 spent 17 passes and
+  // $462 that way without a single guard firing. This counts across them.
+  const { canStart, attemptsSinceProof } = await import('../src/gate.js')
+
+  db.prepare(
+    `INSERT INTO objectives (id,project_id,title,proof_spec,blast_radius,status)
+     VALUES (40,1,'stuck','the test passes','feature','ready')`,
+  ).run()
+
+  const attempt = db.prepare(
+    `INSERT INTO passages (objective_id,harness,started_at,ended_at,cost_usd,prevented)
+     VALUES (40,'claude',datetime('now'),datetime('now'),10,0)`,
+  )
+
+  for (let i = 0; i < 5; i++) attempt.run()
+  assert.equal(canStart(40).ok, true, 'five attempts is a hard objective, not a stuck one')
+
+  for (let i = 0; i < 2; i++) attempt.run()
+  const blocked = canStart(40)
+  assert.equal(blocked.ok, false)
+  assert.equal(blocked.reason, 'not_converging')
+  assert.equal(attemptsSinceProof(40).attempts, 7)
+
+  // A passing proof resets it: an objective that proved something two attempts
+  // ago is progressing, however long it has been open.
+  db.prepare(
+    `INSERT INTO evidences (objective_id,type,label,verdict,created_at)
+     VALUES (40,'test','it passed','pass',datetime('now','+1 second'))`,
+  ).run()
+  assert.equal(attemptsSinceProof(40).attempts, 0)
+  assert.equal(canStart(40).ok, true)
+})

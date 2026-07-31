@@ -24,6 +24,8 @@ export type HaltReason =
   // Every turn re-reads the whole thread, so a long one gets slower, dearer, and
   // worse at remembering its own rules. A fresh conversation is the only way out.
   | 'judge_conversation_full'
+  /** Repeated attempts, no passing proof: trying again changes nothing on its own. */
+  | 'not_converging'
   | 'error'
 
 export interface Project {

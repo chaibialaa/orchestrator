@@ -112,7 +112,12 @@ CREATE TABLE IF NOT EXISTS halts (
                  -- turn re-reads the whole thread, so a long one gets slower, more
                  -- expensive, and worse at remembering its own rules. Only a person
                  -- can open a fresh one and hand over its address.
-                 'judge_conversation_full','error')),
+                 'judge_conversation_full',
+                 -- Attempt after attempt, and not one of them produced a passing
+                 -- proof. The objective is not hard, it is not converging: what
+                 -- has to change is the criterion or the approach, not the number
+                 -- of tries. Only a person can decide which.
+                 'not_converging','error')),
   detail       TEXT,
   -- How many proofs existed at the moment of the halt. That watermark is what
   -- lets us say "nothing new since the rejection" without trusting the clock.
