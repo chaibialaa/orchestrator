@@ -31,6 +31,11 @@ export interface Project {
   gate_judge?: string
   judge_agent?: string | null
   judge_url?: string | null
+  /** How many exchanges the thread may carry before we stop and ask for a fresh one. */
+  judge_message_cap?: number
+  /** How full it was the last time a loop looked. Measured, never declared. */
+  judge_messages_seen?: number | null
+  judge_seen_at?: string | null
 }
 
 export interface Evidence {
@@ -468,6 +473,13 @@ export const api = {
       .then((r) => r.data),
 
   blockers: () => http.get<Blocker[]>('/blockers').then((r) => r.data),
+  createProject: (payload: {
+    slug: string
+    name: string
+    repo_path?: string
+    judge_url?: string
+    gate_judge?: string
+  }) => http.post<Project>('/projects', payload).then((r) => r.data),
   wiring: () => http.get<Wiring>('/wiring').then((r) => r.data),
 
   runs: (slug?: string) =>

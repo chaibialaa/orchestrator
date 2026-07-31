@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { startServer } from './server.js'
-import { commands as agent } from './agent/commands.js'
+import { commands as agent, Refusal } from './agent/commands.js'
 import { importData } from './db/import.js'
 import { dbPath } from './db/index.js'
 import { saveOauthApp } from './oauth.js'
@@ -72,4 +72,13 @@ if (!fn) {
   console.log('               agent  :', Object.keys(agent).join(', '))
   process.exit(commande ? 1 : 0)
 }
-await fn(...args)
+try {
+  await fn(...args)
+} catch (e) {
+  // A refusal is a usage message, not a crash: it prints alone, without a stack.
+  if (e instanceof Refusal) {
+    console.error(e.message)
+    process.exit(1)
+  }
+  throw e
+}

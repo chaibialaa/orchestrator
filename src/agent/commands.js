@@ -148,8 +148,9 @@ async function call(method, path, body, { soft = false } = {}) {
     // Dans une boucle longue, une erreur ponctuelle ne doit pas tout tuer.
     if (soft) return null
 
-    console.error(`HTTP ${res.status}: ${String(JSON.stringify(data)).slice(0, 300)}`)
-    process.exit(1)
+    // Throwing rather than exiting: inside a worker, one bad answer from the API
+    // must fail the run in progress, not the process that carries every run after it.
+    fail(`HTTP ${res.status}: ${String(JSON.stringify(data)).slice(0, 300)}`)
   }
 
   return data
@@ -1912,17 +1913,42 @@ const commands = {
     const every = Math.max(2, Number(opts.every ?? 5)) * 1000
     console.log(`\n  worker on ${config.project} — checking every ${every / 1000} s\n`)
 
-    // Anything left `running` on this machine has no process behind it any more:
-    // this worker is the process, and it has just started. Releasing them is what
-    // stops a killed worker from blocking its objective for good.
-    const freed = await call('POST', '/runs/release', { machine: hostname() }, { soft: true }).catch(
-      () => null,
-    )
-    if (freed?.released?.length) {
-      console.log(`  released ${freed.released.length} run(s) whose worker had stopped\n`)
+    /**
+     * A pass is running only while a process carries it.
+     *
+     * `running` was a word written once and never checked again, so a worker that
+     * was killed left its objective claimed for good — and the screen went on
+     * reporting work that had stopped. Asking the operating system costs nothing
+     * and is the only answer that cannot go stale.
+     */
+    const sweepDeadRuns = async () => {
+      const carried = await call('GET', `/runs/carried?machine=${encodeURIComponent(hostname())}`, null, {
+        soft: true,
+      }).catch(() => null)
+      const dead = (carried?.runs ?? [])
+        .filter((r) => {
+          if (!r.pid) return true
+          try {
+            process.kill(r.pid, 0) // signal 0 asks: does it exist? It sends nothing.
+            return false
+          } catch {
+            return true // no such process, or it is not ours to signal
+          }
+        })
+        .map((r) => r.id)
+      if (!dead.length) return
+      const freed = await call('POST', '/runs/release', { machine: hostname(), ids: dead }, { soft: true }).catch(
+        () => null,
+      )
+      if (freed?.released?.length) {
+        console.log(`  released ${freed.released.join(', ')} — nothing was carrying them\n`)
+      }
     }
 
+    await sweepDeadRuns()
+
     for (;;) {
+      await sweepDeadRuns()
       const claimed = await call(
         'POST',
         `/projects/${config.project}/runs/claim`,
@@ -2325,6 +2351,17 @@ const commands = {
       // hand over its address, so the loop stops and says exactly that.
       const size = await conversationSize(page)
       const cap = Number(project?.judge_message_cap ?? 40)
+
+      // Report it so the screen can show how full the thread is without opening a
+      // browser. Derived from the page each turn, never declared.
+      if (size && project?.slug) {
+        await call(
+          'PATCH',
+          `/projects/${project.slug}`,
+          { judge_messages_seen: size.asked },
+          { soft: true },
+        ).catch(() => {})
+      }
       if (size && cap > 0 && size.asked >= cap) {
         console.log(
           `\n  CONVERSATION FULL — ${size.asked} exchanges, cap is ${cap}.` +
@@ -2599,9 +2636,19 @@ const commands = {
   },
 }
 
+/**
+ * Refuse to go further.
+ *
+ * This used to call `process.exit`, which no `try` can catch — so the worker's
+ * catch block, written precisely so that one bad run would not take the whole
+ * worker with it, never ran. One malformed run killed the loop and left its own
+ * record marked `running` for good. Throwing lets the caller decide: the CLI
+ * exits, the worker fails that run and takes the next one.
+ */
+class Refusal extends Error {}
+
 function fail(message) {
-  console.error(message)
-  process.exit(1)
+  throw new Refusal(message)
 }
 
 const pause = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -3579,4 +3626,4 @@ function buildReport(turn, directive, outcome) {
 // This file is no longer an entry point: the package's single CLI calls these
 // commands. That is what lets `orchestrator serve` and `orchestrator chapter` be
 // the same command, installed once.
-export { commands }
+export { commands, Refusal }

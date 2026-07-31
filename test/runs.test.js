@@ -1,0 +1,83 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+process.env.ORCHESTRATOR_DB = join(mkdtempSync(join(tmpdir(), 'orch-')), 'test.db')
+
+const { base } = await import('../src/db/index.js')
+const { startServer } = await import('../src/server.js')
+
+const db = base()
+db.prepare("INSERT INTO projects (id,slug,name,gate_judge) VALUES (1,'p','P','gpt')").run()
+db.prepare(
+  `INSERT INTO objectives (id,project_id,title,proof_spec,blast_radius,status)
+   VALUES (9,1,'o','the test passes','feature','ready')`,
+).run()
+
+const { serveur } = await startServer(0)
+// `startServer` echoes back the port it was asked for; 0 means "any", so the one
+// that matters is the one the socket actually bound.
+const port = serveur.address().port
+const url = (p) => `http://127.0.0.1:${port}/api${p}`
+const post = (p, body) =>
+  fetch(url(p), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+
+test('a chapter run without an objective is refused at the door', async () => {
+  // It used to be accepted, queued, claimed, and only then fail — in a worker log,
+  // on a usage message nobody was reading.
+  const res = await post('/projects/p/runs', { mode: 'chapter' })
+  assert.equal(res.status, 422) // `Rejected` means "understood, and refused"
+  assert.match((await res.json()).message, /needs an objective/)
+})
+
+test('the objective can be named either way', async () => {
+  // The column is `objective_id`, the field was `objective`. Both are the caller
+  // being right; only one used to work.
+  const res = await post('/projects/p/runs', { mode: 'chapter', objective_id: 9 })
+  assert.equal((await res.json()).objective_id, 9)
+})
+
+test('releasing frees only the runs named, never a neighbour', async () => {
+  // Two workers share this machine. Releasing every run on the machine had a
+  // starting worker killing its neighbour's live pass.
+  const mine = db
+    .prepare(
+      `INSERT INTO runs (project_id,objective_id,mode,status,machine,pid) VALUES (1,9,'chapter','running','m',111)`,
+    )
+    .run().lastInsertRowid
+  const neighbour = db
+    .prepare(
+      `INSERT INTO runs (project_id,objective_id,mode,status,machine,pid) VALUES (1,9,'chapter','running','m',222)`,
+    )
+    .run().lastInsertRowid
+
+  const res = await post('/runs/release', { machine: 'm', ids: [mine] })
+  assert.deepEqual((await res.json()).released, [Number(mine)])
+
+  const status = (id) => db.prepare('SELECT status FROM runs WHERE id = ?').get(id).status
+  assert.equal(status(mine), 'failed')
+  assert.equal(status(neighbour), 'running')
+})
+
+test('releasing nothing releases nothing', async () => {
+  const res = await post('/runs/release', { machine: 'm', ids: [] })
+  assert.deepEqual((await res.json()).released, [])
+})
+
+test('a refusal throws instead of killing the process', async () => {
+  // `fail` called `process.exit`, which no `try` can catch — so the worker's catch
+  // block, written so one bad run would not take the worker with it, never ran.
+  const { Refusal } = await import('../src/agent/commands.js')
+  const boom = () => {
+    throw new Refusal('nope')
+  }
+  assert.throws(boom, Refusal)
+})
+
+test.after(() => serveur.close())

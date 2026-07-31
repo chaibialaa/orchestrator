@@ -99,6 +99,11 @@ function addMissingColumns(db) {
     // a storage with no readable owner drops proofs somewhere nobody can name.
     ['storages', 'account', 'TEXT'],
     ['projects', 'judge_message_cap', 'INTEGER NOT NULL DEFAULT 40'],
+    // How full the driving conversation was the last time a loop looked. Measured
+    // from the page, never declared — and stored so the screen can show it without
+    // opening a browser.
+    ['projects', 'judge_messages_seen', 'INTEGER'],
+    ['projects', 'judge_seen_at', 'TEXT'],
     // What KIND of AI this is, beyond what it can do. A model that writes code, a
     // machine rented by the hour, an image service and a 3D generator are not
     // interchangeable, and a mission that treats them alike wastes one of them.

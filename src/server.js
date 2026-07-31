@@ -137,6 +137,79 @@ export function createServer() {
    * work. Without these columns, the screen presented three chains as three open
    * fronts.
    */
+  /**
+   * Declare a project.
+   *
+   * Until now this could only be done by hand in the database, or as a side effect
+   * of distilling memories — so the one thing you need before anything else works
+   * was the one thing the screen could not do.
+   *
+   * The repository path is checked against the disk. A wrong path breaks
+   * everything downstream in silence: proofs resolve to nothing, deliverables are
+   * never found, and the tool reports an empty project rather than a broken one.
+   */
+  api.post('/projects', (req, res) => {
+    const b = req.body ?? {}
+    const slug = String(b.slug ?? '').trim()
+    const name = String(b.name ?? '').trim()
+
+    if (!name) throw new Rejected('A project must have a name.')
+    if (!/^[a-z0-9-]{2,40}$/.test(slug)) {
+      throw new Rejected('Invalid project id: lowercase letters, digits and hyphens, 2 to 40 characters.')
+    }
+    if (db().prepare('SELECT id FROM projects WHERE slug = ?').get(slug)) {
+      throw new Rejected(`Project “${slug}” already exists.`)
+    }
+    if (b.repo_path && !existsSync(String(b.repo_path))) {
+      throw new Rejected(`This repository does not exist on this machine: ${b.repo_path}`)
+    }
+    if (b.gate_judge && !['human', 'agent', 'gpt', 'self'].includes(b.gate_judge)) {
+      throw new Rejected('Unknown judge: human, agent, gpt or self.')
+    }
+
+    const r = db()
+      .prepare(
+        `INSERT INTO projects (slug, name, repo_path, gate_judge, judge_agent, judge_url, judge_message_cap)
+         VALUES (?,?,?,?,?,?,?)`,
+      )
+      .run(
+        slug,
+        name,
+        b.repo_path?.trim() || null,
+        b.gate_judge ?? 'gpt',
+        b.judge_agent ?? 'gpt',
+        b.judge_url?.trim() || null,
+        Number(b.judge_message_cap ?? 40),
+      )
+
+    res.status(201).json(db().prepare('SELECT * FROM projects WHERE id = ?').get(r.lastInsertRowid))
+  })
+
+  api.patch('/projects/:slug', (req, res) => {
+    const p = projectBy(req.params.slug)
+    const b = req.body ?? {}
+    const fields = {}
+    for (const k of ['name', 'repo_path', 'gate_judge', 'judge_agent', 'judge_url']) {
+      if (k in b) fields[k] = b[k]?.toString().trim() || null
+    }
+    if ('judge_message_cap' in b) fields.judge_message_cap = Number(b.judge_message_cap) || 40
+    // Reported by a loop that just looked at the page. Never typed by anyone.
+    if ('judge_messages_seen' in b) {
+      fields.judge_messages_seen = Number(b.judge_messages_seen) || 0
+      fields.judge_seen_at = nowStamp()
+    }
+    if (fields.repo_path && !existsSync(fields.repo_path)) {
+      throw new Rejected(`This repository does not exist on this machine: ${fields.repo_path}`)
+    }
+    const names = Object.keys(fields)
+    if (names.length) {
+      db()
+        .prepare(`UPDATE projects SET ${names.map((n) => `${n} = @${n}`).join(', ')}, updated_at = @now WHERE id = @id`)
+        .run({ ...fields, now: nowStamp(), id: p.id })
+    }
+    res.json(db().prepare('SELECT * FROM projects WHERE id = ?').get(p.id))
+  })
+
   api.get('/projects/:slug/objectives', (req, res) => {
     const p = projectBy(req.params.slug)
     res.json(
@@ -240,8 +313,18 @@ export function createServer() {
     const p = projectBy(req.params.slug)
     const b = req.body ?? {}
 
-    if (b.mode && !['chapter', 'plan'].includes(b.mode)) {
+    const mode = b.mode ?? 'chapter'
+    if (!['chapter', 'plan'].includes(mode)) {
       throw new Rejected('Unknown run mode: chapter or plan.')
+    }
+
+    // The column is `objective_id`, the field was `objective`, and a request that
+    // named the wrong one was accepted, queued, claimed, and only then failed —
+    // in a worker log, on a usage message. Take either, and refuse at the door
+    // what cannot possibly run.
+    b.objective = b.objective ?? b.objective_id ?? null
+    if (mode === 'chapter' && !b.objective) {
+      throw new Rejected('A chapter run needs an objective to work on.')
     }
 
     // One run per objective at a time. Two loops on the same objective fight over
@@ -263,7 +346,7 @@ export function createServer() {
       .run(
         p.id,
         b.objective ?? null,
-        b.mode ?? 'chapter',
+        mode,
         Number(b.max_turns ?? 8),
         b.budget ? Number(b.budget) : null,
         Number(b.budget_without_progress ?? 120),
@@ -297,18 +380,47 @@ export function createServer() {
    * blocks its objective for good: the "one run per objective" guard refuses
    * every new one. So a worker releases the machine's orphans when it starts.
    */
+  /**
+   * Which runs this machine is on the hook for, and which process carries each.
+   * Only the machine itself can tell whether those processes are still alive, so
+   * that judgement is made there and reported back.
+   */
+  api.get('/runs/carried', (req, res) => {
+    const machine = req.query.machine
+    if (!machine) throw new Rejected('Which machine?')
+    res.json({
+      runs: db()
+        .prepare("SELECT id, pid, objective_id FROM runs WHERE status = 'running' AND machine = ?")
+        .all(machine),
+    })
+  })
+
+  /**
+   * Release runs nothing is carrying any more.
+   *
+   * This used to close every run on the machine, on the theory that a starting
+   * worker was the only process there. Two workers share this machine, so that
+   * theory had a starting worker killing its neighbour's live pass. Ids only, and
+   * only ones the caller has established are dead.
+   */
   api.post('/runs/release', (req, res) => {
     const machine = req.body?.machine
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Boolean) : null
     if (!machine) throw new Rejected('Which machine is releasing its runs?')
+    if (!ids?.length) return res.json({ released: [] })
+
+    const marks = ids.map(() => '?').join(',')
     const orphans = db()
-      .prepare("SELECT id FROM runs WHERE status = 'running' AND machine = ?")
-      .all(machine)
+      .prepare(
+        `SELECT id FROM runs WHERE status='running' AND machine=? AND id IN (${marks})`,
+      )
+      .all(machine, ...ids)
     db()
       .prepare(
-        `UPDATE runs SET status='failed', error='the worker carrying it stopped', ended_at=?
-         WHERE status='running' AND machine=?`,
+        `UPDATE runs SET status='failed', error='the process carrying it is gone', ended_at=?
+         WHERE status='running' AND machine=? AND id IN (${marks})`,
       )
-      .run(nowStamp(), machine)
+      .run(nowStamp(), machine, ...ids)
     res.json({ released: orphans.map((o) => o.id) })
   })
 

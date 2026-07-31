@@ -4,6 +4,7 @@ import { api, type Dashboard, type Review } from '../api'
 import Chips from '../components/Chips.vue'
 import ActivityFeed from '../components/ActivityFeed.vue'
 import Blockers from '../components/Blockers.vue'
+import NewProject from '../components/NewProject.vue'
 import { formatTokens, haltHelp, statusLabel } from '../labels'
 
 const data = ref<Dashboard | null>(null)
@@ -229,7 +230,10 @@ const segColor: Record<string, string> = {
 
     <!-- ═══ WHERE THE PROJECTS STAND ═══ -->
     <section>
-      <h2 class="label mb-3">Projects — {{ data.projects.length }}</h2>
+      <div class="flex items-baseline gap-3 mb-3">
+        <h2 class="label">Projects — {{ data.projects.length }}</h2>
+        <NewProject class="ml-auto" @created="load" />
+      </div>
       <div class="card divide-y divide-ink-850">
         <RouterLink
           v-for="p in data.projects"

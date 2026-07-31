@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch, computed } from 'vue'
-import { api, type Objective, type Stats, type TreeNode } from '../api'
+import { api, type Objective, type Stats, type TreeNode, type Project } from '../api'
 import Chips from '../components/Chips.vue'
 import ProjectTree from '../components/ProjectTree.vue'
 import ActivityFeed from '../components/ActivityFeed.vue'
@@ -11,6 +11,7 @@ const props = defineProps<{ slug: string }>()
 const objectives = ref<Objective[]>([])
 const stats = ref<Stats | null>(null)
 const tree = ref<TreeNode[]>([])
+const project = ref<Project | null>(null)
 const loading = ref(true)
 const error = ref<string | null>(null)
 const showHelp = ref(false)
@@ -19,14 +20,16 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const [o, s, t] = await Promise.all([
+    const [o, s, t, ps] = await Promise.all([
       api.objectives(props.slug),
       api.stats(props.slug),
       api.tree(props.slug),
+      api.projects(),
     ])
     objectives.value = o
     stats.value = s
     tree.value = t.objectives
+    project.value = ps.find((x) => x.slug === props.slug) ?? null
   } catch (e: any) {
     error.value = e?.message ?? 'error'
   } finally {
@@ -135,6 +138,38 @@ function story(o: Objective): string {
         </div>
       </dl>
     </header>
+
+    <!-- Where the work happens and who judges it. The conversation has a ceiling
+         now — every turn re-reads the whole thread — so how full it is belongs
+         next to the project, not buried in a halt when it is already too late. -->
+    <section v-if="project" class="flex items-baseline gap-x-6 gap-y-1 flex-wrap text-[11px]">
+      <span v-if="project.repo_path" class="num text-ink-500">{{ project.repo_path }}</span>
+
+      <a
+        v-if="project.judge_url"
+        :href="project.judge_url"
+        target="_blank"
+        class="text-ink-500 hover:text-run transition-colors"
+      >
+        judging conversation ▸
+      </a>
+      <span v-else class="text-halt">no judging conversation — the loop has nobody to ask</span>
+
+      <span
+        v-if="project.judge_messages_seen != null"
+        :class="
+          project.judge_messages_seen >= (project.judge_message_cap ?? 40)
+            ? 'text-halt'
+            : project.judge_messages_seen > (project.judge_message_cap ?? 40) * 0.75
+              ? 'text-ink-300'
+              : 'text-ink-500'
+        "
+        title="Every turn re-reads the whole thread. Past the cap, open a fresh conversation."
+      >
+        <span class="num">{{ project.judge_messages_seen }}/{{ project.judge_message_cap ?? 40 }}</span>
+        exchanges
+      </span>
+    </section>
 
     <!-- The legend, on request. It teaches what a colour means; it does not repeat
          what the track already shows. -->
