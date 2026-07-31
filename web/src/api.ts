@@ -151,6 +151,8 @@ export interface Agent {
   id: number
   name: string
   label: string
+  /** What it IS: a model, a machine billed by the hour, a service, a web interface. */
+  kind: 'model' | 'machine' | 'service' | 'browser' | null
   reach: 'cli' | 'browser' | 'api'
   role: 'executant' | 'judge' | 'both'
   enabled: boolean
@@ -279,6 +281,29 @@ export interface Run {
   requested_at: string
   taken_at: string | null
   ended_at: string | null
+}
+
+/** What is connected, and what is actually used. Both derived, neither declared. */
+export interface Wiring {
+  agents: {
+    name: string
+    label: string
+    kind: 'model' | 'machine' | 'service' | 'browser' | null
+    reach: string
+    role: string
+    enabled: boolean
+    capabilities: string[]
+    reachable: 'ok' | 'refused' | 'absent' | 'unknown'
+    detail: string | null
+    checked_at: string | null
+    machine: string | null
+    passes: number
+  }[]
+  servers: {
+    name: string
+    calls: number
+    tools: { tool: string; calls: number; by: Record<string, number> }[]
+  }[]
 }
 
 export interface Storage {
@@ -443,6 +468,7 @@ export const api = {
       .then((r) => r.data),
 
   blockers: () => http.get<Blocker[]>('/blockers').then((r) => r.data),
+  wiring: () => http.get<Wiring>('/wiring').then((r) => r.data),
 
   runs: (slug?: string) =>
     http.get<Run[]>(`/runs${slug ? `?project=${slug}` : ''}`).then((r) => r.data),

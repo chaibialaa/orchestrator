@@ -291,6 +291,27 @@ export function createServer() {
     res.json({ run: publicRun(taken) })
   })
 
+  /**
+   * A run is carried by a worker process. If that process is gone — restarted,
+   * killed, crashed — nothing is carrying the run, and leaving it `running`
+   * blocks its objective for good: the "one run per objective" guard refuses
+   * every new one. So a worker releases the machine's orphans when it starts.
+   */
+  api.post('/runs/release', (req, res) => {
+    const machine = req.body?.machine
+    if (!machine) throw new Rejected('Which machine is releasing its runs?')
+    const orphans = db()
+      .prepare("SELECT id FROM runs WHERE status = 'running' AND machine = ?")
+      .all(machine)
+    db()
+      .prepare(
+        `UPDATE runs SET status='failed', error='the worker carrying it stopped', ended_at=?
+         WHERE status='running' AND machine=?`,
+      )
+      .run(nowStamp(), machine)
+    res.json({ released: orphans.map((o) => o.id) })
+  })
+
   api.patch('/runs/:id', (req, res) => {
     const r = db().prepare('SELECT * FROM runs WHERE id = ?').get(req.params.id)
     if (!r) throw new Rejected('This run does not exist.', 404)
@@ -1252,7 +1273,7 @@ export function createServer() {
     if (!a) throw new Rejected('This agent does not exist.', 404)
     const b = req.body ?? {}
     const champs = {}
-    for (const k of ['label', 'reach', 'role', 'priority', 'env_var', 'endpoint']) if (k in b) champs[k] = b[k]
+    for (const k of ['label', 'kind', 'reach', 'role', 'priority', 'env_var', 'endpoint']) if (k in b) champs[k] = b[k]
     if ('capabilities' in b) champs.capabilities = json.write(b.capabilities ?? [])
     if ('enabled' in b) champs.enabled = b.enabled ? 1 : 0
     if ('settings' in b) champs.settings = json.write(b.settings)
@@ -1297,6 +1318,7 @@ export function createServer() {
         ;(by[c] ??= []).push({
           name: a.name,
           label: a.label,
+          kind: a.kind,
           reach: a.reach,
           endpoint: a.endpoint,
           env_var: a.env_var,
@@ -1316,6 +1338,69 @@ export function createServer() {
    * dit pas ce qui bouge. C'est ce qui manquait pour suivre une passe en cours
    * sans lire un fichier de journal dans un terminal.
    */
+  /**
+   * The wiring: what is connected, and what is actually used.
+   *
+   * Those are two different questions and the screen answered neither. A tool can
+   * be reachable and never called — a declaration nobody exercises is a guess. And
+   * a tool can be called constantly while its entry says `unknown`, which is how
+   * Codex spent weeks looking incapable of Unity.
+   *
+   * Reachability is MEASURED by `agents:check` on a machine. Usage is derived from
+   * the tool counts in the passages — which were NULL for months because the
+   * function that built them never returned them.
+   */
+  api.get('/wiring', (req, res) => {
+    const agents = db().prepare('SELECT * FROM agents ORDER BY name').all().map(sortirAgent)
+
+    // Every tool actually invoked, and by which harness. `tools_used` is a JSON
+    // object of {toolName: count} written from the harness traces.
+    const calls = {}
+    for (const p of db()
+      .prepare("SELECT harness, tools_used FROM passages WHERE tools_used IS NOT NULL AND tools_used != '{}'")
+      .all()) {
+      for (const [tool, n] of Object.entries(json.read(p.tools_used, {}) ?? {})) {
+        const e = (calls[tool] ??= { tool, calls: 0, by: {} })
+        e.calls += Number(n) || 0
+        e.by[p.harness] = (e.by[p.harness] ?? 0) + (Number(n) || 0)
+      }
+    }
+
+    // An MCP server is not an agent — it is a surface a harness reaches through.
+    // Grouping its tools under their server is what turns a list of forty tool
+    // names into something a person can read.
+    const servers = {}
+    for (const e of Object.values(calls)) {
+      const m = /^mcp__([^_]+(?:_[^_]+)*?)__/.exec(e.tool)
+      const key = m ? `mcp:${m[1]}` : 'built-in'
+      const g = (servers[key] ??= { name: key, calls: 0, tools: [] })
+      g.calls += e.calls
+      g.tools.push(e)
+    }
+    for (const g of Object.values(servers)) g.tools.sort((a, b) => b.calls - a.calls)
+
+    res.json({
+      agents: agents.map((a) => ({
+        name: a.name,
+        label: a.label,
+        kind: a.kind,
+        reach: a.reach,
+        role: a.role,
+        enabled: a.enabled,
+        capabilities: a.capabilities,
+        reachable: a.last_status,
+        detail: a.last_detail,
+        checked_at: a.last_checked_at,
+        machine: a.last_machine,
+        // Derived, never declared: how many passes this harness actually ran.
+        passes: db()
+          .prepare('SELECT COUNT(*) n FROM passages WHERE harness = ?')
+          .get(a.name).n,
+      })),
+      servers: Object.values(servers).sort((a, b) => b.calls - a.calls),
+    })
+  })
+
   api.get('/activity', (req, res) => {
     const slug = req.query.project
     const p = slug ? projectBy(slug) : null

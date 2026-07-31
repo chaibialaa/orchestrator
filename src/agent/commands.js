@@ -15,7 +15,7 @@ import { RULES, checkFile } from './rules.js'
 import { recentSessions, readSince, encodeCwd } from './watch.js'
 import { generateImage, ADAPTERS } from './images.js'
 import { inventoryMemories, assembleContext, memoryInstruction, memoryFingerprint } from './memories.js'
-import { attach, parseDirective, parseVerdict, parseDone, jsPost, attachFiles, waitForStable, confirmPosted, JS_LAST_ASSISTANT, JS_IS_STREAMING } from './relay.js'
+import { attach, parseDirective, parseVerdict, parseDone, jsPost, attachFiles, waitForStable, confirmPosted, conversationSize, JS_LAST_ASSISTANT, JS_IS_STREAMING } from './relay.js'
 
 /**
  * Claude pricing in $/million tokens: [input, output].
@@ -1284,13 +1284,24 @@ const commands = {
       for (const [capacite, outils] of Object.entries(inbox)) {
         const dispo = outils.filter((o) => o.joignable !== 'absent')
         if (!dispo.length) continue
+        // What each one IS, not only how it is reached. A rented machine keeps
+        // billing until it is shut down; an image service refuses on quota and
+        // says nothing useful about it. A mission that treats them as
+        // interchangeable wastes one of them.
+        const NATURE = {
+          model: 'a model',
+          machine: 'a rented machine — it bills until it is shut down',
+          service: 'a service',
+          browser: 'a web interface driven through a tab',
+        }
         w(`- **${capacite}** : ${dispo.map((o) => {
           const acces = o.reach === 'api'
             ? `by API${o.env_var ? `, key in \`$${o.env_var}\`` : ''}`
             : o.reach === 'browser'
               ? `through the browser (${o.settings?.match ?? 'dedicated tab'})`
               : 'locally'
-          return `${o.label} — ${acces}`
+          const nature = o.kind ? `${NATURE[o.kind] ?? o.kind}, ` : ''
+          return `${o.label} — ${nature}${acces}`
         }).join(' · ')}`)
         // The note belongs to the tool that carries it. Attaching it to whichever
         // came first put one tool's caveat under another's name.
@@ -1901,6 +1912,16 @@ const commands = {
     const every = Math.max(2, Number(opts.every ?? 5)) * 1000
     console.log(`\n  worker on ${config.project} — checking every ${every / 1000} s\n`)
 
+    // Anything left `running` on this machine has no process behind it any more:
+    // this worker is the process, and it has just started. Releasing them is what
+    // stops a killed worker from blocking its objective for good.
+    const freed = await call('POST', '/runs/release', { machine: hostname() }, { soft: true }).catch(
+      () => null,
+    )
+    if (freed?.released?.length) {
+      console.log(`  released ${freed.released.length} run(s) whose worker had stopped\n`)
+    }
+
     for (;;) {
       const claimed = await call(
         'POST',
@@ -2295,6 +2316,27 @@ const commands = {
           detail:
             `The mission requires the Unity instance “${config.unity.instance}” and no editor is running. ` +
             'Nobody but you can open it.',
+        }).catch(() => {})
+        break
+      }
+
+      // A conversation that has grown past its cap is not a failure of the work —
+      // it is a container that is full. Only a person can open a fresh thread and
+      // hand over its address, so the loop stops and says exactly that.
+      const size = await conversationSize(page)
+      const cap = Number(project?.judge_message_cap ?? 40)
+      if (size && cap > 0 && size.asked >= cap) {
+        console.log(
+          `\n  CONVERSATION FULL — ${size.asked} exchanges, cap is ${cap}.` +
+            `\n  Open a new conversation with the judge and set its address on the project.\n`,
+        )
+        await call('POST', `/objectives/${chapterId}/halts`, {
+          reason: 'judge_conversation_full',
+          detail:
+            `The driving conversation carries ${size.asked} exchanges (cap ${cap}). Every turn ` +
+            `re-reads the whole thread, so it now costs more, answers slower, and starts losing ` +
+            `the rules it was given at the top. Open a fresh conversation, paste the state into ` +
+            `it, and set its address on the project.`,
         }).catch(() => {})
         break
       }
@@ -3422,7 +3464,10 @@ async function harnessAvailable(harness) {
 async function readJudge(page, attempts = 3) {
   for (let i = 0; i < attempts; i++) {
     try {
-      return await readJudge(page)
+      // `waitForStable`, NOT readJudge. A blanket rename replaced this call too
+      // and the helper called itself — infinite recursion, and every loop died on
+      // a stack overflow the moment it tried to read a reply.
+      return await waitForStable(page)
     } catch (e) {
       console.log(`    ! the browser did not answer (${String(e.message).slice(0, 50)}) — retry ${i + 1}/${attempts}`)
       await pause(15000)

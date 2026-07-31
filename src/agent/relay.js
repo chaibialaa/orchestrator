@@ -422,3 +422,28 @@ export function parseDone(text) {
   if (!m) return null
   return { id: m[1] ? Number(m[1]) : null, reason: (m[2] ?? '').trim() || null }
 }
+
+/**
+ * How many exchanges the driving conversation already carries.
+ *
+ * Every turn re-reads the whole thread. Past a point the conversation costs more
+ * per turn, answers slower, and starts forgetting the rules it was given at the
+ * top — and none of that announces itself: it just gets quietly worse. Counting
+ * is the only way to see it coming.
+ */
+export async function conversationSize(page) {
+  const raw = await page
+    .evaluate(
+      `(() => JSON.stringify({
+        asked: document.querySelectorAll('[data-message-author-role="user"]').length,
+        chars: document.body.innerText.length,
+      }))()`,
+    )
+    .catch(() => null)
+
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}

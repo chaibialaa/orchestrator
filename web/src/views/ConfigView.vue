@@ -88,6 +88,19 @@ const REACH: Record<Agent['reach'], { label: string; help: string }> = {
   },
 }
 
+/**
+ * What a connected AI IS, beyond what it can do. They do not fail the same way: a
+ * rented machine keeps billing until it is shut down, a web interface refuses on
+ * quota and says nothing useful about it. A mission that treats them as
+ * interchangeable wastes one of them.
+ */
+const KINDS: Record<string, string> = {
+  model: 'A model',
+  machine: 'A machine billed by the hour',
+  service: 'A service',
+  browser: 'A web interface, driven through a tab',
+}
+
 const ROLES: Record<Agent['role'], string> = {
   executant: 'Does the work',
   judge: 'Judges the work',
@@ -221,6 +234,17 @@ const doers = computed(() => agents.value.filter((a) => a.enabled && a.role !== 
                   @change="patch(a, 'reach', ($event.target as HTMLSelectElement).value)"
                 >
                   <option v-for="(v, k) in REACH" :key="k" :value="k">{{ v.label }}</option>
+                </select>
+              </label>
+              <label class="flex items-center gap-2">
+                <span class="label">Nature</span>
+                <select
+                  class="bg-ink-950 border border-ink-800 rounded px-2 py-1 text-[12px] text-ink-300 focus:outline-none focus:border-run"
+                  :value="a.kind ?? ''"
+                  @change="patch(a, 'kind', ($event.target as HTMLSelectElement).value || null)"
+                >
+                  <option value="">not stated</option>
+                  <option v-for="(v, k) in KINDS" :key="k" :value="k">{{ v }}</option>
                 </select>
               </label>
               <label class="flex items-center gap-2">

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import MemoryScan from '../components/MemoryScan.vue'
+import Wiring from '../components/Wiring.vue'
 import Storages from '../components/Storages.vue'
 </script>
 
@@ -12,6 +13,8 @@ import Storages from '../components/Storages.vue'
         nothing enters a plan before you have read it.
       </p>
     </section>
+
+    <Wiring />
 
     <Storages />
 

@@ -17,6 +17,10 @@ CREATE TABLE IF NOT EXISTS projects (
   -- le code interdisait un fil par chantier.
   judge_agent TEXT,
   judge_url   TEXT,
+  -- How many exchanges a driving conversation may carry before we stop and ask
+  -- for a fresh one. Every turn re-reads the whole thread: past a point it costs
+  -- more, answers slower, and starts forgetting the rules it was given at the top.
+  judge_message_cap INTEGER NOT NULL DEFAULT 40,
   blast_globs TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -103,7 +107,12 @@ CREATE TABLE IF NOT EXISTS halts (
   passage_id   INTEGER REFERENCES passages(id) ON DELETE SET NULL,
   reason       TEXT NOT NULL CHECK (reason IN (
                  'no_provable_criterion','blast_radius','piege_rule','invariant_regression',
-                 'no_new_proof','budget','human_request','verdict_rejected','children_open','error')),
+                 'no_new_proof','budget','human_request','verdict_rejected','children_open',
+                 -- The driving conversation has grown past what it can carry: every
+                 -- turn re-reads the whole thread, so a long one gets slower, more
+                 -- expensive, and worse at remembering its own rules. Only a person
+                 -- can open a fresh one and hand over its address.
+                 'judge_conversation_full','error')),
   detail       TEXT,
   -- How many proofs existed at the moment of the halt. That watermark is what
   -- lets us say "nothing new since the rejection" without trusting the clock.
@@ -212,6 +221,13 @@ CREATE TABLE IF NOT EXISTS agents (
   -- local, so a hosted server can never make anything run.
   reach       TEXT NOT NULL DEFAULT 'cli' CHECK (reach IN ('cli','browser','api')),
   role        TEXT NOT NULL DEFAULT 'executant' CHECK (role IN ('executant','judge','juge','both')),
+  -- WHAT it is, beyond what it can do. A model that writes, a machine rented by
+  -- the hour, an image service, a 3D generator: they are not interchangeable, and
+  -- they do not fail the same way. A rented machine has to be shut down or it
+  -- keeps billing; an image service refuses on quota and says nothing useful.
+  -- Capability says "it can do images"; kind says "and it is a web service you
+  -- drive through a tab".
+  kind        TEXT CHECK (kind IS NULL OR kind IN ('model','machine','service','browser')),
   enabled     INTEGER NOT NULL DEFAULT 1,
   priority    INTEGER NOT NULL DEFAULT 50,
   api_key     TEXT,          -- encrypted at rest, never returned to the browser

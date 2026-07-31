@@ -98,6 +98,11 @@ function addMissingColumns(db) {
     // WHO the connected account belongs to. Derived from the token, never typed:
     // a storage with no readable owner drops proofs somewhere nobody can name.
     ['storages', 'account', 'TEXT'],
+    ['projects', 'judge_message_cap', 'INTEGER NOT NULL DEFAULT 40'],
+    // What KIND of AI this is, beyond what it can do. A model that writes code, a
+    // machine rented by the hour, an image service and a 3D generator are not
+    // interchangeable, and a mission that treats them alike wastes one of them.
+    ['agents', 'kind', 'TEXT'],
   ]
 
   for (const [table, column, type] of additions) {
@@ -128,6 +133,40 @@ function renameLegacyColumns(db) {
   }
 
   translateRoleValues(db)
+  widenHaltReasons(db)
+}
+
+/**
+ * A CHECK constraint cannot be altered, and `CREATE TABLE IF NOT EXISTS` will not
+ * rewrite a table that exists — so a new halt reason is rejected on every database
+ * that predates it, silently, at the moment someone needs it. The table has to be
+ * rebuilt, from the schema rather than from string surgery on the old definition.
+ */
+function widenHaltReasons(db) {
+  const existing = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'halts'")
+    .get()?.sql
+  if (!existing || existing.includes('judge_conversation_full')) return
+
+  const schema = readFileSync(join(here, 'schema.sql'), 'utf8')
+  const target = /CREATE TABLE IF NOT EXISTS halts \([\s\S]*?\n\);/.exec(schema)?.[0]
+  if (!target) return
+
+  const old = db.prepare('PRAGMA table_info(halts)').all().map((c) => c.name)
+
+  db.exec('PRAGMA foreign_keys = OFF')
+  db.transaction(() => {
+    db.exec(target.replace('IF NOT EXISTS halts', 'halts_migrated'))
+    const shared = db
+      .prepare('PRAGMA table_info(halts_migrated)')
+      .all()
+      .map((c) => c.name)
+      .filter((c) => old.includes(c))
+    db.exec(`INSERT INTO halts_migrated (${shared.join(',')}) SELECT ${shared.join(',')} FROM halts`)
+    db.exec('DROP TABLE halts')
+    db.exec('ALTER TABLE halts_migrated RENAME TO halts')
+  })()
+  db.exec('PRAGMA foreign_keys = ON')
 }
 
 /**
