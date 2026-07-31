@@ -1768,6 +1768,54 @@ const commands = {
    *
    * usage: orchestrator agents:check
    */
+  /**
+   * What a rendering measurably contains, and how far it is from a reference.
+   *
+   * usage: orchestrator visual <image.png> [--ref target.png] [--min-colours 1500] [--min-saturation 0.5]
+   *
+   * Exits 1 when a floor is not met, so it can be declared as a proof in
+   * .orchestrator.json and produce a real pass/fail — rather than a score the
+   * session announces about its own work, which is recorded as inconclusive and
+   * is why thirteen attempts on one objective proved nothing.
+   */
+  async visual(...argv) {
+    const opts = parseFlags(argv)
+    const file = argv.find((a) => !a.startsWith('--') && argv[argv.indexOf(a) - 1]?.startsWith('--') !== true)
+    if (!file) fail('usage: orchestrator visual <image.png> [--ref target.png] [--min-colours N] [--min-saturation X]')
+
+    const { measureImage, compareToReference } = await import('../visual.js')
+
+    const m = measureImage(file)
+    console.log(`\n  ${basename(file)}`)
+    console.log(`    saturation ${m.saturation} · ${m.hues} hues · ${m.distinctColours} distinct colours · green ${(m.greenShare * 100).toFixed(1)}%`)
+
+    if (opts.ref) {
+      const c = compareToReference(file, opts.ref)
+      console.log(`\n  against ${basename(opts.ref)}`)
+      for (const [k, v] of Object.entries(c.ratios)) {
+        console.log(`    ${k.padEnd(16)} ${v === null ? '—' : `${(v * 100).toFixed(0)}% of the reference`}`)
+      }
+    }
+
+    // Floors only where one was asked for: a threshold nobody set is not a
+    // threshold that failed.
+    const failures = []
+    if (opts['min-colours'] && m.distinctColours < Number(opts['min-colours'])) {
+      failures.push(`distinct colours ${m.distinctColours} < ${opts['min-colours']}`)
+    }
+    if (opts['min-saturation'] && m.saturation < Number(opts['min-saturation'])) {
+      failures.push(`saturation ${m.saturation} < ${opts['min-saturation']}`)
+    }
+
+    if (failures.length) {
+      console.log(`\n  below the floor: ${failures.join(' · ')}\n`)
+      process.exitCode = 1
+      return
+    }
+    if (opts['min-colours'] || opts['min-saturation']) console.log('\n  floors met\n')
+    else console.log('')
+  },
+
   async 'agents:check'() {
     const agents = await call('GET', '/agents')
     const machine = hostname()
