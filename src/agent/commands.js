@@ -2210,7 +2210,11 @@ const commands = {
 
     if (!config.project) fail('no project: run this from a repository that has .orchestrator.json')
 
-    const page = await attach(match).catch((e) => fail(e.message))
+    // If the tab is gone, we know exactly which address to reopen: somebody
+    // closing a window is not a decision about the work.
+    const page = await attach(match, undefined, { openIfMissing: project?.judge_url }).catch((e) =>
+      fail(e.message),
+    )
 
     console.log(
       `\n  chapter #${chapterId} · ${maxTurns} turns max${budget ? ` · budget $${budget}` : ' · free budget'}` +

@@ -46,12 +46,21 @@ export async function openTab(url, port = CDP_PORT) {
   throw new Error('the tab was opened but never became attachable')
 }
 
-/** Opens a DevTools session on the tab whose URL contains `match`. */
-export async function attach(match, port = CDP_PORT) {
+/**
+ * Opens a DevTools session on the tab whose URL contains `match`.
+ *
+ * `openIfMissing` is the address to open when no tab matches. Somebody closing a
+ * tab is not a decision about the work, and stopping the loop to ask for it back
+ * is the kind of interruption this tool exists to remove — so when we know where
+ * the conversation lives, we open it and carry on.
+ */
+export async function attach(match, port = CDP_PORT, { openIfMissing = null } = {}) {
   let targets
   try {
     targets = await cdpTargets(port)
   } catch {
+    // This one we genuinely cannot do: launching a browser with a debugging port
+    // is a decision about the machine, not about the work.
     throw new Error(
       `Chrome is not listening on port ${port}.\n` +
         `  Restart Chrome with:  open -a "Google Chrome" --args --remote-debugging-port=${port}`,
@@ -59,12 +68,15 @@ export async function attach(match, port = CDP_PORT) {
   }
 
   const tab = targets.find((t) => t.type === 'page' && t.url.includes(match))
-  if (!tab) {
-    const pages = targets.filter((t) => t.type === 'page').map((t) => t.url.slice(0, 70))
-    throw new Error(`no tab matches “${match}”.\n  Open tabs:\n    ${pages.join('\n    ')}`)
+  if (tab) return attachTo(tab)
+
+  if (openIfMissing) {
+    console.error(`    ! no tab on “${match}” — opening one`)
+    return openTab(openIfMissing, port)
   }
 
-  return attachTo(tab)
+  const pages = targets.filter((t) => t.type === 'page').map((t) => t.url.slice(0, 70))
+  throw new Error(`no tab matches “${match}”.\n  Open tabs:\n    ${pages.join('\n    ')}`)
 }
 
 async function attachTo(tab) {
@@ -104,20 +116,60 @@ async function attachTo(tab) {
       }, timeoutMs)
     })
 
+  /**
+   * Reload the page and wait for it to be able to run script again.
+   *
+   * A tab whose renderer has wedged does not recover by being asked again more
+   * politely — that is what waiting three times as long amounted to. Reloading
+   * is the one thing that unwedges it, and it is safe here: the conversation
+   * lives on ChatGPT's servers, so nothing posted is lost. Only the DOM comes
+   * back, which is all we ever read.
+   */
+  const reload = async () => {
+    await send('Page.enable', {}, 10000).catch(() => {})
+    await send('Page.reload', { ignoreCache: false }, 10000).catch(() => {})
+    // Wait for the CONVERSATION, not merely for script to run.
+    //
+    // Evaluating `1` succeeds the moment the renderer is alive, seconds before
+    // React has drawn a single message — so the first read after a reload came
+    // back with zero messages, and the loop would have concluded the thread was
+    // empty. Caught by testing the reload rather than assuming it.
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 1500))
+      const drawn = await send(
+        'Runtime.evaluate',
+        {
+          expression: `document.querySelectorAll('[data-message-author-role]').length`,
+          returnByValue: true,
+        },
+        5000,
+      )
+        .then((r) => Number(r.result?.result?.value) || 0)
+        .catch(() => 0)
+      if (drawn > 0) return true
+    }
+    return false
+  }
+
   const evaluate = async (expression, { timeoutMs = 30000, retries = 1 } = {}) => {
     // Chrome answers when it feels like it. A page that has just swallowed six
     // attachments, or is re-rendering a nine-thousand-character reply, takes well
     // over the default timeout — and that rejection killed an hour of work and
     // $57 already spent, on a chapter whose verdict was never asked for. A slow
-    // page is a transient, not a reason to abandon a run: we wait longer and try
-    // again before giving up.
+    // page is a transient, not a reason to abandon a run.
+    //
+    // But slow and wedged are different states, and treating them the same cost
+    // two loops an afternoon: a tab that had stopped executing script was asked
+    // again with a longer timeout, three times, and the run was abandoned after
+    // six minutes of waiting on a page that was never going to answer. So the
+    // second attempt reloads first. Nobody is asked to press anything.
     let last
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         const r = await send(
           'Runtime.evaluate',
           { expression, returnByValue: true, awaitPromise: true },
-          attempt === 0 ? timeoutMs : timeoutMs * 3,
+          timeoutMs,
         )
         if (r.result?.exceptionDetails) {
           throw new Error(r.result.exceptionDetails.text ?? 'JS error in the page')
@@ -126,14 +178,20 @@ async function attachTo(tab) {
       } catch (e) {
         last = e
         // A JS error inside the page will fail identically every time; only a
-        // timeout is worth a second attempt.
+        // timeout is worth another go.
         if (!/did not answer/.test(String(e.message))) throw e
+        if (attempt < retries) {
+          console.error('    ! the page stopped answering — reloading it')
+          const back = await reload()
+          console.error(back ? '    ✓ back, retrying' : '    ! it did not come back')
+          if (!back) throw last
+        }
       }
     }
     throw last
   }
 
-  return { evaluate, url: tab.url, close: () => ws.close() }
+  return { evaluate, reload, url: tab.url, close: () => ws.close() }
 }
 
 /** The assistant's last message, as displayed. */
