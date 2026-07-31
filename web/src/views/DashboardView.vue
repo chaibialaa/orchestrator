@@ -5,6 +5,7 @@ import Chips from '../components/Chips.vue'
 import ActivityFeed from '../components/ActivityFeed.vue'
 import Blockers from '../components/Blockers.vue'
 import NewProject from '../components/NewProject.vue'
+import JudgeFull from '../components/JudgeFull.vue'
 import { formatTokens, haltHelp, statusLabel } from '../labels'
 
 const data = ref<Dashboard | null>(null)
@@ -29,6 +30,7 @@ async function load() {
     data.value = await api.dashboard()
     review.value = await api.review()
     error.value = null
+    announce()
   } catch (e: any) {
     error.value = e?.message ?? 'error'
   } finally {
@@ -76,6 +78,38 @@ function ago(iso: string | null) {
   if (s < 3600) return `${Math.round(s / 60)} min ago`
   if (s < 86400) return `${Math.round(s / 3600)} h ago`
   return `${Math.round(s / 86400)} d ago`
+}
+
+/**
+ * Tell the reader once, when it starts — not only while they are looking.
+ *
+ * A loop that stops at three in the morning waited until someone happened to
+ * open the page. Permission cannot be asked for without a click, so it is a
+ * choice offered rather than a prompt sprung on arrival.
+ */
+const notify = ref(typeof Notification !== 'undefined' && Notification.permission === 'granted')
+const canAskNotify = computed(
+  () => typeof Notification !== 'undefined' && Notification.permission === 'default',
+)
+
+async function enableNotifications() {
+  if (typeof Notification === 'undefined') return
+  notify.value = (await Notification.requestPermission()) === 'granted'
+}
+
+/** Halts already announced, so a re-poll every 15 s does not re-announce them. */
+const announced = new Set<number>()
+
+function announce() {
+  if (!notify.value) return
+  for (const h of data.value?.open_halts ?? []) {
+    if (announced.has(h.id)) continue
+    announced.add(h.id)
+    new Notification(`${h.project} — the loop stopped`, {
+      body: haltHelp[h.reason] ?? h.reason,
+      tag: `halt-${h.id}`,
+    })
+  }
 }
 
 const statusOrder = ['proven', 'in_progress', 'blocked', 'ready', 'draft'] as const
@@ -146,6 +180,15 @@ const segColor: Record<string, string> = {
         >
       </h2>
 
+      <button
+        v-if="canAskNotify"
+        class="label hover:text-ink-300 float-right -mt-7"
+        title="Be told when a loop stops, without keeping this page open"
+        @click="enableNotifications"
+      >
+        notify me
+      </button>
+
       <p v-if="!needsYou" class="text-ink-500 text-[12px]">
         Nothing. The loop handles what it can handle on its own.
       </p>
@@ -191,9 +234,20 @@ const segColor: Record<string, string> = {
           </div>
         </article>
 
+        <!-- The one halt that has its own way out, rather than a description of
+             the chore it expects from you. -->
+        <JudgeFull
+          v-for="h in data.open_halts.filter((x) => x.reason === 'judge_conversation_full')"
+          :key="`j${h.id}`"
+          :project="h.project"
+          :objective-id="h.objective_id"
+          :detail="h.detail"
+          @done="load"
+        />
+
         <!-- Halts: the tool stopped on purpose. -->
         <RouterLink
-          v-for="h in data.open_halts"
+          v-for="h in data.open_halts.filter((x) => x.reason !== 'judge_conversation_full')"
           :key="`h${h.id}`"
           :to="`/o/${h.objective_id}`"
           class="card p-4 block border-halt/35 bg-halt/[0.04] hover:border-halt/60 transition-colors"

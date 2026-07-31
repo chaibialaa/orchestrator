@@ -81,6 +81,10 @@ export const haltLabel: Record<string, string> = {
 }
 
 export const haltHelp: Record<string, string> = {
+  judge_conversation_full:
+    'The driving conversation has grown past what it can carry. Every turn re-reads the whole ' +
+    'thread, so it is now slower, dearer, and losing the rules it was given at the top. A fresh ' +
+    'one takes over from here.',
   no_provable_criterion:
     "Nobody could say what would prove this is finished. That means the request is still too vague — sharpen it and the tool starts again.",
   blast_radius:

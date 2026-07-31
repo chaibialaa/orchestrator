@@ -15,7 +15,7 @@ import { RULES, checkFile } from './rules.js'
 import { recentSessions, readSince, encodeCwd } from './watch.js'
 import { generateImage, ADAPTERS } from './images.js'
 import { inventoryMemories, assembleContext, memoryInstruction, memoryFingerprint } from './memories.js'
-import { attach, parseDirective, parseVerdict, parseDone, jsPost, attachFiles, waitForStable, confirmPosted, conversationSize, JS_LAST_ASSISTANT, JS_IS_STREAMING } from './relay.js'
+import { attach, openTab, parseDirective, parseVerdict, parseDone, jsPost, attachFiles, waitForStable, confirmPosted, conversationSize, JS_LAST_ASSISTANT, JS_IS_STREAMING } from './relay.js'
 
 /**
  * Claude pricing in $/million tokens: [input, output].
@@ -1166,6 +1166,83 @@ const commands = {
     console.log(ok ? '  ↑ state posted into the conversation\n' : '  ⚠ send not confirmed — check the page\n')
   },
 
+  /**
+   * Open a fresh driving conversation and hand it the state, without a person.
+   *
+   * A thread fills up — every turn re-reads the whole of it — and the loop stops
+   * and says so. Until now clearing that meant opening ChatGPT yourself, pasting
+   * the state in and copying the address back: the one thing the tool exists to
+   * remove. It opens its own tab so the one you are reading is left alone.
+   *
+   * usage: orchestrator judge:renew [--halt <objectiveId>]
+   */
+  async 'judge:renew'(...argv) {
+    if (!config.project) fail('no project in .orchestrator.json')
+    const opts = parseFlags(argv)
+
+    // The state first: if the brief cannot be built there is no point opening
+    // anything. A conversation created and left empty is worse than none — it
+    // becomes the project's judge while knowing nothing.
+    const capture = []
+    const real = console.log
+    console.log = (...a) => capture.push(a.join(' '))
+    try {
+      await commands.brief()
+    } finally {
+      console.log = real
+    }
+    const text = capture.join('\n').trim()
+    if (!text) fail('the state came out empty — refusing to open a conversation with nothing in it')
+
+    console.log('\n  opening a new conversation…')
+    const page = await openTab('https://chatgpt.com/').catch((e) => fail(e.message))
+
+    try {
+      // The composer is not there on first paint, and posting into nothing fails
+      // silently: the message is simply never typed.
+      let ready = false
+      for (let i = 0; i < 60 && !ready; i++) {
+        ready = await page
+          .evaluate(`Boolean(document.querySelector('#prompt-textarea, [contenteditable="true"]'))`)
+          .catch(() => false)
+        if (!ready) await pause(500)
+      }
+      if (!ready) fail('the page never showed a composer — is the session still signed in?')
+
+      await page.evaluate(jsPost(text))
+      const landed = await confirmPosted(page, text).catch(() => false)
+      if (!landed) fail('the state was not posted — nothing was changed')
+
+      // The address only exists once the first message has been sent: before
+      // that the page is chatgpt.com with no conversation behind it.
+      let url = null
+      for (let i = 0; i < 40 && !url; i++) {
+        const href = await page.evaluate('location.href').catch(() => null)
+        if (typeof href === 'string' && /\/c\/[0-9a-f-]{8,}/i.test(href)) url = href
+        else await pause(500)
+      }
+      if (!url) fail('the conversation was written to but never took an address')
+
+      await call('PATCH', `/projects/${config.project}`, { judge_url: url, judge_messages_seen: 1 })
+      console.log(`  new conversation: ${url}`)
+
+      // The halt that asked for this is cleared here, and only here: it is a
+      // human-decision halt, so nothing else would ever clear it.
+      const objectiveId = opts.halt ? Number(opts.halt) : null
+      if (objectiveId) {
+        const o = await call('GET', `/objectives/${objectiveId}`, null, { soft: true }).catch(() => null)
+        for (const h of o?.halts ?? []) {
+          if (h.resolved_at || h.reason !== 'judge_conversation_full') continue
+          await call('PATCH', `/halts/${h.id}/resolve`, null, { soft: true }).catch(() => {})
+          console.log(`  halt #${h.id} cleared`)
+        }
+      }
+      console.log('')
+    } finally {
+      page.close()
+    }
+  },
+
   async brief(...argv) {
     if (!config.project) fail('no project in .orchestrator.json')
 
@@ -1974,7 +2051,9 @@ const commands = {
       )
 
       const argsFor =
-        run.mode === 'plan'
+        run.mode === 'judge'
+          ? (run.objective_id ? ['--halt', String(run.objective_id)] : [])
+          : run.mode === 'plan'
           ? ['--once']
           : [
               '--objective',
@@ -1991,7 +2070,8 @@ const commands = {
             ]
 
       try {
-        await commands[run.mode === 'plan' ? 'plan' : 'chapter'](...argsFor)
+        const command = { plan: 'plan', judge: 'judge:renew' }[run.mode] ?? 'chapter'
+        await commands[command](...argsFor)
         await call('PATCH', `/runs/${run.id}`, { status: 'done' }, { soft: true }).catch(() => {})
         console.log(`  run #${run.id} — finished\n`)
       } catch (e) {

@@ -18,6 +18,34 @@ async function cdpTargets(port) {
   return res.json()
 }
 
+/**
+ * Opens a fresh tab and attaches to it.
+ *
+ * Renewing the driving conversation must not take over the tab someone is
+ * reading. The new tab is the orchestrator's; the old one stays where it was.
+ */
+export async function openTab(url, port = CDP_PORT) {
+  const res = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, {
+    method: 'PUT',
+  }).catch(() => null)
+  if (!res?.ok) {
+    throw new Error(
+      `Chrome refused to open a tab on port ${port}` +
+        (res ? ` (HTTP ${res.status})` : ' — is it listening?'),
+    )
+  }
+  const tab = await res.json()
+
+  // The tab exists before the page has loaded; attaching by its exact id avoids
+  // matching some other chatgpt.com tab that happens to be open.
+  for (let i = 0; i < 40; i++) {
+    const found = (await cdpTargets(port)).find((t) => t.id === tab.id && t.webSocketDebuggerUrl)
+    if (found) return attachTo(found)
+    await new Promise((r) => setTimeout(r, 250))
+  }
+  throw new Error('the tab was opened but never became attachable')
+}
+
 /** Opens a DevTools session on the tab whose URL contains `match`. */
 export async function attach(match, port = CDP_PORT) {
   let targets
@@ -36,6 +64,10 @@ export async function attach(match, port = CDP_PORT) {
     throw new Error(`no tab matches “${match}”.\n  Open tabs:\n    ${pages.join('\n    ')}`)
   }
 
+  return attachTo(tab)
+}
+
+async function attachTo(tab) {
   const ws = new WebSocket(tab.webSocketDebuggerUrl)
   await new Promise((ok, ko) => {
     ws.addEventListener('open', ok, { once: true })

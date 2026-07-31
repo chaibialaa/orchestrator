@@ -143,6 +143,7 @@ function renameLegacyColumns(db) {
 
   translateRoleValues(db)
   widenHaltReasons(db)
+  widenRunModes(db)
 }
 
 /**
@@ -151,31 +152,50 @@ function renameLegacyColumns(db) {
  * that predates it, silently, at the moment someone needs it. The table has to be
  * rebuilt, from the schema rather than from string surgery on the old definition.
  */
-function widenHaltReasons(db) {
+/**
+ * Rebuild a table from schema.sql, carrying its rows across.
+ *
+ * A CHECK constraint cannot be altered, and `CREATE TABLE IF NOT EXISTS` does
+ * not rewrite a table that already exists — so a new allowed value is refused by
+ * a constraint written months ago. Rebuilding is the only way through. `marker`
+ * is the new value: finding it in the stored DDL means the work is already done.
+ */
+function rebuildTable(db, name, marker) {
   const existing = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'halts'")
-    .get()?.sql
-  if (!existing || existing.includes('judge_conversation_full')) return
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(name)?.sql
+  if (!existing || existing.includes(marker)) return
 
   const schema = readFileSync(join(here, 'schema.sql'), 'utf8')
-  const target = /CREATE TABLE IF NOT EXISTS halts \([\s\S]*?\n\);/.exec(schema)?.[0]
+  const target = new RegExp(`CREATE TABLE IF NOT EXISTS ${name} \\([\\s\\S]*?\\n\\);`).exec(schema)?.[0]
   if (!target) return
 
-  const old = db.prepare('PRAGMA table_info(halts)').all().map((c) => c.name)
+  const old = db.prepare(`PRAGMA table_info(${name})`).all().map((c) => c.name)
 
   db.exec('PRAGMA foreign_keys = OFF')
   db.transaction(() => {
-    db.exec(target.replace('IF NOT EXISTS halts', 'halts_migrated'))
+    db.exec(target.replace(`IF NOT EXISTS ${name}`, `${name}_migrated`))
     const shared = db
-      .prepare('PRAGMA table_info(halts_migrated)')
+      .prepare(`PRAGMA table_info(${name}_migrated)`)
       .all()
       .map((c) => c.name)
       .filter((c) => old.includes(c))
-    db.exec(`INSERT INTO halts_migrated (${shared.join(',')}) SELECT ${shared.join(',')} FROM halts`)
-    db.exec('DROP TABLE halts')
-    db.exec('ALTER TABLE halts_migrated RENAME TO halts')
+    db.exec(
+      `INSERT INTO ${name}_migrated (${shared.join(',')}) SELECT ${shared.join(',')} FROM ${name}`,
+    )
+    db.exec(`DROP TABLE ${name}`)
+    db.exec(`ALTER TABLE ${name}_migrated RENAME TO ${name}`)
   })()
   db.exec('PRAGMA foreign_keys = ON')
+}
+
+function widenHaltReasons(db) {
+  rebuildTable(db, 'halts', 'judge_conversation_full')
+}
+
+/** `judge` renews the driving conversation — a mode the original CHECK forbade. */
+function widenRunModes(db) {
+  rebuildTable(db, 'runs', "'judge'")
 }
 
 /**

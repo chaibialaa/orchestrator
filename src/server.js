@@ -300,8 +300,8 @@ export function createServer() {
     const b = req.body ?? {}
 
     const mode = b.mode ?? 'chapter'
-    if (!['chapter', 'plan'].includes(mode)) {
-      throw new Rejected('Unknown run mode: chapter or plan.')
+    if (!['chapter', 'plan', 'judge'].includes(mode)) {
+      throw new Rejected('Unknown run mode: chapter, plan or judge.')
     }
 
     // The column is `objective_id`, the field was `objective`, and a request that
@@ -316,9 +316,13 @@ export function createServer() {
     // One run per objective at a time. Two loops on the same objective fight over
     // the same repository and the same conversation — which happened, and cost a
     // Unity scene.
-    if (b.objective) {
+    // A judge renewal carries the objective only to clear its halt afterwards —
+    // it does not work on it, so it must not queue behind it.
+    if (b.objective && mode !== 'judge') {
       const busy = db()
-        .prepare("SELECT id FROM runs WHERE objective_id = ? AND status IN ('pending','running')")
+        .prepare(
+          "SELECT id FROM runs WHERE objective_id = ? AND mode != 'judge' AND status IN ('pending','running')",
+        )
         .get(b.objective)
       if (busy) throw new Rejected(`A run is already queued or running on this objective (#${busy.id}).`)
     }
@@ -783,6 +787,27 @@ export function createServer() {
       .run(o.id, b.passage_id ?? null, b.reason, b.detail ?? null, evidenceWatermark(o.id))
     db().prepare("UPDATE objectives SET status = 'blocked' WHERE id = ?").run(o.id)
     res.status(201).json(db().prepare('SELECT * FROM halts WHERE id = ?').get(r.lastInsertRowid))
+  })
+
+  /**
+   * Clear the open halts of one kind on an objective.
+   *
+   * The screen knows which objective is stuck and why, never the halt's id — and
+   * making it fetch the objective just to find a number is asking the reader's
+   * browser to do bookkeeping the server already has in front of it.
+   */
+  api.post('/objectives/:id/halts/resolve', (req, res) => {
+    const reason = req.body?.reason
+    if (!reason) throw new Rejected('Which kind of halt should be cleared?')
+    const rows = db()
+      .prepare('SELECT id FROM halts WHERE objective_id = ? AND reason = ? AND resolved_at IS NULL')
+      .all(req.params.id, reason)
+    db()
+      .prepare(
+        'UPDATE halts SET resolved_at = ? WHERE objective_id = ? AND reason = ? AND resolved_at IS NULL',
+      )
+      .run(nowStamp(), req.params.id, reason)
+    res.json({ resolved: rows.map((r) => r.id) })
   })
 
   api.patch('/halts/:id/resolve', (req, res) => {

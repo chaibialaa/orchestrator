@@ -316,7 +316,10 @@ CREATE TABLE IF NOT EXISTS runs (
   project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   objective_id INTEGER REFERENCES objectives(id) ON DELETE CASCADE,
   -- `chapter` closes a chapter; `plan` breaks a brief down. What the worker runs.
-  mode         TEXT NOT NULL DEFAULT 'chapter' CHECK (mode IN ('chapter','plan')),
+  -- `judge` renews the driving conversation: it opens a fresh one, posts the
+  -- state into it and keeps the address. It is the only mode that works on the
+  -- project rather than on the code.
+  mode         TEXT NOT NULL DEFAULT 'chapter' CHECK (mode IN ('chapter','plan','judge')),
   max_turns    INTEGER NOT NULL DEFAULT 8,
   budget       REAL,
   budget_without_progress REAL NOT NULL DEFAULT 120,

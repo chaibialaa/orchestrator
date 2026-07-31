@@ -21,6 +21,9 @@ export type HaltReason =
   | 'human_request'
   | 'verdict_rejected'
   | 'children_open'
+  // Every turn re-reads the whole thread, so a long one gets slower, dearer, and
+  // worse at remembering its own rules. A fresh conversation is the only way out.
+  | 'judge_conversation_full'
   | 'error'
 
 export interface Project {
@@ -468,6 +471,10 @@ export const api = {
   reorderObjectives: (slug: string, ordre: { id: number; priority: number }[]) =>
     http.patch(`/projects/${slug}/objectives/reorder`, { ordre }).then((r) => r.data),
 
+  /** Clear the open halts of one KIND on an objective — `resolveHalt` above takes an id. */
+  clearHalts: (objectiveId: number, reason: string) =>
+    http.post(`/objectives/${objectiveId}/halts/resolve`, { reason }).then((r) => r.data),
+
   updateProject: (slug: string, payload: Partial<Project>) =>
     http.patch<Project>(`/projects/${slug}`, payload).then((r) => r.data),
 
@@ -492,7 +499,7 @@ export const api = {
     slug: string,
     payload: {
       objective?: number
-      mode?: 'chapter' | 'plan'
+      mode?: 'chapter' | 'plan' | 'judge'
       max_turns?: number
       budget?: number | null
       budget_without_progress?: number
