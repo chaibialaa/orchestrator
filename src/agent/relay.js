@@ -236,8 +236,25 @@ async function attachTo(tab) {
         if (!/did not answer/.test(String(e.message))) throw e
         if (attempt < retries) {
           console.error('    ! the page stopped answering — reloading it')
-          const back = await reload()
-          console.error(back ? '    ✓ back, retrying' : '    ! it did not come back')
+          let back = await reload()
+
+          /**
+           * A reload that fails is usually the far end being busy, not broken.
+           *
+           * Measured here afterwards: the same conversation comes back in 3.6
+           * seconds. So when sixty seconds of polling finds nothing, the page is
+           * not gone — the service is refusing for a while. Giving up threw away
+           * a pass that had already run, advanced, and cost $50; the report
+           * simply never left. Two minutes of patience is cheaper than that by a
+           * wide margin.
+           */
+          if (!back) {
+            console.error('    ! it did not come back — waiting two minutes before one more try')
+            await new Promise((r) => setTimeout(r, 120000))
+            back = await reload()
+          }
+
+          console.error(back ? '    ✓ back, retrying' : '    ! still nothing — giving up on this call')
           if (!back) throw last
         }
       }
