@@ -158,6 +158,32 @@ fell over on an unset `user.email` would be failing at the wrong thing.
 The hole, stated because a net that hides one is worse than no net: files git
 does not track are not covered.
 
+### Keeping it running, and stopping it
+
+`nohup … & disown` survives a closed terminal and nothing else. A reboot, a
+crash or a closed laptop ends the loop, and the only sign is that nothing ran
+overnight.
+
+```bash
+orchestrator service --repo /path/to/a/repository
+```
+
+writes two launchd agents — the server, and a worker in that repository — which
+come back when they exit and start again at login. It only WRITES them: loading
+a background service on your machine is your decision, and the command to take
+it is printed. `launchctl bootout gui/$(id -u)/io.orchestrator.server` removes
+one for good.
+
+Stopping a single pass is different and does not need any of that: ask it to
+stop, from the screen or `POST /runs/:id/cancel`. The worker sees the flag
+between two turns and finishes the one it is in — killing a session mid-flight
+throws away work that has already been paid for.
+
+Three failures the loop handles without help: the usage ceiling (it waits and
+probes rather than giving up), the API going away (it keeps polling, and says so
+after the first minute instead of going quiet), and a harness or browser that
+stops answering — see below.
+
 ### What it repairs on its own
 
 - **No browser.** It starts Chrome on its own profile — never the one you browse

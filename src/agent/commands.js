@@ -2321,6 +2321,16 @@ const commands = {
 
     await sweepDeadRuns()
 
+    /**
+     * How long the API has been unreachable.
+     *
+     * A worker survives the server going away — it keeps polling and picks up
+     * where it left off — but it did so in complete silence, so a server that
+     * stayed down looked exactly like a queue with nothing in it. Nobody would
+     * have known until they wondered why nothing had run all night.
+     */
+    let mute = 0
+
     for (;;) {
       await sweepDeadRuns()
       const claimed = await call(
@@ -2329,6 +2339,23 @@ const commands = {
         { machine: hostname(), pid: process.pid },
         { soft: true },
       ).catch(() => null)
+
+      // `claim` answers `{run: null}` when there is simply nothing to do, and
+      // throws when the server is gone — two very different silences.
+      if (claimed === null) {
+        mute++
+        // Once, then hourly: a line every five seconds would bury the log it is
+        // trying to make readable.
+        if (mute === 1 || (mute * every) % 3600000 < every) {
+          console.error(
+            `  ! the API has not answered for ${Math.round((mute * every) / 60000)} min` +
+              ` (${config.apiUrl}) — still trying`,
+          )
+        }
+      } else if (mute) {
+        console.log(`  the API is back after ${Math.round((mute * every) / 60000)} min\n`)
+        mute = 0
+      }
 
       const run = claimed?.run
       if (!run) {

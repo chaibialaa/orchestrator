@@ -4,6 +4,7 @@ import { commands as agent, Refusal } from './agent/commands.js'
 import { importData } from './db/import.js'
 import { dbPath } from './db/index.js'
 import { saveOauthApp } from './oauth.js'
+import { fileURLToPath } from 'node:url'
 
 const [commande, ...args] = process.argv.slice(2)
 
@@ -57,6 +58,84 @@ const commandes = {
     console.log(`\n  app “${provider}” saved in ${path}`)
     console.log('  redirect URI to declare with the provider:')
     console.log(`    http://localhost:${process.env.PORT ?? 4747}/api/storages/oauth/callback\n`)
+  },
+
+  /**
+   * Write the launchd files that bring the server and a worker back by themselves.
+   *
+   * `nohup … & disown` survives a closed terminal and nothing else: a reboot, a
+   * crash or a laptop lid ends the loop, and the only sign is that nothing ran
+   * overnight. launchd restarts a process that exits and starts it again at
+   * login — which is the whole difference between "it runs" and "it keeps
+   * running".
+   *
+   * It WRITES the files and does not load them. Installing a background service
+   * on somebody's machine is a decision, and the command to take it is printed.
+   *
+   * usage: orchestrator service [--repo /path/to/a/repository]
+   */
+  async service() {
+    const f = flags(args)
+    const { writeFileSync, mkdirSync } = await import('node:fs')
+    const { homedir } = await import('node:os')
+    const { join, resolve } = await import('node:path')
+
+    const dir = join(homedir(), 'Library', 'LaunchAgents')
+    mkdirSync(dir, { recursive: true })
+
+    const node = process.execPath
+    const cli = resolve(fileURLToPath(import.meta.url))
+    const logs = join(homedir(), '.orchestrator')
+    mkdirSync(logs, { recursive: true })
+
+    const plist = (label, argv, cwd) =>
+      `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key>
+  <array>
+${argv.map((a) => `    <string>${a}</string>`).join('\n')}
+  </array>
+  <key>WorkingDirectory</key><string>${cwd}</string>
+  <key>RunAtLoad</key><true/>
+  <!-- Brought back when it exits, whatever the reason. -->
+  <key>KeepAlive</key><true/>
+  <!-- Not less: a process that fails instantly would otherwise be restarted in
+       a tight loop, and the machine would carry that loop all night. -->
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>${logs}/${label}.log</string>
+  <key>StandardErrorPath</key><string>${logs}/${label}.log</string>
+</dict>
+</plist>
+`
+
+    const written = []
+    const serverLabel = 'io.orchestrator.server'
+    writeFileSync(join(dir, `${serverLabel}.plist`), plist(serverLabel, [node, cli, 'serve'], homedir()))
+    written.push(serverLabel)
+
+    const repo = f.repo ? resolve(String(f.repo)) : null
+    if (repo) {
+      const name = repo.split('/').filter(Boolean).pop()
+      const workerLabel = `io.orchestrator.worker.${name.toLowerCase().replace(/[^a-z0-9.-]/g, '-')}`
+      writeFileSync(
+        join(dir, `${workerLabel}.plist`),
+        plist(workerLabel, [node, cli, 'work', '--every', '5'], repo),
+      )
+      written.push(workerLabel)
+    }
+
+    console.log(`\n  written to ${dir}:`)
+    for (const l of written) console.log(`    ${l}.plist`)
+    console.log('\n  Nothing is running yet — loading a background service is your decision.')
+    console.log('  To start them now and at every login:')
+    for (const l of written) console.log(`    launchctl bootstrap gui/$(id -u) ${join(dir, l + '.plist')}`)
+    console.log('\n  To stop one for good:')
+    for (const l of written) console.log(`    launchctl bootout gui/$(id -u)/${l}`)
+    if (!repo) console.log('\n  For a worker too: orchestrator service --repo /path/to/the/repository')
+    console.log('')
   },
 
   async where() {
