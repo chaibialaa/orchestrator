@@ -49,62 +49,54 @@ onMounted(async () => {
           <ProjectSwitcher :projects="projects" />
         </nav>
 
-        <div class="ml-auto flex items-center gap-3 text-[11px] text-ink-400">
+        <!-- Global tools only. The project's own pages were in this same row,
+             appearing and disappearing with the route, so the bar changed shape
+             as you moved and nothing sat where you last saw it. -->
+        <div class="ml-auto flex items-center gap-4 text-[11px] text-ink-400">
           <RouterLink
-            to="/tools"
-            class="hover:text-ink-100"
-            :class="route.name === 'tools' ? 'text-ink-100' : ''"
-            >tools</RouterLink
+            v-for="l in [
+              { to: '/tools', name: 'tools', word: 'tools' },
+              { to: '/setup', name: 'setup', word: 'setup' },
+              { to: '/config', name: 'config', word: 'connected AI' },
+            ]"
+            :key="l.name"
+            :to="l.to"
+            class="hover:text-ink-100 transition-colors"
+            :class="route.name === l.name ? 'text-ink-100' : ''"
           >
-          <RouterLink
-            to="/setup"
-            class="hover:text-ink-100"
-            :class="route.name === 'setup' ? 'text-ink-100' : ''"
-            >setup</RouterLink
-          >
-          <RouterLink
-            to="/config"
-            class="hover:text-ink-100"
-            :class="route.name === 'config' ? 'text-ink-100' : ''"
-            >connected AI</RouterLink
-          >
-          <RouterLink
-            v-if="route.params.slug"
-            :to="`/p/${route.params.slug}`"
-            class="hover:text-ink-100"
-            :class="route.name === 'objectives' ? 'text-ink-100' : ''"
-            >objectives</RouterLink
-          >
-          <RouterLink
-            v-if="route.params.slug"
-            :to="`/p/${route.params.slug}/analysis`"
-            class="hover:text-ink-100"
-            :class="route.name === 'analysis' ? 'text-ink-100' : ''"
-            >analysis</RouterLink
-          >
-          <RouterLink
-            v-if="route.params.slug"
-            :to="`/p/${route.params.slug}/plan`"
-            class="hover:text-ink-100"
-            :class="route.name === 'plan' ? 'text-ink-100' : ''"
-            >plan</RouterLink
-          >
-          <RouterLink
-            v-if="route.params.slug"
-            :to="`/p/${route.params.slug}/memory`"
-            class="hover:text-ink-100"
-            :class="route.name === 'memory' ? 'text-ink-100' : ''"
-            >memory</RouterLink
-          >
-          <RouterLink
-            v-if="route.params.slug"
-            :to="`/p/${route.params.slug}/permissions`"
-            class="hover:text-ink-100"
-            :class="route.name === 'permissions' ? 'text-ink-100' : ''"
-            >permissions</RouterLink
-          >
+            {{ l.word }}
+          </RouterLink>
         </div>
       </div>
+
+      <!-- The project's pages, in the order the work goes through them: what you
+           want, where it stands, why it jams, what it knows, what it may do. -->
+      <nav
+        v-if="route.params.slug"
+        class="border-t border-ink-850 bg-ink-950/40"
+      >
+        <div class="max-w-[1400px] mx-auto px-5 flex items-center gap-1 h-9 overflow-x-auto">
+          <RouterLink
+            v-for="t in [
+              { to: '', name: 'objectives', word: 'Where it stands' },
+              { to: '/plan', name: 'plan', word: 'Plan' },
+              { to: '/analysis', name: 'analysis', word: 'Why it jams' },
+              { to: '/memory', name: 'memory', word: 'What it knows' },
+              { to: '/permissions', name: 'permissions', word: 'What it may do' },
+            ]"
+            :key="t.name"
+            :to="`/p/${route.params.slug}${t.to}`"
+            class="px-2.5 py-1 rounded text-[12px] whitespace-nowrap transition-colors"
+            :class="
+              route.name === t.name
+                ? 'bg-ink-800 text-ink-100'
+                : 'text-ink-500 hover:text-ink-200'
+            "
+          >
+            {{ t.word }}
+          </RouterLink>
+        </div>
+      </nav>
     </header>
 
     <main class="flex-1 max-w-[1400px] w-full mx-auto px-5 py-6">
