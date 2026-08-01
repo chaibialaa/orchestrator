@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import ChapterClosure from './ChapterClosure.vue'
+import AddObjective from './AddObjective.vue'
 import { computed, ref } from 'vue'
 import { haltLabel, harnessLabel } from '../labels'
-import type { TreeNode, TreeAttempt } from '../api'
+import { api, type TreeNode, type TreeAttempt } from '../api'
 import RunControl from './RunControl.vue'
 
 /**
@@ -19,6 +20,29 @@ import RunControl from './RunControl.vue'
  */
 
 const props = defineProps<{ nodes: TreeNode[]; slug: string }>()
+const emit = defineEmits<{ changed: [] }>()
+
+/** Where the next one goes, so a new step lands after the existing ones. */
+const nextPriority = (id: number) => (climbing(id).length + 1) * 10
+
+/**
+ * Set aside, never delete.
+ *
+ * The plan page has done this for a while and this one had no way to undo a
+ * mistake — you could add a step and then only reach for the database. Nothing
+ * is destroyed: what it proved stays, it simply stops being counted and nothing
+ * runs on it.
+ */
+const setting = ref<number | null>(null)
+async function setAside(id: number) {
+  setting.value = id
+  try {
+    await api.updateObjective(id, { status: 'abandoned' })
+    emit('changed')
+  } finally {
+    setting.value = null
+  }
+}
 
 /** Which chapter's before-and-after is open, if any. */
 const showing = ref<number | null>(null)
@@ -178,6 +202,18 @@ function when(iso: string) {
           <span v-if="o.halt_reason" class="text-[11px] text-ink-400">
             {{ haltLabel[o.halt_reason] ?? o.halt_reason }}
           </span>
+
+          <!-- Adding was possible and undoing was not: a step added by mistake
+               could only be reached through the database. -->
+          <button
+            v-if="o.status !== 'proven'"
+            class="label text-ink-800 hover:text-fail ml-auto shrink-0"
+            :disabled="setting === o.id"
+            title="stop counting it — nothing is deleted"
+            @click="setAside(o.id)"
+          >
+            {{ setting === o.id ? '…' : 'set aside' }}
+          </button>
         </div>
 
         <!-- the tally, and the way into the twigs -->
@@ -221,6 +257,18 @@ function when(iso: string) {
     <div class="relative pl-7 pt-1">
       <span class="absolute left-[3px] top-1 text-ink-700 text-[9px] leading-none">▽</span>
       <span class="label text-ink-600">start</span>
+    </div>
+
+    <!-- Adding a step was possible only on the plan page, behind a link in the
+         corner. So this page showed chapters with no steps, no way to add one,
+         and no hint that anywhere else would let you. -->
+    <div class="pl-7 mt-2.5">
+      <AddObjective
+        :slug="slug"
+        :parent-id="root.id"
+        :next-priority="nextPriority(root.id)"
+        @created="emit('changed')"
+      />
     </div>
   </div>
   </div>

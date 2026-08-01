@@ -3,6 +3,7 @@ import { onMounted, ref, watch, computed } from 'vue'
 import { api, type Objective, type Stats, type TreeNode, type Project } from '../api'
 import Chips from '../components/Chips.vue'
 import ProjectTree from '../components/ProjectTree.vue'
+import AddObjective from '../components/AddObjective.vue'
 import RunQueue from '../components/RunQueue.vue'
 import ActivityFeed from '../components/ActivityFeed.vue'
 import { formatTokens } from '../labels'
@@ -13,6 +14,23 @@ const objectives = ref<Objective[]>([])
 const stats = ref<Stats | null>(null)
 const tree = ref<TreeNode[]>([])
 const project = ref<Project | null>(null)
+
+const judgeUrl = ref('')
+const savingJudge = ref(false)
+
+/** Attach the conversation that will judge this project's work. */
+async function attachJudge() {
+  const url = judgeUrl.value.trim()
+  if (!url) return
+  savingJudge.value = true
+  try {
+    await api.updateProject(props.slug, { judge_url: url })
+    judgeUrl.value = ''
+    await load()
+  } finally {
+    savingJudge.value = false
+  }
+}
 const loading = ref(true)
 const error = ref<string | null>(null)
 const showHelp = ref(false)
@@ -154,7 +172,24 @@ function story(o: Objective): string {
       >
         judging conversation ▸
       </a>
-      <span v-else class="text-halt">no judging conversation — the loop has nobody to ask</span>
+      <template v-else>
+        <!-- Stating a problem without a way out leaves the reader where they
+             were. The address is one paste away and was nowhere on this page. -->
+        <span class="text-halt">no judging conversation — the loop has nobody to ask</span>
+        <input
+          v-model="judgeUrl"
+          placeholder="https://chatgpt.com/c/… — paste one and it is attached"
+          class="num bg-ink-950 border border-ink-800 rounded px-2 py-1 text-[11px] text-ink-300 w-[22rem] max-w-full focus:outline-none focus:border-run"
+          @keyup.enter="attachJudge"
+        />
+        <button
+          class="chip border-halt/60 text-halt hover:bg-halt/10"
+          :disabled="savingJudge || !judgeUrl.trim()"
+          @click="attachJudge"
+        >
+          {{ savingJudge ? '…' : 'attach it' }}
+        </button>
+      </template>
 
       <span
         v-if="project.judge_messages_seen != null"
@@ -220,7 +255,18 @@ function story(o: Objective): string {
     <section v-if="tree.length" class="space-y-4">
       <RunQueue class="max-w-5xl" :slug="slug" :objectives="objectives" />
 
-    <ProjectTree :nodes="tree" :slug="slug" />
+    <!-- The one action this page could not do: start something new. -->
+    <div class="flex items-baseline gap-3">
+      <span class="label">Chapters — {{ tree.length }}</span>
+      <AddObjective
+        class="ml-auto"
+        :slug="slug"
+        :next-priority="(tree.length + 1) * 10"
+        @created="load"
+      />
+    </div>
+
+    <ProjectTree :nodes="tree" :slug="slug" @changed="load" />
     </section>
 
     <p v-if="autoResumed.length" class="text-ink-600 text-[12px]">
