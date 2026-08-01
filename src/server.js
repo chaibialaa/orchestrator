@@ -1086,9 +1086,17 @@ export function createServer() {
         .prepare('SELECT COUNT(*) n FROM passages WHERE objective_id = ?')
         .get(o.id).n
       // An objective with no criterion does not go back to "ready": it is not
-      // prenable, il retourne au brouillon.
-      const statut = !o.proof_spec?.trim() ? 'draft' : aDesTentatives ? 'in_progress' : 'ready'
-      db().prepare('UPDATE objectives SET status = ? WHERE id = ?').run(statut, o.id)
+      // takeable, it goes back to draft.
+      //
+      // And one that was SET ASIDE stays set aside. Clearing its halt used to
+      // recompute the status blind, so #11 went from `abandoned` back to
+      // `in_progress` and the loop picked it up again — after it had been
+      // deliberately dropped and replaced. Setting something aside has to
+      // survive housekeeping, or it means nothing.
+      if (!['abandoned', 'proven'].includes(o.status)) {
+        const statut = !o.proof_spec?.trim() ? 'draft' : aDesTentatives ? 'in_progress' : 'ready'
+        db().prepare('UPDATE objectives SET status = ? WHERE id = ?').run(statut, o.id)
+      }
     }
     res.json(db().prepare('SELECT * FROM halts WHERE id = ?').get(h.id))
   })

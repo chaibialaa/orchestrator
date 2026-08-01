@@ -346,3 +346,29 @@ test('an objective nothing has ever measured is flagged, once it has had a fair 
   assert.ok(!flagged.includes(61), 'a command settled it, so there is nothing to say')
   assert.ok(!flagged.includes(62), 'one attempt is too early to call anything')
 })
+
+test('setting an objective aside survives a halt being cleared', async () => {
+  // Clearing a halt recomputed the status blind, so #11 went from `abandoned`
+  // back to `in_progress` and the loop picked it up again — minutes after it had
+  // been deliberately dropped and replaced. Setting something aside has to
+  // survive housekeeping, or it means nothing.
+  db.prepare(
+    `INSERT INTO objectives (id,project_id,title,proof_spec,blast_radius,status)
+     VALUES (70,1,'dropped on purpose','the test passes','feature','abandoned')`,
+  ).run()
+  db.prepare(
+    `INSERT INTO passages (objective_id,harness,started_at,ended_at,prevented)
+     VALUES (70,'claude',datetime('now'),datetime('now'),0)`,
+  ).run()
+  const halt = db
+    .prepare("INSERT INTO halts (objective_id,reason,detail) VALUES (70,'human_request','x')")
+    .run().lastInsertRowid
+
+  await fetch(url(`/halts/${halt}/resolve`), { method: 'PATCH' })
+
+  assert.equal(
+    db.prepare('SELECT status FROM objectives WHERE id = 70').get().status,
+    'abandoned',
+    'it stays where you put it',
+  )
+})
