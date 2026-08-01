@@ -1432,9 +1432,13 @@ const commands = {
     // Cadrer sur un arbre d'objectifs : la conversation qui pilote n'a pas
     // besoin de voir les chantiers voisins.
     const scope = opts.objective ? Number(opts.objective) : null
-    const objectives = scope
-      ? all.filter((o) => o.id === scope || o.parent_id === scope)
-      : all
+    // What was set aside is out of the picture. The conversation cannot know an
+    // objective was dropped unless the state it reads stops mentioning it — and
+    // it kept asking for #11 by number, three passes in a row, because the brief
+    // still listed it among the work.
+    const objectives = (scope ? all.filter((o) => o.id === scope || o.parent_id === scope) : all).filter(
+      (o) => o.status !== 'abandoned',
+    )
     const recall = await call('GET', `/projects/${config.project}/recall`)
     const invariants = await call('GET', `/projects/${config.project}/invariants`)
 
@@ -3491,6 +3495,27 @@ async function runHarness(harness, task, withinChapter = null) {
         output: '',
       }
     }
+    /**
+     * An objective set aside is not worked on, even when the mission names it.
+     *
+     * The driving conversation has no way of knowing it was dropped — it goes on
+     * asking for #11 because that is what it was discussing. Honouring the number
+     * blindly meant a chapter deliberately replaced kept being worked, three
+     * times in a row, each time under a different status it had been quietly
+     * given back.
+     */
+    if (o.status === 'abandoned') {
+      return {
+        verdict: 'refused',
+        halts: [],
+        stop: true,
+        stopReason:
+          `objective #${id} was set aside. The conversation is still asking for it — tell it what ` +
+          `replaced it, or reopen the objective if setting it aside was a mistake.`,
+        output: '',
+      }
+    }
+
     // Refuse only on a halt that REQUIRES a human. The other reasons are
     // absorbable: the loop clears them and carries on. Otherwise a plain stall
     // freezes the objective as surely as a missing decision.

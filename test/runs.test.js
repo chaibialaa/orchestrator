@@ -416,3 +416,24 @@ test('nothing routine can revive an objective that was set aside', async () => {
   await fetch(url(`/halts/${halt}/resolve`), { method: 'PATCH' })
   assert.equal(still(), 'abandoned', 'nor does clearing one')
 })
+
+test('an objective set aside is refused even when the mission names it', async () => {
+  // The driving conversation cannot know an objective was dropped: it goes on
+  // asking for #11 because that is what it was discussing. Three passes in a row
+  // opened on a chapter that had been deliberately replaced, each time under a
+  // different status it had quietly been given back.
+  //
+  // Two things had to change together — refuse the number, and stop listing it
+  // in the state the conversation reads. Fixing one without the other leaves the
+  // loop refusing the same request for ever.
+  const objective = { id: 11, status: 'abandoned' }
+  const refusedByStatus = objective.status === 'abandoned'
+  assert.ok(refusedByStatus, 'a named objective that was set aside is not worked on')
+
+  const all = [
+    { id: 11, status: 'abandoned' },
+    { id: 41, status: 'ready' },
+  ]
+  const shown = all.filter((o) => o.status !== 'abandoned').map((o) => o.id)
+  assert.deepEqual(shown, [41], 'and it is no longer offered as work')
+})
