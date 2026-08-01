@@ -134,7 +134,10 @@ const RISKS: BlastRadius[] = ['cosmetic', 'feature', 'api', 'critical']
 <template>
   <div v-if="loading" class="text-ink-400">loading…</div>
   <!-- Capped: a proof criterion read across 1400px is a criterion nobody reads. -->
-  <div v-else class="space-y-7 max-w-5xl">
+  <!-- Capped alone among the project pages, so it sat in a column with 400px of
+       nothing beside it while analysis and memory used the width. Prose is capped
+       where prose lives, not around everything. -->
+  <div v-else class="space-y-7">
     <section class="card p-4 border-ink-800">
       <h1 class="text-ink-100 text-[15px]">The plan</h1>
       <p class="text-ink-400 mt-1.5 leading-relaxed max-w-3xl">

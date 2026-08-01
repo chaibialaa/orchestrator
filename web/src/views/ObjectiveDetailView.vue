@@ -2,6 +2,7 @@
 import { onMounted, ref, watch, computed } from 'vue'
 import { api, type Objective, type Passage, type Evidence } from '../api'
 import Chips from '../components/Chips.vue'
+import RunControl from '../components/RunControl.vue'
 import {
 
 
@@ -271,10 +272,26 @@ const isImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
           <Chips kind="halt" :value="h.reason" />
           <span class="text-ink-600 text-[11px]">{{ h.created_at?.slice(0, 16) }}</span>
         </div>
-        <p class="text-ink-300 mt-1.5 leading-relaxed">{{ haltHelp[h.reason] }}</p>
-        <p v-if="h.detail" class="text-ink-500 text-[12px] mt-1.5 whitespace-pre-wrap">
+        <p class="text-ink-300 mt-1.5 leading-relaxed max-w-[68ch]">{{ haltHelp[h.reason] }}</p>
+        <p v-if="h.detail" class="text-ink-500 text-[12px] mt-1.5 whitespace-pre-wrap max-w-[68ch]">
           {{ h.detail }}
         </p>
+
+        <!-- The halt said "this is an instruction to redo" and gave nothing to
+             redo it with. A page that announces "waiting on you" and offers no
+             way to act is a page that leaves you to guess which of the other
+             screens has the button. -->
+        <div v-if="objective.project" class="mt-2.5 flex items-baseline gap-4 flex-wrap">
+          <RunControl
+            :slug="objective.project"
+            :objective-id="objective.id"
+            :proof-spec="objective.proof_spec"
+            label="Run it again"
+          />
+          <RouterLink :to="`/p/${objective.project}/plan`" class="label hover:text-ink-300">
+            change what would prove it ▸
+          </RouterLink>
+        </div>
       </div>
     </section>
 

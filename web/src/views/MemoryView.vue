@@ -144,12 +144,23 @@ const includedCount = computed(() => resources.value.filter((r) => r.included).l
             target="_blank"
             class="block bg-ink-950 border-b border-ink-800"
           >
-            <img :src="api.resourceUrl(r.id)" :alt="r.name" class="w-full h-36 object-contain" />
+            <!-- `onerror` because a resource can outlive its file: a broken
+                 image showed the browser's own placeholder and the alt text
+                 raw, which reads as a bug in the page rather than a missing
+                 file. -->
+            <img
+              :src="api.resourceUrl(r.id)"
+              :alt="r.name"
+              class="w-full h-36 object-contain"
+              @error="($event.target as HTMLElement).style.display = 'none'"
+            />
           </a>
-          <div v-else class="h-36 flex items-center justify-center bg-ink-950 border-b border-ink-800">
-            <span class="text-ink-600 text-[28px] uppercase tracking-widest">{{
-              r.name.split('.').pop()
-            }}</span>
+
+          <!-- A markdown note is not a picture, and 144px of grey saying "MD"
+               told nobody anything while making three documents fill a screen.
+               The extension is a caption, not a hero. -->
+          <div v-else class="px-3 pt-3">
+            <span class="label text-ink-700">{{ r.name.split('.').pop() }}</span>
           </div>
 
           <div class="p-3">

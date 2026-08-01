@@ -41,7 +41,15 @@ const projectBy = (slug) => {
 }
 
 const objectiveBy = (id) => {
-  const o = db().prepare('SELECT * FROM objectives WHERE id = ?').get(id)
+  // The project's name travels with it. Without it a page showing one objective
+  // could not offer to run it — every control needs the slug, and the page had
+  // only a numeric project_id, which addresses nothing.
+  const o = db()
+    .prepare(
+      `SELECT o.*, p.slug AS project, p.name AS project_name
+       FROM objectives o JOIN projects p ON p.id = o.project_id WHERE o.id = ?`,
+    )
+    .get(id)
   if (!o) throw new Rejected('This objective does not exist.', 404)
   return o
 }

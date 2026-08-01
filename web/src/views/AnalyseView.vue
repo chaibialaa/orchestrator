@@ -94,7 +94,7 @@ const byObjective = computed(() =>
             <span class="h-1 bg-ink-800 rounded w-40 overflow-hidden">
               <span class="block h-full bg-halt" :style="{ width: `${(n / maxHalt) * 100}%` }" />
             </span>
-            <span class="text-ink-400 text-[12px] w-14 text-right tabular-nums">{{ n }} times</span>
+            <span class="text-ink-400 text-[12px] w-14 text-right tabular-nums">{{ n }} {{ n === 1 ? 'time' : 'times' }}</span>
           </div>
           <p class="text-ink-500 text-[11px] mt-1 max-w-3xl">{{ haltHelp[reason] }}</p>
         </div>

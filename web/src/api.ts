@@ -88,6 +88,9 @@ export interface Halt {
 export interface Objective {
   id: number
   project_id: number
+  /** The project's slug and name, so a page showing one objective can act on it. */
+  project?: string
+  project_name?: string
   parent_id: number | null
   title: string
   intent: string | null

@@ -8,7 +8,11 @@ export const statusLabel: Record<string, string> = {
   draft: 'Needs a criterion',
   ready: 'Ready to start',
   in_progress: 'In progress',
-  blocked: 'Waiting on you',
+  // Not "waiting on you": `blocked` covers halts the loop clears by itself —
+  // a rejected verdict is an instruction to redo, not a question. Two screens
+  // disagreed out loud, one showing "Waiting on you" and the other "0 of them
+  // waiting on you", and the second was right. The halt says who is waited on.
+  blocked: 'Stopped',
   proven: 'Done and verified',
   abandoned: 'Dropped',
 }
@@ -17,7 +21,7 @@ export const statusHelp: Record<string, string> = {
   draft: "Nobody has said yet how we'd know this is done. No agent can take it.",
   ready: 'The goal and the check are clear. An agent can pick this up.',
   in_progress: 'An agent took it on. The dot tells you whether one is working on it right now.',
-  blocked: 'The tool stopped on purpose and is waiting for you to decide.',
+  blocked: 'The tool stopped on purpose. Whether it needs you depends on why — the halt says so.',
   proven: 'It is done, and the proof was produced and accepted.',
   abandoned: 'Set aside for good.',
 }
@@ -77,6 +81,11 @@ export const haltLabel: Record<string, string> = {
   human_request: 'You asked it to stop',
   verdict_rejected: 'Rejected at verdict, to be redone',
   children_open: 'Sub-objectives are still open',
+  // Added when the halt was, and forgotten here: the analysis page printed the
+  // raw keys `not_converging` and `judge_conversation_full` among nine phrases
+  // written for a person. A label table with a hole shows the hole.
+  not_converging: 'It stopped getting anywhere',
+  judge_conversation_full: 'The judging conversation is full',
   error: 'Technical error',
 }
 

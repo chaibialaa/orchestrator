@@ -259,3 +259,38 @@ test('the fixtures cover every endpoint the screens read', async () => {
     }
   }
 })
+
+test('every halt reason the schema allows has a label and an explanation', () => {
+  // The analysis page printed `not_converging` and `judge_conversation_full` raw,
+  // among nine phrases written for a person. Both halts were added carefully and
+  // the label table was not told — a table with a hole shows the hole, in the one
+  // place someone goes to understand why work stopped.
+  const schema = readFileSync(join(here, '..', 'src', 'db', 'schema.sql'), 'utf8')
+  const check = /reason\s+TEXT NOT NULL CHECK \(reason IN \(([\s\S]*?)\)\)/.exec(schema)
+  assert.ok(check, 'the schema still declares the allowed reasons')
+
+  const allowed = [...check[1].matchAll(/'([a-z_]+)'/g)].map((m) => m[1])
+  assert.ok(allowed.length > 5, 'and there are several of them')
+
+  const labels = readFileSync(join(WEB, 'labels.ts'), 'utf8')
+  const section = (name) => {
+    const from = labels.indexOf(`export const ${name}`)
+    const to = labels.indexOf('export const', from + 1)
+    return labels.slice(from, to === -1 ? undefined : to)
+  }
+
+  const named = (block) => new Set([...block.matchAll(/^ {2}([a-z_]+):/gm)].map((m) => m[1]))
+  const withLabel = named(section('haltLabel'))
+  const withHelp = named(section('haltHelp'))
+
+  assert.deepEqual(
+    allowed.filter((r) => !withLabel.has(r)),
+    [],
+    'reasons with no short label',
+  )
+  assert.deepEqual(
+    allowed.filter((r) => !withHelp.has(r)),
+    [],
+    'reasons with no explanation',
+  )
+})
