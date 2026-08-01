@@ -1046,7 +1046,12 @@ export function createServer() {
     const r = db()
       .prepare('INSERT INTO halts (objective_id,passage_id,reason,detail,evidence_mark) VALUES (?,?,?,?,?)')
       .run(o.id, b.passage_id ?? null, b.reason, b.detail ?? null, evidenceWatermark(o.id))
-    db().prepare("UPDATE objectives SET status = 'blocked' WHERE id = ?").run(o.id)
+    // Never over an objective that was set aside or already proven. The same
+    // oversight in two more places: `abandoned` kept being overwritten by
+    // routine bookkeeping, so #11 came back twice after being dropped.
+    db()
+      .prepare("UPDATE objectives SET status = 'blocked' WHERE id = ? AND status NOT IN ('abandoned','proven')")
+      .run(o.id)
     res.status(201).json(db().prepare('SELECT * FROM halts WHERE id = ?').get(r.lastInsertRowid))
   })
 
@@ -1141,7 +1146,12 @@ export function createServer() {
           `Verdict ${by === 'gpt' ? 'from the conversation' : by === 'agent' ? 'from a third-party agent' : 'from a human'}: rejected. The work does not satisfy the proof criterion.`,
           evidenceWatermark(o.id),
         )
-      db().prepare("UPDATE objectives SET status = 'blocked' WHERE id = ?").run(o.id)
+      // Never over an objective that was set aside or already proven. The same
+    // oversight in two more places: `abandoned` kept being overwritten by
+    // routine bookkeeping, so #11 came back twice after being dropped.
+    db()
+      .prepare("UPDATE objectives SET status = 'blocked' WHERE id = ? AND status NOT IN ('abandoned','proven')")
+      .run(o.id)
       return res.json(objectiveBy(o.id))
     }
 

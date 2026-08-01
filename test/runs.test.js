@@ -396,3 +396,23 @@ test('a chapter run does not wander into another chapter', async () => {
   assert.equal(pick(null).id, 11, 'unbounded, the lowest priority number wins — whatever chapter it is in')
   assert.equal(pick(41).id, 42, 'bounded to #41, it takes that chapter’s own step')
 })
+
+test('nothing routine can revive an objective that was set aside', async () => {
+  // Three separate places wrote the status without looking at what it was:
+  // clearing a halt, and two that mark an objective blocked. #11 came back twice
+  // after being dropped — once as `in_progress`, once as `blocked` — and each
+  // time the loop took it up again.
+  db.prepare(
+    `INSERT INTO objectives (id,project_id,title,proof_spec,blast_radius,status)
+     VALUES (80,1,'set aside','the test passes','feature','abandoned')`,
+  ).run()
+
+  const still = () => db.prepare('SELECT status FROM objectives WHERE id = 80').get().status
+
+  await post('/objectives/80/halts', { reason: 'human_request', detail: 'look at it' })
+  assert.equal(still(), 'abandoned', 'raising a halt does not revive it')
+
+  const halt = db.prepare('SELECT id FROM halts WHERE objective_id = 80').get().id
+  await fetch(url(`/halts/${halt}/resolve`), { method: 'PATCH' })
+  assert.equal(still(), 'abandoned', 'nor does clearing one')
+})
