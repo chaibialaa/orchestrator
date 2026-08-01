@@ -35,3 +35,27 @@ test('the comparison names each gap rather than averaging them away', () => {
   assert.equal(c.ratios.greenShare, 1, 'and greenery is already there')
   assert.equal(typeof c.caveat, 'string', 'the limit of the measure travels with it')
 })
+
+test('the report says when nothing moved between two attempts', async () => {
+  // The line that would have ended Atlas #11 at the third attempt rather than the
+  // twenty-first. Its renders never changed on any measure while four passes
+  // added furniture, and every report carried the same sentence: "72/100,
+  // announced by the session". Measured afterwards, those images sit at 163
+  // distinct colours against 1090 for the least demanding reference — a factor
+  // of six, not the six points the score claimed.
+  const flat = measureImage(FLAT)
+  const varied = measureImage(VARIED)
+
+  const same = [{ ...flat, name: 'a.png' }]
+  const again = [{ ...flat, name: 'a.png' }]
+  const different = [{ ...varied, name: 'a.png' }]
+
+  const avg = (list, key) => list.reduce((n, m) => n + m[key], 0) / list.length
+  const moved = (now, before) =>
+    ['saturation', 'distinctColours', 'hues'].filter(
+      (k) => Math.abs(avg(now, k) - avg(before, k)) > (k === 'saturation' ? 0.01 : 1),
+    )
+
+  assert.deepEqual(moved(again, same), [], 'identical images move nothing, and the report says so')
+  assert.ok(moved(different, same).includes('distinctColours'), 'a real change is named')
+})

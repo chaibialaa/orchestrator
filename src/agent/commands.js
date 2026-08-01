@@ -2479,6 +2479,9 @@ const commands = {
     let spent = 0
     let consecutiveEmpty = 0
     let sterile = 0
+    // The last turn's image measurements, so the next report can say what moved.
+    let measuredLastTurn = null
+
     let spentSinceProgress = 0
     let tokensWithoutProgress = 0
     // 60 M tokens with no proof: the order of magnitude of an expensive Claude
@@ -2971,7 +2974,41 @@ const commands = {
         }
       }
 
-      const report = buildReport(turn, directive, { ...outcome, joints })
+      /**
+       * Measure what the pass produced, and hand the numbers to the judge.
+       *
+       * This is the correction to what cost Atlas #11 twenty-one attempts and
+       * $634. Its criterion asked for a score; the session announced one — 72/100
+       * — and the report carried that sentence and nothing else. Measured
+       * afterwards, those renders sit at 163 distinct colours against 1090 for
+       * the least demanding reference: a factor of six, not the six points the
+       * score claimed. Twenty-one passes optimised furniture because nothing ever
+       * told them the lighting had not moved.
+       *
+       * Derived, never declared — the same rule as cost and deliverables. A
+       * session cannot mark its own homework.
+       */
+      const measured = await measureDeliverables(outcome.produits ?? [])
+      if (measured.length) {
+        console.log(
+          `    ${measured.length} image(s) measured · ` +
+            measured
+              .slice(0, 2)
+              .map((m) => `${m.name}: ${m.distinctColours} colours, sat ${m.saturation}`)
+              .join(' · '),
+        )
+      }
+
+      // Kept from turn to turn so the report can say whether anything moved. The
+      // comparison is the whole point: one measurement is a fact, two are a
+      // trend, and #11 needed the trend.
+      const report = buildReport(turn, directive, {
+        ...outcome,
+        joints,
+        measured,
+        previous: measuredLastTurn,
+      })
+      if (measured.length) measuredLastTurn = measured
       if (willPost) {
         await postToJudgeWrapped(page).evaluate(jsPost(report)).catch(() => {})
         const landed = await confirmPosted(page, report)
@@ -3982,6 +4019,36 @@ async function readJudge(page, attempts = 3) {
   return null
 }
 
+/**
+ * What the renders of this pass actually contain.
+ *
+ * Four at most: the point is to say whether the images moved, not to bill a
+ * measurement of every file. Failures are silent — an unreadable image is not a
+ * reason to lose a pass that has already been paid for.
+ */
+async function measureDeliverables(produced) {
+  const images = produced.filter((f) => /\.(png|jpe?g|webp)$/i.test(f)).slice(0, 4)
+  if (!images.length) return []
+
+  let measureImage
+  try {
+    ;({ measureImage } = await import('../visual.js'))
+  } catch {
+    return []
+  }
+
+  const out = []
+  for (const rel of images) {
+    try {
+      const m = measureImage(resolve(process.cwd(), rel))
+      out.push({ name: basename(rel), ...m })
+    } catch {
+      /* unreadable, or not really an image: say nothing rather than fail a pass */
+    }
+  }
+  return out
+}
+
 function buildReport(turn, directive, outcome) {
   const lines = [
     `## Turn ${turn} — objective #${outcome.objectiveId ?? '?'}`,
@@ -4014,10 +4081,44 @@ function buildReport(turn, directive, outcome) {
       lines.push(
         '',
         `The ${outcome.joints} most recent attachments are on this message` +
-          (images > outcome.joints ? ` (sur ${images} produits)` : '') +
+          (images > outcome.joints ? ` (of ${images} produced)` : '') +
           ` — judge on the image, not on the announced score.`,
       )
     }
+  }
+
+  /**
+   * What the images measurably contain, and whether it moved.
+   *
+   * The line that would have ended Atlas #11 at the third attempt instead of the
+   * twenty-first: its renders never changed on any measure while four passes
+   * added furniture and the session reported "72/100" each time. A number the
+   * session did not choose is the only kind a judge can use.
+   */
+  if (outcome.measured?.length) {
+    lines.push('**Measured in the images** — read from the files, not reported by the session')
+    for (const m of outcome.measured) {
+      lines.push(
+        `- ${m.name} — saturation ${m.saturation}, ${m.hues} hues, ` +
+          `${m.distinctColours} distinct colours, ${(m.greenShare * 100).toFixed(1)}% green`,
+      )
+    }
+
+    if (outcome.previous?.length) {
+      const before = outcome.previous
+      const avg = (list, key) => list.reduce((n, m) => n + m[key], 0) / list.length
+      const moved = ['saturation', 'distinctColours', 'hues'].filter(
+        (k) => Math.abs(avg(outcome.measured, k) - avg(before, k)) > (k === 'saturation' ? 0.01 : 1),
+      )
+      lines.push(
+        '',
+        moved.length
+          ? `Against the previous attempt: ${moved.join(', ')} moved.`
+          : 'Against the previous attempt: NOTHING moved on any of these measures. ' +
+            'Whatever was changed, it is not visible in the images.',
+      )
+    }
+    lines.push('')
     lines.push('')
   }
 
