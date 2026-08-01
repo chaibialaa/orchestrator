@@ -444,6 +444,24 @@ const commands = {
           }
         }
 
+        /**
+         * How to ask a person to check something, and when.
+         *
+         * This is what a non-interactive session lost. Working by hand, Codex
+         * would stop and say "open the game and tell me whether X, Y and Z" —
+         * and that was often the only real proof, because a still image says
+         * nothing about how a thing plays. Driven by the loop it cannot say it:
+         * there is nobody listening at that moment, and it was never told there
+         * is a way to leave the question behind.
+         */
+        lines.push('')
+        lines.push('If the only honest proof is a person looking at the running thing — how it')
+        lines.push('plays, whether a route works, whether something feels right — do NOT guess')
+        lines.push('and do not settle for a screenshot. Stop and ask:')
+        lines.push(`  orchestrator halt ${objective.id} human_request "open the game and confirm: …"`)
+        lines.push('Name exactly what to look at and what would count as wrong. The pass ends')
+        lines.push('cleanly, the question appears on screen, and nothing is billed for guessing.')
+
         const declared = Object.keys(config.proofs ?? {})
         if (declared.length) {
           lines.push('')

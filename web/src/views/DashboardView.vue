@@ -7,6 +7,7 @@ import Blockers from '../components/Blockers.vue'
 import NewProject from '../components/NewProject.vue'
 import JudgeFull from '../components/JudgeFull.vue'
 import NotConverging from '../components/NotConverging.vue'
+import HumanCheck from '../components/HumanCheck.vue'
 import { formatTokens, haltHelp, statusLabel } from '../labels'
 
 const data = ref<Dashboard | null>(null)
@@ -258,6 +259,20 @@ const segColor: Record<string, string> = {
           @done="load"
         />
 
+        <!-- An agent asking you to look at the running thing. The one exchange
+             working by hand had that the loop took away — and the only honest
+             proof for anything that has to be played rather than seen. -->
+        <HumanCheck
+          v-for="h in data.open_halts.filter((x) => x.reason === 'human_request')"
+          :key="`hc${h.id}`"
+          :halt-id="h.id"
+          :objective-id="h.objective_id"
+          :project="h.project"
+          :title="h.objective_title"
+          :question="h.detail"
+          @answered="load"
+        />
+
         <!-- The halt whose tempting answer — run it again — is the very thing
              that produced it. It gets the two ways out that change something. -->
         <NotConverging
@@ -272,7 +287,7 @@ const segColor: Record<string, string> = {
 
         <!-- Halts: the tool stopped on purpose. -->
         <RouterLink
-          v-for="h in data.open_halts.filter((x) => !['judge_conversation_full', 'not_converging'].includes(x.reason))"
+          v-for="h in data.open_halts.filter((x) => !['judge_conversation_full', 'not_converging', 'human_request'].includes(x.reason))"
           :key="`h${h.id}`"
           :to="`/o/${h.objective_id}`"
           class="card p-4 block border-halt/35 bg-halt/[0.04] hover:border-halt/60 transition-colors"

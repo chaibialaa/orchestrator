@@ -560,6 +560,12 @@ export const api = {
     http.patch(`/projects/${slug}/objectives/reorder`, { ordre }).then((r) => r.data),
 
   /** Clear the open halts of one KIND on an objective — `resolveHalt` above takes an id. */
+  /** Record a proof against an objective — including one a person produced by looking. */
+  addEvidence: (
+    objectiveId: number,
+    payload: { type: string; verdict: 'pass' | 'fail' | 'inconclusive'; label: string; ref?: string },
+  ) => http.post(`/objectives/${objectiveId}/evidences`, payload).then((r) => r.data),
+
   clearHalts: (objectiveId: number, reason: string) =>
     http.post(`/objectives/${objectiveId}/halts/resolve`, { reason }).then((r) => r.data),
 
