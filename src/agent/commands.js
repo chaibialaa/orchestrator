@@ -1277,6 +1277,8 @@ const commands = {
       }
 
       instructionsDone.add(`${directive.harness}:${directive.task.slice(0, 200)}`)
+      // `relay` drives no chapter of its own, so there is nothing to bound the
+      // fallback to: the mission's own number decides, as before.
       const outcome = await runHarness(directive.harness, directive.task)
 
       console.log(
@@ -2855,7 +2857,7 @@ const commands = {
       }
 
       instructionsDone.add(`${directive.harness}:${directive.task.slice(0, 200)}`)
-      const outcome = await runHarness(directive.harness, directive.task)
+      const outcome = await runHarness(directive.harness, directive.task, chapterId)
       const passage = outcome.passageId
         ? await call('GET', `/passages/${outcome.passageId}`).catch(() => null)
         : null
@@ -3461,7 +3463,14 @@ function sessionDiagnostics(sinceMs, harness = 'claude') {
  * Starts a harness on a task, framed by an attempt, and lets the guards decide.
  * The harness has nothing to declare: everything is derived.
  */
-async function runHarness(harness, task) {
+/**
+ * `withinChapter` bounds the fallback. The mission names an objective and we
+ * honour it; with no number we fall back on priority — and that fallback used to
+ * range over the whole project, so a run launched on chapter #41 opened a pass
+ * on #11, a chapter that had just been deliberately set aside and replaced. It
+ * simply had a lower priority number.
+ */
+async function runHarness(harness, task, withinChapter = null) {
   const objectives = await call('GET', `/projects/${config.project}/objectives`)
 
   // The instruction names an objective by number: we honour it. With no number we
@@ -3515,7 +3524,11 @@ async function runHarness(harness, task) {
     }
     target = o
   } else {
-    target = objectives
+    const inScope = withinChapter
+      ? objectives.filter((o) => o.id === withinChapter || o.parent_id === withinChapter)
+      : objectives
+
+    target = inScope
       .filter((o) => ['ready', 'in_progress'].includes(o.status) && !o.open_halts_count)
       .sort((a, b) => a.priority - b.priority)[0]
   }

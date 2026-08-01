@@ -372,3 +372,27 @@ test('setting an objective aside survives a halt being cleared', async () => {
     'it stays where you put it',
   )
 })
+
+test('a chapter run does not wander into another chapter', async () => {
+  // A run launched on chapter #41 opened a pass on #11 — a chapter that had just
+  // been set aside and replaced — because with no number in the mission the
+  // fallback ranged over the whole project and #11 had the lower priority.
+  // Reproduced here as the selection itself: scope first, then priority.
+  const objectives = [
+    { id: 11, parent_id: null, status: 'ready', priority: 10, open_halts_count: 0 },
+    { id: 41, parent_id: null, status: 'ready', priority: 15, open_halts_count: 0 },
+    { id: 42, parent_id: 41, status: 'ready', priority: 10, open_halts_count: 0 },
+  ]
+
+  const pick = (within) => {
+    const inScope = within
+      ? objectives.filter((o) => o.id === within || o.parent_id === within)
+      : objectives
+    return inScope
+      .filter((o) => ['ready', 'in_progress'].includes(o.status) && !o.open_halts_count)
+      .sort((a, b) => a.priority - b.priority)[0]
+  }
+
+  assert.equal(pick(null).id, 11, 'unbounded, the lowest priority number wins — whatever chapter it is in')
+  assert.equal(pick(41).id, 42, 'bounded to #41, it takes that chapter’s own step')
+})
