@@ -33,6 +33,7 @@ export function blockers() {
   out.push(...codexRulesNotEnforced(db))
   out.push(...mcpVersionsDisagree())
   out.push(...projectHasNoContext(db))
+  out.push(...nothingMeasuresIt(db))
   out.push(...undecidedRefusals(db))
   out.push(...storages(db))
 
@@ -258,6 +259,66 @@ function projectHasNoContext(db) {
       action:
         'Record what a newcomer would get wrong, as decisions on the project. The breakdown reads ' +
         'them and stops contradicting what was already settled.',
+      since: null,
+    }))
+}
+
+/**
+ * An objective nothing can measure.
+ *
+ * The number that settles the argument: of 385 pieces of evidence across this
+ * whole install, FOUR came from a command. Of the 33 that carry a passing
+ * verdict, 18 are judgements. `orchestrator prove` — the one path that produces
+ * a measured pass or fail — has barely been used.
+ *
+ * That is what separates the cheap objective from the dear one, not difficulty:
+ *
+ *   #24  "a palette in hex, heights in metres, a density per hectare"   3 passes   $22
+ *   #11  "a score of at least 78/100"                                  21 passes  $634
+ *
+ * An aggregate score cannot be produced by any single deliverable and tells an
+ * agent nothing about where the missing points are. Worse, on #11 every score
+ * was labelled "announced by the session" — and a session scoring its own work
+ * is recorded inconclusive, correctly, so the objective could never conclude
+ * however long it ran.
+ *
+ * I tried first to catch this by the ratio of evidence to passing evidence. It
+ * did not separate them: 65:1 against 21:1, and the 21:1 succeeded. Reaching
+ * for a threshold that fits is how a check ends up measuring nothing. This
+ * measures the thing itself — has anything here ever been settled by a command?
+ */
+function nothingMeasuresIt(db) {
+  const MEASURED = ['test', 'e2e', 'invariant']
+  const ENOUGH_TRIES = 3
+
+  return db
+    .prepare(
+      `SELECT o.id, o.title, p.slug,
+              (SELECT COUNT(*) FROM passages WHERE objective_id = o.id) AS attempts,
+              (SELECT COALESCE(SUM(cost_usd),0) FROM passages WHERE objective_id = o.id) AS spent,
+              (SELECT COUNT(*) FROM evidences WHERE objective_id = o.id) AS made,
+              (SELECT COUNT(*) FROM evidences
+                WHERE objective_id = o.id AND type IN ('test','e2e','invariant')) AS measured
+       FROM objectives o JOIN projects p ON p.id = o.project_id
+       WHERE o.status NOT IN ('proven','abandoned')`,
+    )
+    .all()
+    .filter((o) => o.attempts >= ENOUGH_TRIES && o.measured === 0)
+    .map((o) => ({
+      kind: 'nothing_measures_it',
+      severity: WARNING,
+      project: o.slug,
+      objective: o.id,
+      title: `${o.title.slice(0, 55)} — ${o.attempts} attempts, nothing measured`,
+      detail:
+        `${o.made} pieces of evidence and $${Number(o.spent).toFixed(0)} spent, and not one of them ` +
+        `came from a command — no ${MEASURED.join(', ')}. Everything here rests on a session's ` +
+        'account of its own work, which is recorded as inconclusive by design. An objective in ' +
+        'that state cannot conclude, however long it runs.',
+      action:
+        'Name a command in the criterion — `orchestrator prove <key>` — or state the value, count ' +
+        'or threshold something can read. Across this install, four proofs out of 385 came from a ' +
+        'command; that is the difference between a $22 chapter and a $634 one.',
       since: null,
     }))
 }

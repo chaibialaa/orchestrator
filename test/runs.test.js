@@ -306,3 +306,43 @@ test('a chapter with no steps is still refused, however it is wrapped', async ()
   })
   assert.equal(res.status, 422)
 })
+
+test('an objective nothing has ever measured is flagged, once it has had a fair run', async () => {
+  // 4 pieces of evidence out of 385 across this install came from a command; 18
+  // of the 33 passing ones are judgements. That is what separated a $22 chapter
+  // from a $634 one — not difficulty, but whether anything could read the answer.
+  const { blockers } = await import('../src/blockers.js')
+
+  db.prepare(
+    `INSERT INTO objectives (id,project_id,title,proof_spec,blast_radius,status)
+     VALUES (60,1,'measured by nothing','a score of at least 78/100','feature','ready'),
+            (61,1,'measured by something','the test passes','feature','ready'),
+            (62,1,'barely started','a score of at least 78/100','feature','ready')`,
+  ).run()
+
+  const attempt = db.prepare(
+    `INSERT INTO passages (objective_id,harness,started_at,ended_at,cost_usd,prevented)
+     VALUES (?,'claude',datetime('now'),datetime('now'),20,0)`,
+  )
+  for (let i = 0; i < 4; i++) {
+    attempt.run(60)
+    attempt.run(61)
+  }
+  attempt.run(62) // one attempt only: too early to say anything
+
+  // Renders and diffs are deliverables; only a command returns a verdict.
+  db.prepare(
+    `INSERT INTO evidences (objective_id,type,label,verdict)
+     VALUES (60,'render','a picture somebody produced','inconclusive'),
+            (61,'test','a command that ran','pass'),
+            (62,'render','a picture','inconclusive')`,
+  ).run()
+
+  const flagged = blockers()
+    .filter((b) => b.kind === 'nothing_measures_it')
+    .map((b) => b.objective)
+
+  assert.ok(flagged.includes(60), 'four attempts and nothing measurable: said out loud')
+  assert.ok(!flagged.includes(61), 'a command settled it, so there is nothing to say')
+  assert.ok(!flagged.includes(62), 'one attempt is too early to call anything')
+})
