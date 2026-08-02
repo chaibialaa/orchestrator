@@ -2,6 +2,7 @@
 import { startServer } from './server.js'
 import { commands as agent, Refusal } from './agent/commands.js'
 import { importData } from './db/import.js'
+import { exportData } from './db/export.js'
 import { dbPath } from './db/index.js'
 import { saveOauthApp } from './oauth.js'
 import { fileURLToPath } from 'node:url'
@@ -28,6 +29,18 @@ const commandes = {
     serveur.headersTimeout = 11 * 60 * 1000
     console.log(`\n  orchestrator — http://localhost:${port}`)
     console.log(`  base : ${dbPath()}\n`)
+  },
+
+  /**
+   * The other half of `import`. The README listed "restore an export" and
+   * nothing in the tool made one, so the only way to move an install to another
+   * machine — or to have a backup at all — was to copy a live SQLite file, WAL
+   * and all, which is how you get a corrupted one.
+   */
+  async export() {
+    const file = args.find((a) => !a.startsWith('--')) ?? 'orchestrator-export.json'
+    console.log('')
+    exportData(file)
   },
 
   async import() {
