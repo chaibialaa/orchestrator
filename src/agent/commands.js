@@ -998,6 +998,34 @@ const commands = {
 
       const result = await call('POST', `/invariants/${inv.id}/readings`, { value })
       const mark = result.holds ? 'ok' : 'FRANCHI'
+
+      /**
+       * A reading becomes a PROOF, not just a row that changed colour.
+       *
+       * `invariant` sits in the list of proof types the gate accepts for a
+       * critical objective — and nothing had ever produced one on real work. The
+       * check updated the invariant and stopped there, so an objective whose
+       * criterion is "this invariant holds in production" could satisfy it and
+       * still have nothing the gate could read. Across this whole install the
+       * only `invariant` proof was a fixture.
+       *
+       * Only for an invariant attached to an objective: a project-wide gauge is
+       * a gauge, and filing it against nothing would be noise.
+       */
+      if (inv.objective_id && result.holds !== null) {
+        await call(
+          'POST',
+          `/objectives/${inv.objective_id}/evidences`,
+          {
+            type: 'invariant',
+            verdict: result.holds ? 'pass' : 'fail',
+            label: `${inv.name} = ${value} ${inv.unit ?? ''} (${inv.comparison} ${inv.threshold})`,
+            ref: config.probes?.[inv.probe_key] ?? null,
+            payload: { probe: inv.probe_key, value, comparison: inv.comparison, threshold: inv.threshold },
+          },
+          { soft: true },
+        ).catch(() => {})
+      }
       console.log(`  ${result.holds ? '·' : '!'}  ${inv.name} = ${value} ${inv.unit ?? ''} — ${mark}`)
 
       if (!result.holds) {
