@@ -20,6 +20,35 @@ the report back. The judge accepts or rejects, and the loop carries on.
 
 And it **refuses to close an objective until its proof is in.**
 
+## What that is worth
+
+The same shot of the same scene, twice. Nothing between them but how the
+objective was written.
+
+| 23 attempts, $649 — never concluded | 3 minutes, $0 — closed |
+|---|---|
+| ![before](docs/before.png) | ![after](docs/after.png) |
+| `saturation 0.087 · 4 hues` | `saturation 0.216 · 8 hues` |
+
+The first criterion asked for **"≥ 78/100"** — a score nothing computed. No
+deliverable could satisfy it in one go, a failure could not say which points were
+missing, and every attempt scored itself, which is recorded as inconclusive by
+design. So it could never conclude, and twenty-three passes went on trying.
+
+The second named its reader: **`orchestrator visual` on each shot, saturation
+≥ 0.20 and at least 7 hues.** The command ran, exit 0, and the objective closed.
+
+Both figures are reproducible on the files above:
+
+```bash
+orchestrator visual docs/before.png --min-saturation 0.20 --min-hues 7   # exit 1
+orchestrator visual docs/after.png  --min-saturation 0.20 --min-hues 7   # exit 0
+```
+
+That is the whole argument. Not that agents write better code when supervised —
+that **an objective whose criterion names what will read it costs a thirtieth of
+one that does not**, and the difference is written before any work starts.
+
 It is meant to run unattended. The browser it drives is started, reopened and
 reloaded by the loop itself; a conversation that fills up is replaced without
 anyone being asked; work is queued from the screen rather than typed into a
