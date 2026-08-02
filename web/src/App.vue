@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, type Project } from './api'
 import ProjectSwitcher from './components/ProjectSwitcher.vue'
@@ -8,6 +8,29 @@ const route = useRoute()
 const router = useRouter()
 const projects = ref<Project[]>([])
 
+/**
+ * The walkthrough leaves the bar once it has been gone through.
+ *
+ * The row is meant to hold what you reach for, and it is meant to keep its
+ * shape while you move — that is why the project's own pages were taken out of
+ * it. Neither reason argues for keeping onboarding there on an install with a
+ * hundred passes behind it: it is read once and then occupies a slot you never
+ * aim at again.
+ *
+ * Decided once, when the page loads, so the bar still never changes shape as
+ * you navigate. `/setup` stays reachable by its address for anyone who wants to
+ * read it again.
+ */
+const walkthroughDone = ref(false)
+
+const links = computed(() =>
+  [
+    { to: '/tools', name: 'tools', word: 'tools' },
+    ...(walkthroughDone.value ? [] : [{ to: '/setup', name: 'setup', word: 'setup' }]),
+    { to: '/config', name: 'config', word: 'connected AI' },
+  ],
+)
+
 onMounted(async () => {
   try {
     projects.value = await api.projects()
@@ -15,11 +38,13 @@ onMounted(async () => {
     projects.value = []
   }
 
+  const setup = await api.setup().catch(() => null)
+  walkthroughDone.value = Boolean(setup?.walkthrough_done)
+
   // An empty tool explains itself once. It never takes the page over again: a
   // walkthrough that reappears is a walkthrough you learn to click past.
-  if (!projects.value.length && route.name === 'dashboard') {
-    const setup = await api.setup().catch(() => null)
-    if (setup && !setup.walkthrough_done) router.replace('/setup')
+  if (!projects.value.length && route.name === 'dashboard' && setup && !setup.walkthrough_done) {
+    router.replace('/setup')
   }
 })
 </script>
@@ -54,11 +79,7 @@ onMounted(async () => {
              as you moved and nothing sat where you last saw it. -->
         <div class="ml-auto flex items-center gap-4 text-[11px] text-ink-400">
           <RouterLink
-            v-for="l in [
-              { to: '/tools', name: 'tools', word: 'tools' },
-              { to: '/setup', name: 'setup', word: 'setup' },
-              { to: '/config', name: 'config', word: 'connected AI' },
-            ]"
+            v-for="l in links"
             :key="l.name"
             :to="l.to"
             class="hover:text-ink-100 transition-colors"

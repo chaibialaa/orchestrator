@@ -69,6 +69,10 @@ function loadConfig() {
     transcripts: project.transcripts ?? null,
     env: project.env ?? {},
     sessionTimeoutMin: project.sessionTimeoutMin ?? null,
+    // What a pass is allowed to spend of the shared session window. Both null by
+    // default: a project that says nothing behaves exactly as before.
+    harnessModel: project.harnessModel ?? global.harnessModel ?? null,
+    maxTurns: project.maxTurns ?? global.maxTurns ?? null,
     codexPricing: project.codexPricing ?? {},
     binaries: { ...(global.binaries ?? {}), ...(project.binaries ?? {}) },
     // A secret left empty in the file does not overwrite the one in the
@@ -1730,7 +1734,7 @@ const commands = {
     const found = new Set()
     for (const line of readFileSync(file, 'utf8').split('\n')) {
       if (!line.includes('permission')) continue
-      const m = line.match(/requested permissions to use ([A-Za-z0-9_()*.\- ]+?)(?:,|\\n|")/)
+      const m = line.match(/requested permissions to use ([A-Za-z0-9_()*.~/\- ]+?)(?:,|\\n|")/)
       if (m) found.add(m[1].trim())
     }
 
@@ -1959,7 +1963,7 @@ const commands = {
   /**
    * What a rendering measurably contains, and how far it is from a reference.
    *
-   * usage: orchestrator visual <image.png> [--ref target.png] [--min-colours 1500] [--min-saturation 0.5]
+   * usage: orchestrator visual <image.png> [--ref target.png] [--min-colours 1500] [--min-hues 7] [--min-saturation 0.5]
    *
    * Exits 1 when a floor is not met, so it can be declared as a proof in
    * .orchestrator.json and produce a real pass/fail — rather than a score the
@@ -1969,7 +1973,7 @@ const commands = {
   async visual(...argv) {
     const opts = parseFlags(argv)
     const file = argv.find((a) => !a.startsWith('--') && argv[argv.indexOf(a) - 1]?.startsWith('--') !== true)
-    if (!file) fail('usage: orchestrator visual <image.png> [--ref target.png] [--min-colours N] [--min-saturation X]')
+    if (!file) fail('usage: orchestrator visual <image.png> [--ref target.png] [--min-colours N] [--min-hues N] [--min-saturation X]')
 
     const { measureImage, compareToReference } = await import('../visual.js')
 
@@ -1994,13 +1998,25 @@ const commands = {
     if (opts['min-saturation'] && m.saturation < Number(opts['min-saturation'])) {
       failures.push(`saturation ${m.saturation} < ${opts['min-saturation']}`)
     }
+    /**
+     * A floor on hues, because criteria were already asking for one.
+     *
+     * `hues` was reported and could not be required: a criterion written as
+     * "saturation >= 0,20 and at least 7 hues" named a reader able to settle
+     * only half of it, and the other half fell back on somebody reading the
+     * line. Distinct colours are not a substitute — 226 shades of the same
+     * beige are 226 colours and four hues.
+     */
+    if (opts['min-hues'] && m.hues < Number(opts['min-hues'])) {
+      failures.push(`hues ${m.hues} < ${opts['min-hues']}`)
+    }
 
     if (failures.length) {
       console.log(`\n  below the floor: ${failures.join(' · ')}\n`)
       process.exitCode = 1
       return
     }
-    if (opts['min-colours'] || opts['min-saturation']) console.log('\n  floors met\n')
+    if (opts['min-colours'] || opts['min-saturation'] || opts['min-hues']) console.log('\n  floors met\n')
     else console.log('')
   },
 
@@ -2436,6 +2452,16 @@ const commands = {
     process.env.ORCHESTRATOR_BOUCLE = '1'
     const opts = parseFlags(argv)
     const chapterId = Number(opts.objective ?? opts.chapter)
+
+    /**
+     * Why this run ended, recorded next to the fact that it did.
+     *
+     * `done` was carrying a closed chapter, a misread reply and a leftover
+     * ending from another objective all at once. Left null on purpose when no
+     * branch claims it: "ended without saying why" is the finding, not a gap to
+     * paper over.
+     */
+    let issue = null
     // Set when the interface asked for this run: it is what lets the loop report
     // its turn and be stopped from the screen rather than from a terminal.
     const runId = opts.run ? Number(opts.run) : null
@@ -2531,6 +2557,7 @@ const commands = {
 
       if (chapter.status === 'proven') {
         console.log(`\n  CHAPTER CLOSED — #${chapterId} is proven.\n`)
+        issue = 'chapter_closed'
         break
       }
 
@@ -2619,6 +2646,7 @@ const commands = {
 
         console.log(`\n  WORK FINISHED — all ${children.length} sub-objectives are proven.`)
         console.log(`  The chapter's verdict is yours: this project requires a human judge.\n`)
+        issue = 'steps_done_awaiting_verdict'
         break
         }
       }
@@ -2629,11 +2657,14 @@ const commands = {
       if (humanHalt) {
         console.log(`\n  STOP — ${humanHalt.reason} on the chapter. A human decision is required.`)
         console.log(`  ${humanHalt.detail}\n`)
+        issue = 'needs_you'
         break
       }
 
       // 2. Ce que dit GPT.
-      const message = await readJudge(page)
+      // `let`: a reply caught mid-pause is re-read further down, and the longer
+      // look replaces it.
+      let message = await readJudge(page)
 
       // An UNCHANGED message is not silence: it may carry a mission that was never
       // executed. Atlas stopped on "GPT is not answering any more" while its last
@@ -2654,6 +2685,7 @@ const commands = {
                 : 'GPT stopped answering after two waits.'
             }\n`,
           )
+          issue = 'judge_silent'
           break
         }
         console.log(`  turn ${turn} — nothing new, waiting again`)
@@ -2699,26 +2731,128 @@ const commands = {
       }
 
       const fini = parseDone(message)
+
+      /**
+       * An ending that names another objective is a leftover, not an answer.
+       *
+       * The conversation keeps its last message between runs. Run 37 opened on
+       * #46 while the thread still ended on `@fini: #41`, written hours earlier
+       * — and the loop closed on the spot, without a single turn, announcing an
+       * ending for a chapter nobody had asked about. It is the same mistake as
+       * honouring the number the judge names over the one the run targets, on
+       * the one path that had been left out of that fix.
+       *
+       * A `@fini` carrying no number stays valid: it can only be about the
+       * chapter in hand.
+       */
+      if (fini?.id && Number(fini.id) !== Number(chapterId)) {
+        console.log(
+          `  turn ${turn} — the reply still closes #${fini.id}; this run works #${chapterId}. ` +
+            `Waiting for an answer about this one.`,
+        )
+        if (willPost) {
+          await postToJudgeWrapped(page)
+            .evaluate(
+              jsPost(
+                `That ending closes #${fini.id}. This run works #${chapterId} — give the mission for it, ` +
+                  `after \`@claude:\` or \`@codex:\` alone on its line, or close #${chapterId} explicitly ` +
+                  `with \`@fini: #${chapterId} <reason>\`.`,
+              ),
+            )
+            .catch(() => {})
+        }
+        await pause(5000)
+        continue
+      }
+
       if (fini && !parseDirective(message)) {
         console.log(
           `\n  END DECLARED by the judge${fini.id ? ` sur #${fini.id}` : ''}` +
             `${fini.reason ? ` — ${fini.reason}` : ''}\n`,
         )
+        issue = 'declared_done'
         break
       }
 
-      const directive = parseDirective(message)
+      let directive = parseDirective(message)
+
+      /**
+       * A reply that pronounces a verdict and then goes quiet is usually not
+       * finished — it is paused.
+       *
+       * Every reply in this protocol ends on one of three things: a `@claude:`
+       * or `@codex:` directive, an `@fini`, or nothing (and then it is genuinely
+       * unusable). `waitForStable` returns after four seconds of quiet, and
+       * ChatGPT routinely pauses longer than that while it attaches a file or
+       * runs its Sources step — both of which sit exactly between the body of a
+       * reply and its last line.
+       *
+       * That is how a perfectly good answer got answered with "no usable
+       * instruction": the verdict at the top had been read, the `@fini: #41` at
+       * the bottom had not been written yet. The judge then rewrote the same
+       * reply, correctly, three times over, and the loop stopped on the grounds
+       * that it had stopped answering.
+       *
+       * So when a verdict is in hand but no terminator is, give the page one
+       * longer, quieter look before telling anybody their reply is unusable.
+       */
+      if (!directive && !parseDone(message) && verdict && willPost) {
+        console.log(`  turn ${turn} — verdict read, no terminator yet. Waiting for the end of the reply.`)
+        const complet = await waitForStable(page, { quietMs: 15000, maxMs: 120000 }).catch(() => null)
+
+        if (complet && complet !== message && complet.length > message.length) {
+          message = complet
+          lastSeen = complet
+          directive = parseDirective(message)
+
+          const finiTardif = parseDone(message)
+          if (finiTardif && !directive) {
+            console.log(
+              `\n  END DECLARED by the judge${finiTardif.id ? ` sur #${finiTardif.id}` : ''}` +
+                `${finiTardif.reason ? ` — ${finiTardif.reason}` : ''}` +
+                `\n  (read on the second look: the first one caught the reply mid-pause)\n`,
+            )
+            break
+          }
+        }
+      }
+
       if (!directive) {
         console.log(`  turn ${turn} — no instruction in the reply. Asking again.`)
         if (willPost) {
           await postToJudgeWrapped(page).evaluate(
             jsPost(
-              'No usable instruction in your reply. End with `@claude:` or `@codex:` alone on its line, followed by the full mission citing the target objective number — everything after that marker is passed to the harness word for word. Or say explicitly that the chapter is finished.',
+              // The last sentence used to read "Or say explicitly that the chapter
+              // is finished" — without ever naming the marker that is actually
+              // parsed. A judge writing "the chapter is finished" in prose is
+              // never understood, and has no way to find that out.
+              'No usable instruction in your reply. End with `@claude:` or `@codex:` alone on its line, followed by the full mission citing the target objective number — everything after that marker is passed to the harness word for word. Or, to close the chapter, write `@fini: #<number> <reason>` — that exact marker, on its own line, is the only wording read as an ending.',
             ),
           )
         }
         await pause(5000)
         continue
+      }
+
+      /**
+       * The harness, once asking has demonstrably not worked.
+       *
+       * Telling the judge which harness to use is a sentence in a prompt, and it
+       * was ignored twice running on objectives whose criterion names a command:
+       * once a measurement went to Claude, once a five-minute Claude pass at $4
+       * ended on "the criterion is satisfied" without a single number. The same
+       * measurement given to Codex closed #41 in three minutes for nothing.
+       *
+       * This does not take the choice away in general — only after the judge has
+       * had a go at an objective whose criterion names a command and produced no
+       * measurement at all. The first attempt stays entirely its call.
+       */
+      if (directive.harness === 'claude') {
+        const raison = await forceMeasuringHarness(chapterId)
+        if (raison) {
+          console.log(`  routing — sent to codex instead: ${raison}`)
+          directive.harness = 'codex'
+        }
       }
 
       // A turn costs on the order of $15-25: if what is left of the budget cannot
@@ -2732,6 +2866,7 @@ const commands = {
           `\n  STOP — ${(tokensWithoutProgress / 1e6).toFixed(1)} M tokens consumed without a single objective being proven.` +
             `\n  Dollar cost is not measurable for this harness, so the bound is on tokens.\n`,
         )
+        issue = 'no_progress_budget'
         break
       }
 
@@ -2779,6 +2914,7 @@ const commands = {
             `The mission requires the Unity instance “${config.unity.instance}” and no editor is running. ` +
             'Nobody but you can open it.',
         }).catch(() => {})
+        issue = 'no_unity_editor'
         break
       }
 
@@ -2811,6 +2947,7 @@ const commands = {
             `the rules it was given at the top. Open a fresh conversation, paste the state into ` +
             `it, and set its address on the project.`,
         }).catch(() => {})
+        issue = 'judge_conversation_full'
         break
       }
 
@@ -2830,6 +2967,7 @@ const commands = {
         if (state?.cancel_asked) {
           console.log('\n  STOP asked from the interface — the loop ends here.\n')
           await call('PATCH', `/runs/${runId}`, { status: 'cancelled' }, { soft: true }).catch(() => {})
+          issue = 'cancelled_from_screen'
           break
         }
 
@@ -2857,6 +2995,7 @@ const commands = {
         console.log(`\n  read only — nothing was executed.`)
         console.log(`  ${directive.harness} would receive ${directive.task.length} characters of mission on #${(directive.task.match(/#(\d+)/) ?? [])[1] ?? '?'}.`)
         console.log(`  Run again with --post to execute.\n`)
+        issue = 'read_only'
         break
       }
 
@@ -3084,6 +3223,22 @@ const commands = {
 
       await pause(4000)
     }
+
+    /**
+     * Falling out of the loop without a branch having claimed an outcome means
+     * the turns ran out. That is a real ending and it gets its own word; what it
+     * must never do is pass for a chapter that closed.
+     */
+    if (runId) {
+      await call(
+        'PATCH',
+        `/runs/${runId}`,
+        { outcome: issue ?? 'out_of_turns' },
+        { soft: true },
+      ).catch(() => {})
+    }
+
+    console.log(`  run ended — ${issue ?? 'out_of_turns'}\n`)
 
     page.close()
   },
@@ -3447,7 +3602,12 @@ function sessionDiagnostics(sinceMs, harness = 'claude') {
       if (c?.type === 'tool_use' && c.name) tools[c.name] = (tools[c.name] ?? 0) + 1
       if (c?.type === 'tool_result' && c.is_error) {
         const txt = typeof c.content === 'string' ? c.content : JSON.stringify(c.content)
-        const m = txt.match(/permissions to use ([A-Za-z0-9_()*.\- ]+?)(?:,|$|")/)
+        // `/` and `~` belong in a tool name: every path-bearing Bash pattern has
+        // one. Without them the capture stopped at the first slash, so
+        // `Bash(node ../orchestrator/src/cli.js *)` — refused on two projects for
+        // days — was never once reported back, and the screen went on showing
+        // nothing undecided while the loop paid for the refusal every turn.
+        const m = txt.match(/permissions to use ([A-Za-z0-9_()*.~/\- ]+?)(?:,|$|")/)
         if (m) denied.add(m[1].trim())
         else if (/require approval|was blocked|not granted/i.test(txt)) {
           denied.add(txt.slice(0, 90).replace(/\s+/g, ' '))
@@ -3474,6 +3634,78 @@ function sessionDiagnostics(sinceMs, harness = 'claude') {
  * on #11, a chapter that had just been deliberately set aside and replaced. It
  * simply had a lower priority number.
  */
+/**
+ * Should this objective's next attempt be measured by Codex rather than asked
+ * of Claude again?
+ *
+ * Answers with the reason, or null to leave the judge's choice alone. Three
+ * conditions, all of them observable — none of them an opinion:
+ *   the criterion names something that runs;
+ *   at least one attempt has already been made;
+ *   not one of them produced a proof of a measured type.
+ *
+ * Silent on any API trouble: a routing preference is never worth killing a pass
+ * over.
+ */
+async function forceMeasuringHarness(objectiveId) {
+  try {
+    const o = await call('GET', `/objectives/${objectiveId}`, null, { soft: true })
+    const spec = o?.proof_spec ?? o?.objective?.proof_spec ?? ''
+    if (!/orchestrator\s+\w|python3\s|\bexit\s*0\b|node\s+\S+\.js/i.test(spec)) return null
+
+    const passages = o?.passages ?? []
+    if (!passages.length) return null
+
+    const MESURE = ['test', 'e2e', 'invariant']
+    const mesuree = [...(o?.evidences ?? []), ...passages.flatMap((p) => p.evidences ?? [])].some((e) =>
+      MESURE.includes(e.type),
+    )
+    if (mesuree) return null
+
+    return `criterion names a command, ${passages.length} attempt(s), no measured proof yet`
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Did this file record a command being run, or is it prose about one?
+ *
+ * Everything a pass produced was filed the same way: an image became a
+ * `render`, and every other file a `diff` — a deliverable. So the one artefact
+ * that settles anything, the transcript of a command with its exit code, was
+ * stored as indistinguishable from a markdown report. The automatic path could
+ * therefore never create a `test`, `e2e` or `invariant`, which are exactly the
+ * three types this tool counts as measured. Six proofs out of 434 across the
+ * install, and the reason was here, not in anyone's habits.
+ *
+ * Deliberately hard to satisfy: it wants BOTH a command line and an exit code,
+ * each at the start of its own line, before it will call a file a measurement.
+ * A report that merely mentions a command stays a deliverable.
+ */
+function traceDUneCommande(chemin) {
+  try {
+    if (!existsSync(chemin)) return null
+    if (/\.(png|jpg|jpeg|webp|gif|pdf|zip|mp4|mov)$/i.test(chemin)) return null
+    // A transcript is small. Anything huge is a dump, and reading it into memory
+    // to look for two words is not worth the risk.
+    if (statSync(chemin).size > 512 * 1024) return null
+
+    const texte = readFileSync(chemin, 'utf8')
+    if (!/^[ \t]*(command|commande)[ \t]*:/im.test(texte)) return null
+
+    const codes = [...texte.matchAll(/^[ \t]*exit(?:[ \t]+code)?[ \t]*:[ \t]*(-?\d+)/gim)].map((m) =>
+      Number(m[1]),
+    )
+    if (!codes.length) return null
+
+    return { codes, passed: codes.every((c) => c === 0) }
+  } catch {
+    // Unreadable, binary, or gone since: then it is simply not a measurement.
+    return null
+  }
+}
+
 async function runHarness(harness, task, withinChapter = null) {
   const objectives = await call('GET', `/projects/${config.project}/objectives`)
 
@@ -3495,6 +3727,49 @@ async function runHarness(harness, task, withinChapter = null) {
         output: '',
       }
     }
+
+    /**
+     * A run names its chapter; the conversation names a step. When the two
+     * disagree, the number in the text used to win in silence — `withinChapter`
+     * arrived here as a parameter and was never read once.
+     *
+     * A run queued on #42 worked #41 instead, and the only trace of it was a run
+     * note reading "on #42" beside a turn note reading "on #41". Same failure as
+     * #11, one path further along: the guard below catches `abandoned` only, so a
+     * live objective walks straight past it.
+     *
+     * The chapter itself is allowed — working it is what closes it — and so is
+     * any of its descendants, which are precisely its steps. Anything else is a
+     * disagreement the operator has to see, not one the loop settles alone.
+     */
+    if (withinChapter && id !== Number(withinChapter)) {
+      const seen = new Set()
+      let up = o.parent_id
+      let isStep = false
+
+      while (up && !seen.has(up)) {
+        if (up === Number(withinChapter)) {
+          isStep = true
+          break
+        }
+        seen.add(up)
+        up = objectives.find((x) => x.id === up)?.parent_id
+      }
+
+      if (!isStep) {
+        return {
+          verdict: 'refused',
+          halts: [],
+          stop: true,
+          stopReason:
+            `the run works chapter #${withinChapter}, and the instruction names #${id}, which is ` +
+            `neither that chapter nor one of its steps. Point the run at the right chapter, or tell ` +
+            `the conversation which one it is working on — do not let the two drift apart in silence.`,
+          output: '',
+        }
+      }
+    }
+
     /**
      * An objective set aside is not worked on, even when the mission names it.
      *
@@ -3684,6 +3959,22 @@ async function runHarness(harness, task, withinChapter = null) {
               task,
               // La reprise vient AVANT les listes d'outils, qui sont variadiques.
               ...(reprise ? ['--resume', String(reprise)] : []),
+              /**
+               * Two bounds that were not being passed at all.
+               *
+               * Attempt 112 made 321 requests and read 114 M tokens in twenty-one
+               * minutes — 112 M of them cache reads, the same ~350 k context re-read
+               * on every request — and took the whole Claude session window down with
+               * it. Nothing capped it while it ran: the token guard only speaks once
+               * the pass is over.
+               *
+               * Both stay unset by default, so nothing changes for a project that
+               * says nothing. `harnessModel` lets mechanical work run somewhere
+               * cheaper than Opus; `maxTurns` stops one pass from spending the
+               * window every other pass also needs.
+               */
+              ...(config.harnessModel ? ['--model', String(config.harnessModel)] : []),
+              ...(config.maxTurns ? ['--max-turns', String(config.maxTurns)] : []),
               // One `--add-dir` per directory: this is what was missing when a
               // refusal said "may only list files in the working directory" while
               // the tool was allowed. Allowing a tool and allowing a path are two
@@ -3747,7 +4038,7 @@ async function runHarness(harness, task, withinChapter = null) {
   const diag = sessionDiagnostics(startedAt, harness)
 
   // A session stripped of its tools did not fail: it was prevented.
-  const remontables = diag.denied.filter((d) => /^[A-Za-z0-9_()*.\- ]+$/.test(d))
+  const remontables = diag.denied.filter((d) => /^[A-Za-z0-9_()*.~/\- ]+$/.test(d))
 
   if (remontables.length) {
     await call(
@@ -3897,13 +4188,27 @@ async function runHarness(harness, task, withinChapter = null) {
     verdict,
     git_after: after,
     prevented,
+    /**
+     * `prevented` keeps its strict meaning — it did not try, so no guard counts
+     * it. But the REASON was being thrown away in the one case that costs most:
+     * a pass that had already produced work and was then cut off by the
+     * harness's usage ceiling. It changed files, so `prevented` is false, so
+     * nothing was recorded, and the attempt reads as a plain `failed`.
+     *
+     * Attempt 112 was exactly that: 114 M tokens, $79, cut off by a ceiling
+     * announced for 84 minutes later — filed as a failure with no explanation.
+     * It then counted as "no progress" and stopped the run on the grounds that
+     * a great many tokens had proved nothing. The ceiling had.
+     */
     prevented_by: prevented
       ? diag.limitReset
         ? "Plafond d'usage du harnais atteint"
         : diag.denied.slice(0, 10).join(', ')
-      : timedOut
-        ? `Cut off by the ${config.sessionTimeoutMin} min timeout, it was still working`
-        : null,
+      : diag.limitReset
+        ? "Plafond d'usage du harnais atteint — la passe travaillait déjà, elle a été coupée en cours"
+        : timedOut
+          ? `Cut off by the ${config.sessionTimeoutMin} min timeout, it was still working`
+          : null,
     said: diag.lastMessage ? diag.lastMessage.slice(-6000) : null,
     tools_used: diag.tools ?? null,
     session_id: diag.sessionId ?? null,
@@ -3911,15 +4216,22 @@ async function runHarness(harness, task, withinChapter = null) {
 
   // Record what the session actually produced, as proof.
   for (const produced of produits.slice(0, 8)) {
-    const type = /\.(png|jpg)$/i.test(produced) ? 'render' : 'diff'
+    const mesure = traceDUneCommande(produced)
+    const type = /\.(png|jpg)$/i.test(produced) ? 'render' : mesure ? 'test' : 'diff'
+
     await call(
       'POST',
       `/passages/${passage.id}/evidences`,
       {
         type,
-        label: `Deliverable produced — ${basename(produced)}`,
+        label: mesure
+          ? `Command run — ${basename(produced)} (exit ${mesure.codes.join(', ')})`
+          : `Deliverable produced — ${basename(produced)}`,
         ref: produced,
-        verdict: resultats.atteint ? 'pass' : 'inconclusive',
+        // A command's own exit code decides, not whether the objective was
+        // reached: those are two different questions, and conflating them is how
+        // a failing measurement ended up filed as inconclusive.
+        verdict: mesure ? (mesure.passed ? 'pass' : 'fail') : resultats.atteint ? 'pass' : 'inconclusive',
       },
       { soft: true },
     ).catch(() => {})
@@ -4232,7 +4544,18 @@ function buildReport(turn, directive, outcome) {
       '',
       '---',
       '',
-      `**Over to you.** Rule on #${outcome.objectiveId ?? '?'} — write "@verdict: #${outcome.objectiveId} accepted" or "@verdict: #${outcome.objectiveId} rejected" — then give the next mission, complete and structured as usual, introduced by \`@claude:\` or \`@codex:\` alone on its line and citing the target objective number. Everything after that marker is passed to the harness word for word, and nothing else reaches it. Without a marker, the loop stops.`,
+      `**Over to you.** Rule on #${outcome.objectiveId ?? '?'} — write "@verdict: #${outcome.objectiveId} accepted" or "@verdict: #${outcome.objectiveId} rejected" — then give the next mission, complete and structured as usual, introduced by \`@claude:\` or \`@codex:\` alone on its line and citing the target objective number. Everything after that marker is passed to the harness word for word, and nothing else reaches it. To close the chapter instead, write \`@fini: #<number> <reason>\` — that exact marker, on its own line. Without either, the loop stops.`,
+      '',
+      /**
+       * Which harness gets the work, said with the figures rather than as a
+       * preference.
+       *
+       * The judge picks by naming a marker, and nothing had ever told it that the
+       * choice costs anything. On this install it chose Codex once, by itself,
+       * and that single pass proved an objective twenty-three attempts of Claude
+       * had not. The gap is not small enough to leave to chance.
+       */
+      `**Which harness.** Work whose criterion is settled by running something — \`orchestrator visual\`, a gate script, a count, a replay, a re-measurement — goes to \`@codex:\`. Measured here: the decisive measurement on Atlas #41 took 496 000 tokens and three minutes through Codex and closed the objective; comparable work on Blockrise ran to 398 million tokens over three Claude passes, proved nothing, and exhausted the session window both projects share. Send designing, judging and code that has to be written to \`@claude:\`; send running, measuring and verifying to \`@codex:\`.`,
     )
   }
 

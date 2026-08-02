@@ -112,8 +112,27 @@ execute anything on anyone's machine.
 | `binaries` | where to find a harness; `ORCHESTRATOR_CODEX_BIN` wins, otherwise the PATH decides |
 | `env`, `secrets` | what gets injected into the agent's environment (an empty secret overrides nothing) |
 | `deliverableDirs`, `deliverableIgnore` | narrow the deliverable sweep when the default is not enough |
+| `sessionTimeoutMin` | how long one pass may run before it is cut off. Unset means no limit — and a pass has been seen making 592 requests over 149 M tokens in one sitting. This is the only bound that actually binds: turns and requests are not the same unit |
+| `harnessModel` | model handed to the harness, when the default is not the right trade. Unset by default: mechanical work is cheaper elsewhere, but a chapter is usually not the place to save |
 
 This file holds machine paths and keys, so it is **git-ignored** — keep it local.
+
+### What an agent is allowed to do
+
+Per project and per harness, on the **What it may do** screen. It matters more
+than it looks: Claude is handed this list as `--allowed-tools`, so a session
+running with nobody at the screen cannot ask for anything — whatever is not on
+the list is refused, silently, and the pass bills for the refusal. Codex is
+launched with approvals and sandbox bypassed and is never handed the list at all;
+its rules there are documentation, not a barrier. Only the repository can bind it
+— a `pre-push` hook stops a push whatever the harness.
+
+The trap is a criterion that names a command the executing session may not run.
+`orchestrator visual` settles an objective in three minutes; without
+`Bash(node …/cli.js *)` on the list it settles nothing at all, and the objective
+cannot conclude however long it runs. Rules arrive on their own when a session
+asks for one — and you can type one in directly, which is the only way in for a
+tool nobody has been able to ask for yet.
 
 ## The loop
 
@@ -219,6 +238,9 @@ orchestrator do <harness>     a single instruction, outside the loop (--probe: n
 orchestrator agents:check     establish what is reachable on this machine
 orchestrator inventory        what the repository actually contains
 orchestrator prove <id> <key> run a declared proof and file it as evidence
+orchestrator visual <img>     measure a rendering — saturation, hues, distinct
+                              colours; --min-saturation / --min-hues /
+                              --min-colours turn a reading into a pass or fail
 orchestrator import <json>    restore an export
 orchestrator where            where the database lives
 ```

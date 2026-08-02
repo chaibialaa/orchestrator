@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { outcomeLabel, outcomeWorrying } from '../labels'
 import { api, type Run } from '../api'
 
 /**
@@ -162,8 +163,14 @@ function since(iso: string | null) {
         {{ showOptions ? 'hide' : 'how' }}
       </button>
 
-      <span v-if="last && last.status !== 'pending'" class="text-ink-600">
-        last: {{ last.status }}<template v-if="last.error"> — {{ last.error.slice(0, 60) }}</template>
+      <!-- The outcome, not the status: "done" was the same word for a chapter
+           that closed and a run that ended on a reply nobody could read. -->
+      <span
+        v-if="last && last.status !== 'pending'"
+        :class="last.outcome && outcomeWorrying.includes(last.outcome) ? 'text-halt' : 'text-ink-600'"
+      >
+        last: {{ last.outcome ? (outcomeLabel[last.outcome] ?? last.outcome) : last.status
+        }}<template v-if="last.error"> — {{ last.error.slice(0, 60) }}</template>
       </span>
     </template>
 

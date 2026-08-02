@@ -205,8 +205,12 @@ function done(n: number) {
         class="w-full text-left flex items-baseline gap-3 py-1.5 group"
         @click="step = s.n - 1"
       >
+        <!-- The tick says the machine already satisfies this, which is not the
+             same as "you have read it" — and read as the second, a ticked step
+             you have never opened looks like one you finished. -->
         <span
           class="num text-[11px] w-4"
+          :title="done(s.n) ? 'Already true on this machine' : 'Not satisfied yet'"
           :class="done(s.n) ? 'text-proof' : step === s.n - 1 ? 'text-ink-100' : 'text-ink-700'"
         >
           {{ done(s.n) ? '✓' : s.n }}
@@ -219,7 +223,12 @@ function done(n: number) {
         </span>
       </button>
 
-      <button v-if="state.projects.length" class="label mt-6 hover:text-ink-300" @click="finish">
+      <p class="text-ink-700 text-[11px] mt-5 leading-relaxed">
+        <span class="text-proof">✓</span> — already true on this machine, checked just now. It does
+        not mean you have read the step.
+      </p>
+
+      <button v-if="state.projects.length" class="label mt-4 hover:text-ink-300" @click="finish">
         skip — I know this tool
       </button>
     </nav>

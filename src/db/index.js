@@ -63,6 +63,20 @@ export function nowStamp() {
  */
 function addMissingColumns(db) {
   const additions = [
+    /**
+     * WHY a run ended, next to the fact that it did.
+     *
+     * `status` only ever said `done`, `failed` or `cancelled`, and `done` was
+     * carrying everything: a chapter closed, a gate that refused, a judge whose
+     * reply was misread, an ending left over from another objective read as an
+     * answer. On 2 August five runs out of ten ended on a defect of the tool and
+     * every one of them was recorded `done`, turn 0 or 1, no error — indis-
+     * tinguishable from a success on the screen you read the next morning.
+     *
+     * That is the difference between a loop you can leave running and one you
+     * have to sit with.
+     */
+    ['runs', 'outcome', 'TEXT'],
     // What the agent can DO, beyond executing or judging: generate images, 3D, a
     // rendering. That is what lets a mission say "for images, use this one"
     // instead of leaving it to guesswork.

@@ -73,6 +73,32 @@ function climbing(id: number) {
   return [...childrenOf(id)].reverse()
 }
 
+/**
+ * A chapter nobody has touched yet.
+ *
+ * Untouched is the overwhelming majority — fifteen of twenty-six here — and each
+ * one was drawing a full card, a hundred and twenty pixels tall, to say that
+ * nothing had happened. The chapter that was one item from closing, five
+ * attempts and $312 in, looked exactly the same as the one nobody had opened.
+ * Same card, same button, same weight.
+ */
+function untouched(root: TreeNode) {
+  return (
+    root.status === 'ready' &&
+    !root.attempts.length &&
+    !childrenOf(root.id).some((c) => c.attempts.length || c.status !== 'ready')
+  )
+}
+
+/** Where the work actually is: running first, then stuck, then merely started. */
+const RANK: Record<string, number> = { in_progress: 0, blocked: 1 }
+
+const live = computed(() =>
+  props.nodes
+    .filter((n) => !n.parent_id && n.status in RANK)
+    .sort((a, b) => RANK[a.status] - RANK[b.status] || a.priority - b.priority),
+)
+
 const NEEDS_HUMAN = ['blast_radius', 'no_provable_criterion', 'invariant_regression', 'human_request']
 
 function stateOf(o: TreeNode) {
@@ -128,8 +154,49 @@ function when(iso: string) {
        beside a long one leaves a hole the height of the difference. Columns pack.
        The order becomes down-then-across, which is what a column of chapters
        reads like anyway. -->
+  <!-- Where the work is, before the plan of where it goes. The track below is in
+       execution order, which answers "what comes next" and not "what is moving
+       right now" — and the second question is the one you open this screen
+       with. Absent when nothing is moving: an empty band is furniture. -->
+  <section v-if="live.length" class="mb-5">
+    <div class="label mb-2">Moving now — {{ live.length }}</div>
+    <div class="card divide-y divide-ink-800 border-run/30">
+      <RouterLink
+        v-for="o in live"
+        :key="o.id"
+        :to="`/o/${o.id}`"
+        class="px-4 py-2.5 flex items-baseline gap-3 hover:bg-ink-850/40 transition-colors"
+      >
+        <span
+          class="w-1.5 h-1.5 rounded-full shrink-0 self-center"
+          :class="[stateOf(o).dot, o.live_since ? 'animate-pulse' : '']"
+        />
+        <span class="text-ink-100 text-[13px] flex-1 min-w-0 truncate">{{ o.title }}</span>
+        <span class="text-[12px] shrink-0" :class="stateOf(o).color">{{ stateOf(o).word }}</span>
+        <span v-if="o.attempts.length" class="num text-ink-600 text-[11px] shrink-0">
+          {{ o.attempts.length }} attempt{{ o.attempts.length > 1 ? 's' : '' }}
+        </span>
+      </RouterLink>
+    </div>
+  </section>
+
   <div class="xl:columns-2 gap-4 [column-fill:balance]">
-  <div v-for="root in roots" :key="root.id" class="card px-5 py-4 mb-4 break-inside-avoid">
+  <template v-for="root in roots" :key="root.id">
+  <!-- Untouched keeps its PLACE in the track — the order is the plan — at the
+       height of what it actually has to say. Filtering the quiet ones into their
+       own pass grouped them all into one column, and the track stopped reading
+       in order. -->
+  <RouterLink
+    v-if="untouched(root)"
+    :to="`/o/${root.id}`"
+    class="card px-5 py-2.5 mb-2 break-inside-avoid flex items-baseline gap-3 hover:border-ink-600 transition-colors"
+  >
+    <span class="text-ink-700 text-[13px] leading-none">&#9671;</span>
+    <span class="text-ink-400 text-[13px] flex-1 min-w-0 truncate">{{ root.title }}</span>
+    <span class="label text-ink-700 shrink-0">not started</span>
+  </RouterLink>
+
+  <div v-else class="card px-5 py-4 mb-4 break-inside-avoid">
     <!-- ROOT — what was asked for -->
     <div class="relative pl-7">
       <span
@@ -271,6 +338,7 @@ function when(iso: string) {
       />
     </div>
   </div>
+  </template>
   </div>
 
   <ChapterClosure v-if="showing" :objective-id="showing" @close="showing = null" />

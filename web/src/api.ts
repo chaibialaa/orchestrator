@@ -365,6 +365,8 @@ export interface Run {
   post: boolean
   hold_between_turns: boolean
   status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
+  /** WHY it ended — `done` alone hid a misread reply behind a closed chapter. */
+  outcome: string | null
   cancel_asked: boolean
   /** Slipped in front of what was already waiting. */
   jump: boolean

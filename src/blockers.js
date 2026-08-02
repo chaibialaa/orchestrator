@@ -291,6 +291,23 @@ function nothingMeasuresIt(db) {
   const MEASURED = ['test', 'e2e', 'invariant']
   const ENOUGH_TRIES = 3
 
+  /**
+   * Count it, every time, instead of quoting it.
+   *
+   * This advice used to end on "four proofs out of 385" — written into the
+   * string on the day it was true. It was still saying 4 of 385 when the install
+   * held 417 pieces of evidence and 6 measured ones: a figure that reads as a
+   * live count and is in fact a memory. The same mistake this very blocker
+   * exists to catch, made by the sentence that catches it.
+   */
+  const tally = db
+    .prepare(
+      `SELECT (SELECT COUNT(*) FROM evidences) AS total,
+              (SELECT COUNT(*) FROM evidences
+                WHERE type IN ('test','e2e','invariant') AND verdict = 'pass') AS measured`,
+    )
+    .get()
+
   return db
     .prepare(
       `SELECT o.id, o.title, p.slug,
@@ -317,8 +334,9 @@ function nothingMeasuresIt(db) {
         'that state cannot conclude, however long it runs.',
       action:
         'Name a command in the criterion — `orchestrator prove <key>` — or state the value, count ' +
-        'or threshold something can read. Across this install, four proofs out of 385 came from a ' +
-        'command; that is the difference between a $22 chapter and a $634 one.',
+        `or threshold something can read. Across this install, ${tally.measured} proof(s) out of ` +
+        `${tally.total} came from a command; that is the difference between a $22 chapter and a ` +
+        '$634 one.',
       since: null,
     }))
 }

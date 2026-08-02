@@ -21,10 +21,63 @@ const perms = ref<Perm[]>([])
 const loading = ref(true)
 const filter = ref('')
 
+const draft = ref<{ pattern: string; harness: string }>({ pattern: '', harness: 'claude' })
+const adding = ref(false)
+const addError = ref<string | null>(null)
+
 async function load() {
   loading.value = true
   perms.value = (await http.get<Perm[]>(`/projects/${props.slug}/permissions`)).data
   loading.value = false
+  if (!harnesses.value.includes(draft.value.harness)) draft.value.harness = harnesses.value[0]
+}
+
+const harnesses = computed(() => {
+  const seen = [...new Set(perms.value.map((p) => p.harness))]
+  return seen.length ? seen : ['claude']
+})
+
+/**
+ * A rule you can type.
+ *
+ * Every other rule here arrives on its own: a session asks, and it lands in
+ * “Undecided”. That covers the ordinary case and misses the expensive one — a
+ * tool nobody has asked for, because the pass that needed it was refused without
+ * being able to say so anywhere this screen reads.
+ *
+ * `Bash(node ../orchestrator/src/cli.js *)` was missing on two projects while a
+ * criterion named it as the thing that would settle the objective. Every pass
+ * hit the wall, none of them could conclude, and the only way in was to write to
+ * the database by hand. An interface that tells you to “allow what this project
+ * needs” has to let you do it.
+ */
+async function add() {
+  const pattern = draft.value.pattern.trim()
+  if (!pattern || adding.value) return
+
+  adding.value = true
+  addError.value = null
+
+  try {
+    const created = (
+      await http.post<Perm>(`/projects/${props.slug}/permissions`, {
+        pattern,
+        harness: draft.value.harness,
+        decision: 'allow',
+      })
+    ).data
+
+    // The same pattern typed twice changes a decision; it does not add a row.
+    const known = perms.value.find((p) => p.id === created.id)
+    if (known) Object.assign(known, created)
+    else perms.value.push(created)
+
+    draft.value.pattern = ''
+  } catch (e: any) {
+    addError.value = e?.response?.data?.message ?? 'Could not write this rule.'
+  } finally {
+    adding.value = false
+  }
 }
 
 onMounted(load)
@@ -128,6 +181,38 @@ const decisionLabel: Record<Decision, string> = {
           <code class="text-ink-400">orchestrator permissions:sync</code>
         </span>
       </div>
+
+      <!-- A rule nobody asked for still has to be enterable: the tool that
+           settles a criterion is exactly the one no session ever gets to
+           request, because it is refused before it can speak. -->
+      <form class="flex items-center gap-2 mt-4 pt-3.5 border-t border-ink-800" @submit.prevent="add">
+        <label class="text-ink-500 text-[12px] shrink-0" for="perm-pattern">Add a rule</label>
+        <input
+          id="perm-pattern"
+          v-model="draft.pattern"
+          placeholder="Bash(node ../orchestrator/src/cli.js *)"
+          class="flex-1 bg-ink-900 border border-ink-700 rounded px-2.5 py-1 text-[12px] font-mono focus:outline-none focus:border-ink-600"
+        />
+        <select
+          v-model="draft.harness"
+          aria-label="Which harness this rule is for"
+          class="bg-ink-900 border border-ink-700 rounded px-2 py-1 text-[12px] focus:outline-none focus:border-ink-600"
+        >
+          <option v-for="h in harnesses" :key="h" :value="h">{{ h }}</option>
+        </select>
+        <button
+          type="submit"
+          class="chip border-proof/60 text-proof hover:bg-proof/10 disabled:opacity-40"
+          :disabled="!draft.pattern.trim() || adding"
+        >
+          {{ adding ? 'writing…' : 'allow it' }}
+        </button>
+      </form>
+      <p v-if="addError" class="text-fail text-[12px] mt-2">{{ addError }}</p>
+      <p class="text-ink-600 text-[11px] mt-2">
+        Written exactly as the harness writes it. Typing a pattern that already exists sets it to
+        allowed rather than adding it twice.
+      </p>
     </section>
 
     <section v-if="pending.length">

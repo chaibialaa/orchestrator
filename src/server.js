@@ -583,7 +583,7 @@ export function createServer() {
     if (!r) throw new Rejected('This run does not exist.', 404)
     const b = req.body ?? {}
     const fields = {}
-    for (const k of ['status', 'turn', 'note', 'error', 'ended_at']) if (k in b) fields[k] = b[k]
+    for (const k of ['status', 'turn', 'note', 'error', 'ended_at', 'outcome']) if (k in b) fields[k] = b[k]
     if ('hold_between_turns' in b) fields.hold_between_turns = b.hold_between_turns ? 1 : 0
     if (fields.status && ['done', 'failed', 'cancelled'].includes(fields.status) && !fields.ended_at) {
       fields.ended_at = nowStamp()
@@ -2405,6 +2405,55 @@ export function createServer() {
   api.get('/projects/:slug/permissions', (req, res) => {
     const p = projectBy(req.params.slug)
     res.json(db().prepare('SELECT * FROM permissions WHERE project_id = ? ORDER BY harness, pattern').all(p.id))
+  })
+
+  /**
+   * Write one rule by hand.
+   *
+   * Everything else on this screen is derived: a rule appears because a session
+   * asked for it. That holds right up to the case that costs the most — a tool
+   * nobody has asked for, because the pass that needed it was refused in silence
+   * and could only say so in its prose, which nothing reads.
+   *
+   * `Bash(node ../orchestrator/src/cli.js *)` was missing on two projects for
+   * days. A criterion named it as its own arbiter, every pass hit the wall, and
+   * this screen offered no way to enter it: the only doors were "an agent asks"
+   * and "copy another project". Adding it meant writing into the database by
+   * hand, which is not a thing an interface should make anyone do.
+   *
+   * Re-adding a pattern that already exists changes its decision instead of
+   * inserting a duplicate the UNIQUE index would refuse anyway.
+   */
+  api.post('/projects/:slug/permissions', (req, res) => {
+    const p = projectBy(req.params.slug)
+    const b = req.body ?? {}
+    const pattern = String(b.pattern ?? '').trim()
+    const harness = String(b.harness ?? '').trim()
+    const decision = b.decision ?? 'allow'
+
+    if (!pattern) {
+      throw new Rejected('A rule needs a pattern — written as the harness writes it, e.g. `Bash(node *)`.')
+    }
+    if (!harness) throw new Rejected('A rule belongs to one harness. Say which.')
+    if (!['allow', 'deny', 'ask'].includes(decision)) throw new Rejected('Unknown decision.')
+
+    const already = db()
+      .prepare('SELECT * FROM permissions WHERE project_id = ? AND harness = ? AND pattern = ?')
+      .get(p.id, harness, pattern)
+
+    if (already) {
+      db().prepare('UPDATE permissions SET decision = ? WHERE id = ?').run(decision, already.id)
+      return res.json(db().prepare('SELECT * FROM permissions WHERE id = ?').get(already.id))
+    }
+
+    const r = db()
+      .prepare(
+        `INSERT INTO permissions (project_id, harness, pattern, label, decision, note)
+         VALUES (?,?,?,?,?,?)`,
+      )
+      .run(p.id, harness, pattern, b.label?.trim() || 'Added by hand', decision, b.note?.trim() || null)
+
+    res.status(201).json(db().prepare('SELECT * FROM permissions WHERE id = ?').get(r.lastInsertRowid))
   })
 
   api.get('/projects/:slug/permissions/effective/:harness', (req, res) => {

@@ -129,3 +129,31 @@ export function formatSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} kB`
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
+
+/**
+ * Why a run ended. `status` says whether it stopped, not whether it got
+ * anywhere: five runs out of ten on 2 August ended `done` on a defect of the
+ * tool, and the screen showed the same word as for a chapter that closed.
+ */
+export const outcomeLabel: Record<string, string> = {
+  chapter_closed: 'chapter closed',
+  steps_done_awaiting_verdict: 'steps done, verdict awaited',
+  declared_done: 'closed by the judge',
+  needs_you: 'needs you',
+  judge_silent: 'the judge stopped answering',
+  judge_conversation_full: 'the conversation was full',
+  no_progress_budget: 'spent its budget without proving anything',
+  no_unity_editor: 'no Unity editor',
+  cancelled_from_screen: 'stopped from the screen',
+  read_only: 'read only, nothing ran',
+  out_of_turns: 'ran out of turns',
+}
+
+/** Outcomes that mean nobody got anywhere — worth colouring, not just printing. */
+export const outcomeWorrying = [
+  'judge_silent',
+  'judge_conversation_full',
+  'no_progress_budget',
+  'no_unity_editor',
+  'out_of_turns',
+]

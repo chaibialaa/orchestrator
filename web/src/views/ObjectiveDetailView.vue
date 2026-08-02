@@ -165,6 +165,37 @@ const totals = computed(() => {
 })
 
 const isImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
+
+/** Which thumbnails have actually arrived — a card waiting must not look like a
+ *  card whose file is missing. `error` counts as arrived: the frame then shows
+ *  what it can rather than pulsing for ever. */
+const loadedThumbs = ref(new Set<number>())
+
+/**
+ * The criterion, broken back into the items it is made of.
+ *
+ * The whole argument this tool makes is that a criterion has to decompose into
+ * things checkable one by one — otherwise a failure cannot say where it is. The
+ * screen was undoing that argument: it printed the criterion as one running
+ * paragraph, so a criterion listing eleven counts and a criterion saying "score
+ * >= 78/100" looked exactly alike. One of those cost $22 and the other $634.
+ *
+ * Split on the separators criteria actually use — line breaks and semicolons —
+ * and only when it yields more than one piece. A single-item criterion stays a
+ * sentence; turning it into a list of one would just be decoration.
+ */
+const criterionItems = computed(() => {
+  const spec = objective.value?.proof_spec?.trim()
+  if (!spec) return []
+
+  const items = spec
+    .split(/\n+/)
+    .flatMap((block) => block.split(/\s*;\s*/))
+    .map((s) => s.trim())
+    .filter(Boolean)
+
+  return items.length > 1 ? items : []
+})
 </script>
 
 <template>
@@ -173,6 +204,17 @@ const isImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
   <div v-else-if="objective" class="space-y-8 pb-16">
     <!-- WHAT WAS ASKED -->
     <header>
+      <!-- An objective page had no way back to its project: with four projects
+           and forty-odd objectives, the only route was the browser's back
+           button. -->
+      <nav v-if="objective.project" class="label mb-2 flex items-center gap-1.5" aria-label="Breadcrumb">
+        <RouterLink :to="`/p/${objective.project}`" class="hover:text-ink-300 transition-colors">
+          {{ objective.project }}
+        </RouterLink>
+        <span class="text-ink-700">›</span>
+        <span class="text-ink-600">#{{ objective.id }}</span>
+      </nav>
+
       <div class="flex items-start gap-4 flex-wrap">
         <h1 class="text-[20px] text-ink-100 flex-1 min-w-0">{{ objective.title }}</h1>
         <div class="flex gap-1.5 shrink-0">
@@ -189,8 +231,32 @@ const isImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
         class="mt-5 pl-4 border-l-2"
         :class="objective.proof_spec ? 'border-ink-600' : 'border-fail'"
       >
-        <div class="label">What must be true to conclude</div>
+        <div class="label flex items-baseline gap-3">
+          <span>What must be true to conclude</span>
+          <!-- "items", not "checkable items": the split is mechanical and cannot
+               tell a condition from a caveat. A criterion that ends by declaring
+               two things out of scope would have had them counted as gates. -->
+          <span v-if="criterionItems.length" class="num text-ink-600 text-[11px]">
+            {{ criterionItems.length }} items
+          </span>
+        </div>
+
+        <!-- Listed, not run together: a criterion that cannot be broken into
+             items is a criterion a failure cannot point inside of. Seeing it as
+             one block is the point. -->
+        <ul v-if="criterionItems.length" class="mt-2 space-y-1.5">
+          <li
+            v-for="(item, i) in criterionItems"
+            :key="i"
+            class="text-ink-100 text-[14px] leading-relaxed flex gap-2.5"
+          >
+            <span class="text-ink-700 shrink-0 select-none num text-[11px] mt-1">{{ i + 1 }}</span>
+            <span>{{ item }}</span>
+          </li>
+        </ul>
+
         <p
+          v-else
           class="mt-1.5 leading-relaxed"
           :class="objective.proof_spec ? 'text-ink-100 text-[15px]' : 'text-fail'"
         >
@@ -198,6 +264,12 @@ const isImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
             objective.proof_spec ??
             'Nobody has answered this question. No agent can take this objective until it has an answer.'
           }}
+        </p>
+
+        <!-- A criterion in one piece is not forbidden, but it is worth a word:
+             it is the shape that ran up twenty-one passes without concluding. -->
+        <p v-if="objective.proof_spec && !criterionItems.length" class="text-halt/80 text-[11px] mt-2">
+          One single item — a failure here cannot say which part of it failed.
         </p>
       </div>
     </header>
@@ -303,10 +375,11 @@ const isImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
           v-for="e in proofs"
           :key="e.id"
           class="text-left group"
+          :aria-label="`Open ${e.label}`"
           @click="openFile(e.id, e.files![0], 0)"
         >
           <div
-            class="aspect-[4/3] bg-ink-950 rounded border overflow-hidden flex items-center justify-center transition-colors"
+            class="relative aspect-[4/3] bg-ink-950 rounded border overflow-hidden flex items-center justify-center transition-colors"
             :class="
               e.verdict === 'fail'
                 ? 'border-fail/40 group-hover:border-fail'
@@ -315,14 +388,28 @@ const isImage = (f: string) => /\.(png|jpg|jpeg|webp)$/i.test(f)
                   : 'border-ink-700 group-hover:border-ink-500'
             "
           >
-            <img
-              v-if="isImage(e.files![0])"
-              :src="api.evidenceFileUrl(e.id, 0, 480)"
-              :alt="e.label"
-              class="w-full h-full object-cover"
-              loading="lazy"
-              decoding="async"
-            />
+            <!-- Lazy images used to arrive into a full-size black rectangle, and
+                 a card waiting looked exactly like a card whose file is gone. A
+                 placeholder that says "loading" costs nothing and stops the
+                 screen from lying while it waits. -->
+            <template v-if="isImage(e.files![0])">
+              <span
+                v-if="!loadedThumbs.has(e.id)"
+                class="absolute text-ink-700 text-[10px] uppercase tracking-widest animate-pulse"
+              >
+                loading
+              </span>
+              <img
+                :src="api.evidenceFileUrl(e.id, 0, 480)"
+                :alt="e.label"
+                class="w-full h-full object-cover transition-opacity duration-200"
+                :class="loadedThumbs.has(e.id) ? 'opacity-100' : 'opacity-0'"
+                loading="lazy"
+                decoding="async"
+                @load="loadedThumbs.add(e.id)"
+                @error="loadedThumbs.add(e.id)"
+              />
+            </template>
             <span v-else class="text-ink-600 text-[24px] uppercase tracking-widest">
               {{ e.files![0].split('.').pop() }}
             </span>
