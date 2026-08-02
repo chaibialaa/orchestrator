@@ -66,6 +66,8 @@ function loadConfig() {
     blastRadius: project.blastRadius ?? [],
     proofs: project.proofs ?? {},
     probes: project.probes ?? {},
+    // Which branch a pass works on. Unset = the branch you are on, unchanged.
+    branch: project.branch ?? null,
     // What to shut down after every pass, whatever its verdict. Declared here
     // because the server must never hold a command it could run on your machine.
     teardown: project.teardown ?? {},
@@ -259,6 +261,60 @@ function commitAccepted(objectiveId) {
     'Committed at the verdict, the one moment the tree is known good — proved and\njudged. Not pushed: publishing is a decision.',
   )
   if (done !== null) console.log(`    ✓ committed — #${objectiveId} accepted`)
+}
+
+/**
+ * Which branch this pass works on — YOUR choice, never assumed.
+ *
+ * Everything went into whichever branch happened to be checked out, and an
+ * accepted verdict committed straight into it. On a repository where you work on
+ * `pre-prod` that is not a policy, it is an accident waiting to be noticed.
+ *
+ * Three answers, and the default is the one that changes nothing:
+ *   nothing declared        → the branch you are on. Today's behaviour, untouched.
+ *   "orchestrator/{id}-{slug}" → one branch per objective, created if absent.
+ *   "some-branch"           → that one, whatever the objective.
+ *
+ * It REFUSES rather than forces. Switching a branch under uncommitted work is
+ * how work disappears, and no policy is worth that: a dirty tree keeps the
+ * branch it is on, and says so.
+ */
+function chooseBranch(objectiveId, title) {
+  const modele = config.branch
+  if (!modele) return { ok: true, branch: git('rev-parse', '--abbrev-ref', 'HEAD'), moved: false }
+
+  const ready = gitReady()
+  if (!ready.ok) return { ok: true, branch: null, moved: false, why: ready.why }
+
+  const slug = String(title ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+
+  const voulue = modele.replace(/\{id\}/g, String(objectiveId ?? '')).replace(/\{slug\}/g, slug)
+  const actuelle = git('rev-parse', '--abbrev-ref', 'HEAD')
+  if (actuelle === voulue) return { ok: true, branch: voulue, moved: false }
+
+  if (git('status', '--porcelain')) {
+    return {
+      ok: false,
+      branch: actuelle,
+      moved: false,
+      why:
+        `the working tree has uncommitted changes, so switching to “${voulue}” would carry them along ` +
+        `or lose them. Commit or stash them, or clear \`branch\` from .orchestrator.json.`,
+    }
+  }
+
+  const existe = git('rev-parse', '--verify', voulue) !== null
+  const fait = existe ? git('checkout', voulue) : git('checkout', '-b', voulue)
+  if (fait === null) return { ok: false, branch: actuelle, moved: false, why: `git refused to switch to “${voulue}”` }
+
+  console.log(`    ⑂ ${existe ? 'on' : 'created'} branch ${voulue}`)
+  return { ok: true, branch: voulue, moved: true }
 }
 
 /** The real state comes from git, never from an agent's report. */
@@ -3132,11 +3188,30 @@ const commands = {
        *
        * Once per run: the same wall on three turns is one decision, not three.
        */
-      if (outcome.denied?.length && !suspenduPourOutil) {
+      /**
+       * Only a refused TOOL suspends. A refused sentence does not.
+       *
+       * `denied` carries two different things: patterns the allow list could
+       * hold — `Bash(python3 *)`, `mcp__…` — and the harness's own prose when it
+       * turned something down for another reason. The first time this fired it
+       * caught "This Bash command contains multiple operations… Output
+       * redirection": a compound command the agent wrote itself, which no
+       * permission can express and nothing you allow would fix.
+       *
+       * Suspending on that would stop the run and send you to a screen looking
+       * for a pattern that does not exist. It is logged and the pass carries on.
+       */
+      const motifs = (outcome.denied ?? []).filter((d) => /^[A-Za-z0-9_()*.~/\- ]+$/.test(d))
+
+      if (outcome.denied?.length && !motifs.length) {
+        console.log(`    (refused for a reason no permission covers — not suspending)`)
+      }
+
+      if (motifs.length && !suspenduPourOutil) {
         suspenduPourOutil = true
 
-        const outils = outcome.denied.slice(0, 6).join(', ')
-        console.log(`\n  SUSPENDED — ${outcome.denied.length} tool(s) refused: ${outils}`)
+        const outils = motifs.slice(0, 6).join(', ')
+        console.log(`\n  SUSPENDED — ${motifs.length} tool(s) refused: ${outils}`)
         console.log(`  Allow them on the permissions screen, then press "carry on".\n`)
 
         await call(
@@ -4137,6 +4212,19 @@ async function runHarness(harness, task, withinChapter = null) {
    * It costs nothing when there is nothing to save, and says nothing when git is
    * absent or unconfigured — somebody else's project may have neither.
    */
+  // The branch you chose, before anything is written. Refusing here costs a
+  // pass that has not started; discovering it afterwards costs one that has.
+  const branche = chooseBranch(target.id, target.title)
+  if (!branche.ok) {
+    return {
+      verdict: 'refused',
+      halts: [],
+      stop: true,
+      stopReason: `cannot work on the branch this project asks for: ${branche.why}`,
+      output: '',
+    }
+  }
+
   const saved = restorePoint(`${harness}-${before?.slice(0, 7) ?? 'nohead'}`)
   if (saved.made) {
     console.log(

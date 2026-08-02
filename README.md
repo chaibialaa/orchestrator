@@ -121,6 +121,7 @@ execute anything on anyone's machine.
   "probes": {
     "migrations_touched": "git status --porcelain -- migrations | grep -c . || true"
   },
+  "branch": "orchestrator/{id}-{slug}",
   "teardown": {
     "rented_gpu": "…terminate the pod…",
     "editor_play_mode": "…leave play mode…"
@@ -137,6 +138,7 @@ execute anything on anyone's machine.
 | `blastRadius` | the sensitive paths: touching them demands real-world proof |
 | `proofs` | the **only** commands that may ever run — nothing else is executable |
 | `probes` | diagnostic readings, attached to the report |
+| `branch` | which branch a pass works on. Unset — the default — means the one you are on, exactly as before. A template like `orchestrator/{id}-{slug}` gives one branch per objective, created if absent; a plain name puts everything on that branch. It REFUSES rather than forces: a working tree with uncommitted changes keeps the branch it is on and says so, because switching under uncommitted work is how work disappears |
 | `teardown` | a safety net for what a pass could not close itself — see below. Runs after **every** pass whatever its verdict, with the session's own environment and secrets, and never throws |
 | `binaries` | where to find a harness; `ORCHESTRATOR_CODEX_BIN` wins, otherwise the PATH decides |
 | `env`, `secrets` | what gets injected into the agent's environment (an empty secret overrides nothing) |
