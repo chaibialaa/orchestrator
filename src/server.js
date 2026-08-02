@@ -2592,10 +2592,60 @@ export function createServer() {
     const i = db().prepare('SELECT * FROM invariants WHERE id = ?').get(req.params.id)
     if (!i) throw new Rejected('This invariant does not exist.', 404)
     const b = req.body ?? {}
+
+    /**
+     * Say whether it holds. Nothing did.
+     *
+     * The reading was stored and the row handed back, and the row has no
+     * `holds`. The caller reads `result.holds`, gets `undefined`, and prints
+     * BREACHED — so the first two real invariants on a project both reported a
+     * breach while both were comfortably inside their threshold: 1029 min under
+     * a 1440 ceiling, and zero sessions under a ceiling of zero.
+     *
+     * A check that never pronounces still produces a verdict, and it is always
+     * the alarming one.
+     */
+    const valeur = Number(b.value)
+    const seuil = Number(i.threshold)
+    const comparable = Number.isFinite(valeur) && Number.isFinite(seuil)
+
+    const holds = !comparable
+      ? null
+      : i.comparison === 'gte'
+        ? valeur >= seuil
+        : i.comparison === 'eq'
+          ? valeur === seuil
+          : i.comparison === 'lt'
+            ? valeur < seuil
+            : i.comparison === 'gt'
+              ? valeur > seuil
+              : valeur <= seuil
+
+    const status = holds === null ? 'unknown' : holds ? 'ok' : 'breached'
+
     db()
       .prepare('UPDATE invariants SET last_value=?, last_status=?, last_checked_at=? WHERE id=?')
-      .run(String(b.value ?? ''), b.status ?? 'unknown', nowStamp(), i.id)
-    res.json(db().prepare('SELECT * FROM invariants WHERE id = ?').get(i.id))
+      .run(String(b.value ?? ''), status, nowStamp(), i.id)
+
+    // A breach on an armed invariant is a halt that needs a person: production
+    // moved the wrong way, and no amount of retrying changes that.
+    let halt = null
+    if (holds === false && i.armed && i.objective_id) {
+      const r = db()
+        .prepare('INSERT INTO halts (objective_id,reason,detail,evidence_mark) VALUES (?,?,?,?)')
+        .run(
+          i.objective_id,
+          'invariant_regression',
+          `${i.name} = ${b.value} ${i.unit ?? ''} — outside its threshold (${i.comparison} ${i.threshold}).`,
+          evidenceWatermark(i.objective_id),
+        )
+      db()
+        .prepare("UPDATE objectives SET status = 'blocked' WHERE id = ? AND status NOT IN ('abandoned','proven')")
+        .run(i.objective_id)
+      halt = db().prepare('SELECT * FROM halts WHERE id = ?').get(r.lastInsertRowid)
+    }
+
+    res.json({ ...db().prepare('SELECT * FROM invariants WHERE id = ?').get(i.id), holds, halt })
   })
 
   api.get('/projects/:slug/resources', (req, res) => {
