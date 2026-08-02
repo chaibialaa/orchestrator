@@ -285,6 +285,48 @@ async function uploadToDropbox(storage, path) {
 
 const DRIVERS = { gdrive: uploadToDrive, dropbox: uploadToDropbox }
 
+async function downloadFromDrive(storage, remoteId) {
+  const token = await tokenFor(storage)
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${remoteId}?alt=media`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new Error(`Drive refused the download (${res.status})`)
+  return Buffer.from(await res.arrayBuffer())
+}
+
+async function downloadFromDropbox(storage, remoteId) {
+  const token = await tokenFor(storage)
+  const res = await fetch('https://content.dropboxapi.com/2/files/download', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      // Dropbox takes an id where it takes a path, which is what we recorded.
+      'Dropbox-API-Arg': JSON.stringify({ path: remoteId }),
+    },
+  })
+  if (!res.ok) throw new Error(`Dropbox refused the download (${res.status})`)
+  return Buffer.from(await res.arrayBuffer())
+}
+
+const READERS = { gdrive: downloadFromDrive, dropbox: downloadFromDropbox }
+
+/**
+ * The direction that did not exist.
+ *
+ * Proofs went up so a teammate could read them without cloning, and nothing
+ * ever came back down — so a second machine, or this one after a restore, had
+ * the record of five hundred proofs and not one of the files. `upload()` had no
+ * counterpart at all.
+ *
+ * Returns the bytes; deciding where they land, and whether they should, is not
+ * this function's business.
+ */
+export async function download(storage, remoteId) {
+  const reader = READERS[storage.provider]
+  if (!reader) throw new Error(`Unknown storage: ${storage.provider}`)
+  return reader(storage, remoteId)
+}
+
 export async function upload(storage, path) {
   const driver = DRIVERS[storage.provider]
   if (!driver) throw new Error(`Unknown storage: ${storage.provider}`)

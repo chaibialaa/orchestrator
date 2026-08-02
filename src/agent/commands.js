@@ -2468,6 +2468,21 @@ const commands = {
 
     /** One decision per run: the same wall met on three turns is one wall. */
     let suspenduPourOutil = false
+
+    /**
+     * When the judge last said anything at all.
+     *
+     * Its page went unreachable and the loop spent over an hour on it —
+     * reload, wait two minutes, give up, reload — never advancing a turn, never
+     * ending, never reporting. Every retry underneath IS bounded; what was
+     * missing is a bound on the whole thing, and a wall clock does not depend
+     * on understanding how the retries interleave.
+     *
+     * Twenty minutes: far past a service refusing for a while, far short of a
+     * night spent reloading a dead tab.
+     */
+    let dernierMotDuJuge = Date.now()
+    const SILENCE_MAX = 20 * 60 * 1000
     // Set when the interface asked for this run: it is what lets the loop report
     // its turn and be stopped from the screen rather than from a terminal.
     const runId = opts.run ? Number(opts.run) : null
@@ -2712,6 +2727,16 @@ const commands = {
       // `let`: a reply caught mid-pause is re-read further down, and the longer
       // look replaces it.
       let message = await readJudge(page)
+
+      if (message) {
+        dernierMotDuJuge = Date.now()
+      } else if (Date.now() - dernierMotDuJuge > SILENCE_MAX) {
+        const min = Math.round((Date.now() - dernierMotDuJuge) / 60000)
+        console.log(`\n  STOP — the judge's page has been unreachable for ${min} min.`)
+        console.log(`  Nothing was advancing; reopen the conversation and start the chapter again.\n`)
+        issue = 'judge_page_unreachable'
+        break
+      }
 
       // An UNCHANGED message is not silence: it may carry a mission that was never
       // executed. Atlas stopped on "GPT is not answering any more" while its last

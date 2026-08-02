@@ -1853,6 +1853,85 @@ export function createServer() {
    * resending everything each time would cost a lot and erase the distinction
    * between "already shared" and "new".
    */
+  /**
+   * Bring the proof files back down.
+   *
+   * The record travels in an export; the files did not travel at all. A second
+   * machine could import five hundred proofs and hold not one of them, and this
+   * one after a restore was in the same position — the upload had no
+   * counterpart.
+   *
+   * Only ever writes what is MISSING. A file already on disk is the local truth
+   * and is left alone: a "sync" that overwrites what you have is how work
+   * disappears. What it writes, it verifies against the fingerprint recorded
+   * when the file went up.
+   */
+  api.post('/storages/:id/pull', async (req, res, next) => {
+    try {
+      const st = storageWithSecrets(req.params.id)
+      if (!st.credentials) throw new Rejected('No credentials recorded for this storage.')
+
+      const { download } = await import('./storage.js')
+      const { existsSync, mkdirSync, writeFileSync } = await import('node:fs')
+      const { dirname, resolve, isAbsolute } = await import('node:path')
+      const { createHash } = await import('node:crypto')
+
+      const limite = Math.min(Number(req.body?.limite ?? 50), 200)
+
+      const lignes = db()
+        .prepare(
+          `SELECT er.remote_id, er.sha256, e.ref, p.repo_path
+             FROM evidence_remotes er
+             JOIN evidences e   ON e.id = er.evidence_id
+             JOIN objectives o  ON o.id = e.objective_id
+             JOIN projects p    ON p.id = o.project_id
+            WHERE er.storage_id = ? AND e.ref IS NOT NULL AND p.repo_path IS NOT NULL
+            ORDER BY er.id DESC`,
+        )
+        .all(st.id)
+
+      const manquants = lignes
+        .filter((l) => {
+          const chemin = isAbsolute(l.ref) ? l.ref : resolve(l.repo_path, l.ref)
+          return !existsSync(chemin)
+        })
+        .slice(0, limite)
+
+      const posed = []
+      const failed = []
+
+      for (const l of manquants) {
+        // A ref is one path. Some were written as a LIST — three filenames
+        // crammed into one field, separated by "·" — and writing that blindly
+        // put a 1.2 MB file on disk under a nonsense name. Malformed data must
+        // surface, not land in somebody's repository.
+        if (/[·,\n\r]/.test(l.ref)) {
+          failed.push({ ref: l.ref, why: 'the reference is not a single path — nothing written' })
+          continue
+        }
+
+        const chemin = isAbsolute(l.ref) ? l.ref : resolve(l.repo_path, l.ref)
+        try {
+          const bytes = await download(st, l.remote_id)
+          const empreinte = createHash('sha256').update(bytes).digest('hex')
+          if (l.sha256 && empreinte !== l.sha256) {
+            failed.push({ ref: l.ref, why: 'fingerprint does not match what went up' })
+            continue
+          }
+          mkdirSync(dirname(chemin), { recursive: true })
+          writeFileSync(chemin, bytes)
+          posed.push(l.ref)
+        } catch (e) {
+          failed.push({ ref: l.ref, why: String(e.message).slice(0, 120) })
+        }
+      }
+
+      res.json({ missing: manquants.length, written: posed.length, posed, failed })
+    } catch (e) {
+      next(e)
+    }
+  })
+
   api.post('/storages/:id/sync', async (req, res, next) => {
     try {
       const st = storageWithSecrets(req.params.id)
