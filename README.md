@@ -20,34 +20,29 @@ the report back. The judge accepts or rejects, and the loop carries on.
 
 And it **refuses to close an objective until its proof is in.**
 
-## Where it started, and where it is
+## Proof, not opinion
 
-The same city, a street in each. Nothing was declared finished in between
-without something reading it first.
-
-| At the beginning | Now |
+| | |
 |---|---|
 | ![before](docs/before.png) | ![after](docs/after.png) |
 | `saturation 0.128 · 2 hues · 48 distinct colours` | `saturation 0.216 · 8 hues · 220 distinct colours` |
 
-Those lines are not captions written afterwards. They are the output of a command
-that ran, and they are reproducible on the two files above:
+Those lines are not captions. They are what a command printed, and the objective
+they belong to closed because it printed them:
 
 ```bash
-orchestrator visual docs/before.png --min-saturation 0.20 --min-hues 7   # exit 1
-orchestrator visual docs/after.png  --min-saturation 0.20 --min-hues 7   # exit 0
+orchestrator visual docs/after.png --min-saturation 0.20 --min-hues 7   # exit 0
 ```
 
-That is the whole argument. An objective that asked for **"≥ 78/100"** — a score
-nothing computed — ran twenty-three times and never concluded: no deliverable
-could satisfy it in one go, a failure could not say which points were missing,
-and every attempt scored itself. The one that replaced it named its reader —
-`orchestrator visual`, saturation ≥ 0.20, at least 7 hues — and closed on the
-first pass that ran the command.
+A criterion names what will read it — a command, a value, a count, a threshold —
+and the exit code decides. Any command does: your tests, your linter, a script
+you wrote this morning. `orchestrator visual` is simply the one that comes with
+it, for work whose result is an image.
 
-**A criterion that names what will read it is not a stricter version of one that
-does not. It is a different kind of thing**, and the difference is written before
-any work starts.
+What a criterion may **not** be is a score to reach. A number no command computes
+cannot be satisfied by any single deliverable, cannot say which part of it failed,
+and gets announced by the session doing the work — which is recorded as
+inconclusive, so the objective never concludes however long it runs.
 
 It is meant to run unattended. The browser it drives is started, reopened and
 reloaded by the loop itself; a conversation that fills up is replaced without
@@ -142,14 +137,29 @@ execute anything on anyone's machine.
 | `blastRadius` | the sensitive paths: touching them demands real-world proof |
 | `proofs` | the **only** commands that may ever run — nothing else is executable |
 | `probes` | diagnostic readings, attached to the report |
-| `teardown` | what to shut down after **every** pass, whatever its verdict — a rented machine still billing, an editor left in play mode. Runs with the same environment and secrets the session had, and never throws: a failed teardown must not lose a pass already paid for. What it could not close is recorded as a failing proof, so it is visible rather than discovered on a bill |
+| `teardown` | a safety net for what a pass could not close itself — see below. Runs after **every** pass whatever its verdict, with the session's own environment and secrets, and never throws |
 | `binaries` | where to find a harness; `ORCHESTRATOR_CODEX_BIN` wins, otherwise the PATH decides |
 | `env`, `secrets` | what gets injected into the agent's environment (an empty secret overrides nothing) |
 | `deliverableDirs`, `deliverableIgnore` | narrow the deliverable sweep when the default is not enough |
-| `sessionTimeoutMin` | how long one pass may run before it is cut off. Unset means no limit — and a pass has been seen making 592 requests over 149 M tokens in one sitting. This is the only bound that actually binds: turns and requests are not the same unit |
+| `sessionTimeoutMin` | how long one pass may run before it is cut off. Unset means no limit. It is the only bound that binds: a turn is not a request, and neither is a token |
 | `harnessModel` | model handed to the harness, when the default is not the right trade. Unset by default: mechanical work is cheaper elsewhere, but a chapter is usually not the place to save |
 
 This file holds machine paths and keys, so it is **git-ignored** — keep it local.
+
+### Handing the keys back
+
+A session rents a machine, starts a remote job, leaves an editor in play mode.
+Nobody can write that shutdown command ahead of time — a pod's identifier does
+not exist until the pass creates it — so the order to close travels **with the
+mission**: every instruction handed to a harness ends with a request to shut down
+whatever it started and say what it shut down. The thing that opened it is the
+only thing that knows what it opened.
+
+That covers a pass that finishes. It cannot cover one that dies before reading
+the line — a crash, a usage ceiling, a timeout — which is what `teardown` in
+`.orchestrator.json` is for: it runs whatever the verdict, and what it could not
+close is filed as a failing proof, visible on a screen rather than discovered on
+a bill.
 
 ### What an agent is allowed to do
 
@@ -162,9 +172,9 @@ its rules there are documentation, not a barrier. Only the repository can bind i
 — a `pre-push` hook stops a push whatever the harness.
 
 The trap is a criterion that names a command the executing session may not run.
-`orchestrator visual` settles an objective in three minutes; without
-`Bash(node …/cli.js *)` on the list it settles nothing at all, and the objective
-cannot conclude however long it runs. Rules arrive on their own when a session
+If the criterion says `orchestrator visual` and `Bash(node …/cli.js *)` is not
+on the list, the command never runs and the objective cannot conclude, however
+long it runs. Rules arrive on their own when a session
 asks for one — and you can type one in directly, which is the only way in for a
 tool nobody has been able to ask for yet.
 

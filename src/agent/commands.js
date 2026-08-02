@@ -4011,6 +4011,28 @@ async function runHarness(harness, task, withinChapter = null) {
       .map((l) => l.slice(3).trim()),
   )
 
+  /**
+   * Hand the keys back.
+   *
+   * A session rents a machine, starts a remote job, leaves an editor in play
+   * mode — and it is the only thing in the whole system that knows what it
+   * started. Nobody can write that command ahead of time: the identifier of a
+   * pod does not exist until the pass creates it.
+   *
+   * So the order to close travels WITH the mission rather than being declared
+   * against it. Appended, never woven in: the instruction from the conversation
+   * still reaches the harness word for word, and this follows it.
+   *
+   * It cannot cover a pass that dies before reading it — a crash, a ceiling, the
+   * timeout. That is what `teardown` in `.orchestrator.json` is for, and why it
+   * runs whatever the verdict.
+   */
+  const missionAvecCles =
+    `${task}\n\n---\n` +
+    `Before you finish: anything you started during this pass that outlives it — a rented machine, ` +
+    `a remote job, a server, an editor left in play mode — shut it down, and state in one line what ` +
+    `you shut down, or that there was nothing. You are the only one who knows what you started.`
+
   let output = ''
   let crashed = false
   let timedOut = false
@@ -4028,8 +4050,8 @@ async function runHarness(harness, task, withinChapter = null) {
             // removes the sandbox. Decision taken knowingly: without it, Codex
             // cannot touch Unity without a human at the screen, so no autopilot.
             reprise
-              ? ['exec', 'resume', String(reprise), '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', task]
-              : ['exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', task],
+              ? ['exec', 'resume', String(reprise), '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', missionAvecCles]
+              : ['exec', '--skip-git-repo-check', '--dangerously-bypass-approvals-and-sandbox', missionAvecCles],
           ]
         : [
             harnessBin('claude'),
@@ -4037,7 +4059,7 @@ async function runHarness(harness, task, withinChapter = null) {
             // variadic and would swallow any text placed after them.
             [
               '-p',
-              task,
+              missionAvecCles,
               // La reprise vient AVANT les listes d'outils, qui sont variadiques.
               ...(reprise ? ['--resume', String(reprise)] : []),
               /**
