@@ -1073,6 +1073,34 @@ export function createServer() {
         'UPDATE halts SET resolved_at = ? WHERE objective_id = ? AND reason = ? AND resolved_at IS NULL',
       )
       .run(nowStamp(), req.params.id, reason)
+
+    /**
+     * Clearing halts in bulk left the objective `blocked` for good.
+     *
+     * The single-halt route recomputes the status and this one never did, so
+     * anything cleared through it stayed blocked — and the loop only ever takes
+     * `ready` or `in_progress`. The halt was gone from the screen and the
+     * objective was out of reach, with nothing saying why.
+     *
+     * Same rules as there, deliberately: an objective with no criterion is not
+     * takeable, so it goes back to `draft` rather than `ready`; and one that was
+     * SET ASIDE stays set aside — housekeeping must not undo a decision.
+     */
+    const reste = db()
+      .prepare('SELECT COUNT(*) n FROM halts WHERE objective_id = ? AND resolved_at IS NULL')
+      .get(req.params.id).n
+
+    if (!reste) {
+      const o = objectiveBy(req.params.id)
+      if (!['abandoned', 'proven'].includes(o.status)) {
+        const aDesTentatives = db()
+          .prepare('SELECT COUNT(*) n FROM passages WHERE objective_id = ?')
+          .get(o.id).n
+        const statut = !o.proof_spec?.trim() ? 'draft' : aDesTentatives ? 'in_progress' : 'ready'
+        db().prepare('UPDATE objectives SET status = ? WHERE id = ?').run(statut, o.id)
+      }
+    }
+
     res.json({ resolved: rows.map((r) => r.id) })
   })
 

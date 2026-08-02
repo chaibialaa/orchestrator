@@ -8,6 +8,7 @@ import NewProject from '../components/NewProject.vue'
 import JudgeFull from '../components/JudgeFull.vue'
 import NotConverging from '../components/NotConverging.vue'
 import HumanCheck from '../components/HumanCheck.vue'
+import ToolRefused from '../components/ToolRefused.vue'
 import { formatTokens, haltHelp, statusLabel } from '../labels'
 
 const data = ref<Dashboard | null>(null)
@@ -341,7 +342,7 @@ const segColor: Record<string, string> = {
              working by hand had that the loop took away — and the only honest
              proof for anything that has to be played rather than seen. -->
         <HumanCheck
-          v-for="h in data.open_halts.filter((x) => x.reason === 'human_request')"
+          v-for="h in data.open_halts.filter((x) => x.reason === 'human_request' && !x.detail?.startsWith('Tool refused'))"
           :key="`hc${h.id}`"
           :halt-id="h.id"
           :objective-id="h.objective_id"
@@ -349,6 +350,20 @@ const segColor: Record<string, string> = {
           :title="h.objective_title"
           :question="h.detail"
           @answered="load"
+        />
+
+        <!-- Stopped by a permission rather than by the work. Its own card because
+             the question is not "did you see it" but "may it", and the way out is
+             one screen away. -->
+        <ToolRefused
+          v-for="h in data.open_halts.filter((x) => x.reason === 'human_request' && x.detail?.startsWith('Tool refused'))"
+          :key="`tr${h.id}`"
+          :halt-id="h.id"
+          :objective-id="h.objective_id"
+          :project="h.project"
+          :title="h.objective_title"
+          :detail="h.detail"
+          @done="load"
         />
 
         <!-- The halt whose tempting answer — run it again — is the very thing

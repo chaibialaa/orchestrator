@@ -2465,6 +2465,9 @@ const commands = {
      * paper over.
      */
     let issue = null
+
+    /** One decision per run: the same wall met on three turns is one wall. */
+    let suspenduPourOutil = false
     // Set when the interface asked for this run: it is what lets the loop report
     // its turn and be stopped from the screen rather than from a terminal.
     const runId = opts.run ? Number(opts.run) : null
@@ -2657,6 +2660,47 @@ const commands = {
       const humanHalt = (chapter.halts ?? []).find(
         (h) => !h.resolved_at && stopReasons.includes(h.reason),
       )
+
+      /**
+       * A halt raised because a TOOL was refused suspends; it does not stop.
+       *
+       * Every human halt broke out of the loop, which would have turned the
+       * suspension into a death: the run would end, and saying yes on the
+       * permissions screen would leave nothing to say yes to — it would have to
+       * be queued from scratch. `hold_between_turns` is already waiting a few
+       * lines below, and waiting is the whole point here: the obstacle is one
+       * click away and the work is untouched.
+       */
+      if (humanHalt && suspenduPourOutil) {
+        console.log(`  waiting — a tool is still refused. Allow it, then press "carry on".`)
+
+        // Waiting IN PLACE. `continue` would have advanced the for-loop counter,
+        // so a suspension of a few minutes would have burned every remaining
+        // turn at eight seconds apiece and called it a run.
+        for (;;) {
+          await pause(5000)
+          const runs = (await call('GET', '/runs', null, { soft: true }).catch(() => null)) ?? []
+          const mine = runs.find((r) => r.id === runId)
+          if (!mine || mine.cancel_asked) break
+          if (!mine.hold_between_turns) break
+        }
+
+        const apres = ((await call('GET', '/runs', null, { soft: true }).catch(() => null)) ?? []).find(
+          (r) => r.id === runId,
+        )
+        if (apres?.cancel_asked) {
+          await call('PATCH', `/runs/${runId}`, { status: 'cancelled' }, { soft: true }).catch(() => {})
+          issue = 'cancelled_from_screen'
+          break
+        }
+
+        // Carried on: the halt goes with it, and the wall is allowed to be met
+        // again if it was not actually removed.
+        await call('POST', `/objectives/${chapterId}/halts/resolve`, {}, { soft: true }).catch(() => {})
+        suspenduPourOutil = false
+        console.log(`  carrying on\n`)
+      }
+
       if (humanHalt) {
         console.log(`\n  STOP — ${humanHalt.reason} on the chapter. A human decision is required.`)
         console.log(`  ${humanHalt.detail}\n`)
@@ -3015,6 +3059,52 @@ const commands = {
       console.log(
         `    → ${outcome.verdict}${outcome.denied?.length ? ` · ${outcome.denied.length} tool(s) refused` : ''} · total $${spent.toFixed(2)}`,
       )
+
+      /**
+       * A refusal is not a result. It suspends, it does not fail.
+       *
+       * A tool the session was not allowed to use was counted in the log and
+       * nowhere else: the pass carried on without it, worked degraded, produced
+       * something bancal, and the loop moved to the next turn. The verdict then
+       * describes an obstacle that has nothing to do with the work asked for —
+       * one pass spent $110 and 150 M tokens with "3 tool(s) refused" buried in
+       * its own log.
+       *
+       * Nothing new is invented here; four things that already existed are
+       * finally joined. The halt makes the browser notification fire and puts
+       * the objective under "Needs you"; `hold_between_turns` keeps the run
+       * ALIVE and waiting instead of killing it, so saying yes resumes it rather
+       * than requiring it to be queued again. The refused patterns are already
+       * reported to the permissions screen, where `allow` is one click.
+       *
+       * Once per run: the same wall on three turns is one decision, not three.
+       */
+      if (outcome.denied?.length && !suspenduPourOutil) {
+        suspenduPourOutil = true
+
+        const outils = outcome.denied.slice(0, 6).join(', ')
+        console.log(`\n  SUSPENDED — ${outcome.denied.length} tool(s) refused: ${outils}`)
+        console.log(`  Allow them on the permissions screen, then press "carry on".\n`)
+
+        await call(
+          'POST',
+          `/objectives/${chapterId}/halts`,
+          {
+            reason: 'human_request',
+            passage_id: outcome.passageId ?? null,
+            detail:
+              `Tool refused — the pass could not use: ${outils}. It is not the work that failed, ` +
+              `it is a permission missing on this project, and a verdict taken on this attempt would ` +
+              `judge the obstacle rather than the work. The run is suspended, not stopped: allow what ` +
+              `is needed under “What it may do”, then press “carry on”.`,
+          },
+          { soft: true },
+        ).catch(() => {})
+
+        if (runId) {
+          await call('PATCH', `/runs/${runId}`, { hold_between_turns: true }, { soft: true }).catch(() => {})
+        }
+      }
 
       // Saturation, said out loud. A session's context reaches the window after
       // roughly 150 requests; past that every call re-reads a full window, so the
