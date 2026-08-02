@@ -4252,6 +4252,45 @@ async function runHarness(harness, task, withinChapter = null) {
   })
   const aProduit = changed.length > 0 || produits.length > 0
 
+  /**
+   * Did this pass rewrite the thing that judges it?
+   *
+   * A criterion names its reader — a gate script, a manifest, a command. Nothing
+   * stopped the session that is being examined from editing the examination, and
+   * a chapter went from twenty-eight checks to eighty-six that way, each pass
+   * adding demands and then failing the ones it had just added. The target moved
+   * away as fast as the work approached it.
+   *
+   * Not forbidden: sometimes a gate genuinely lacks a check, and finding that out
+   * is the work. But it stops being invisible. A criterion is supposed to be
+   * fixed before the work starts, and a criterion rewritten mid-pass by the party
+   * under examination is a different thing wearing the same name.
+   */
+  const juge = [...(String(target.proof_spec ?? '').matchAll(/[\w./-]+\.(?:py|sh|mjs|js|json)\b/g))].map(
+    (m) => m[0],
+  )
+  const jugeTouche = juge.filter((f) => [...changed, ...produits].some((p) => p.endsWith(f)))
+
+  if (jugeTouche.length) {
+    console.log(`\n  ! this pass edited what judges it: ${jugeTouche.join(', ')}\n`)
+    await call(
+      'POST',
+      `/passages/${passage.id}/evidences`,
+      {
+        type: 'manual',
+        verdict: 'inconclusive',
+        label: `Rewrote its own criterion's reader — ${jugeTouche.join(', ')}`,
+        payload: {
+          files: jugeTouche,
+          note:
+            'The criterion names this file and the pass under examination changed it. ' +
+            'Legitimate when a check was genuinely missing; worth a human eye either way.',
+        },
+      },
+      { soft: true },
+    ).catch(() => {})
+  }
+
   const verdict = stop
     ? 'halted'
     : timedOut

@@ -16,6 +16,19 @@ const tree = ref<TreeNode[]>([])
 const project = ref<Project | null>(null)
 
 const judgeUrl = ref('')
+
+/**
+ * Hand the decision over, or take it back.
+ *
+ * `gate_judge` was fixed at creation. A project whose judge is the driving
+ * conversation gives its owner no way to conclude anything — a human verdict is
+ * recorded as a proof and the gate still waits for the conversation — and no way
+ * to change that without SQL.
+ */
+async function setJudge(value: string) {
+  if (!project.value || value === project.value.gate_judge) return
+  project.value = await api.updateProject(props.slug, { gate_judge: value })
+}
 const savingJudge = ref(false)
 
 /** Attach the conversation that will judge this project's work. */
@@ -205,6 +218,23 @@ function story(o: Objective): string {
         <span class="num">{{ project.judge_messages_seen }}/{{ project.judge_message_cap ?? 40 }}</span>
         exchanges
       </span>
+
+      <!-- Who closes an objective here. It could only be chosen when the project
+           was created, so taking the decision back — or handing it over — meant
+           editing the database by hand. -->
+      <label class="ml-auto flex items-center gap-2 text-[11px] text-ink-500">
+        who rules
+        <select
+          :value="project.gate_judge ?? 'gpt'"
+          class="bg-ink-950 border border-ink-800 rounded px-2 py-1 text-[11px] text-ink-300 focus:outline-none focus:border-ink-600"
+          @change="setJudge(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="gpt">the driving conversation</option>
+          <option value="human">you</option>
+          <option value="agent">a third-party agent</option>
+          <option value="self">the session itself</option>
+        </select>
+      </label>
     </section>
 
     <!-- The legend, on request. It teaches what a colour means; it does not repeat

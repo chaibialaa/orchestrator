@@ -275,14 +275,24 @@ const criterionItems = computed(() => {
     </header>
 
     <!-- THE DECISION -->
+    <!-- Shown whether or not the gate is satisfied. It only appeared once
+         everything was in place, so an objective the gate refuses offered no way
+         to say anything about it — not even "stop, this is going the wrong way",
+         which is the one thing worth hearing early. -->
     <section
-      v-if="objective.gate?.ready && objective.status !== 'proven'"
-      class="border border-proof/40 bg-proof/[0.05] rounded p-5"
+      v-if="objective.status !== 'proven' && objective.status !== 'abandoned'"
+      class="border rounded p-5"
+      :class="objective.gate?.ready ? 'border-proof/40 bg-proof/[0.05]' : 'border-ink-700 bg-ink-900/40'"
     >
       <div class="flex items-start gap-5 flex-wrap">
         <div class="flex-1 min-w-[16rem]">
-          <div class="text-proof text-[15px]">Your verdict: is the criterion met?</div>
-          <p class="text-ink-300 mt-1.5 leading-relaxed">{{ objective.gate.detail }}</p>
+          <div v-if="objective.gate?.ready" class="text-proof text-[15px]">
+            Your verdict: is the criterion met?
+          </div>
+          <div v-else class="text-ink-200 text-[15px]">
+            Not ready to conclude — but you can still stop it
+          </div>
+          <p class="text-ink-300 mt-1.5 leading-relaxed">{{ objective.gate?.detail }}</p>
 
           <!-- What to check, restated where the decision is taken. Asking for a
                verdict without saying what to look at is asking for a guess: the
@@ -316,7 +326,8 @@ const criterionItems = computed(() => {
         <div class="flex gap-2 shrink-0">
           <button
             class="px-4 py-2 rounded border border-proof text-proof bg-proof/10 hover:bg-proof/20 text-[13px] transition-colors disabled:opacity-40"
-            :disabled="busyOn"
+            :disabled="busyOn || !objective.gate?.ready"
+            :title="objective.gate?.ready ? '' : `The gate refuses: ${objective.gate?.detail ?? ''}`"
             @click="castVerdict('accept')"
           >
             {{ busyOn ? '…' : 'The criterion is met' }}
