@@ -20,34 +20,34 @@ the report back. The judge accepts or rejects, and the loop carries on.
 
 And it **refuses to close an objective until its proof is in.**
 
-## What that is worth
+## Where it started, and where it is
 
-The same shot of the same scene, twice. Nothing between them but how the
-objective was written.
+The same city, a street in each. Nothing was declared finished in between
+without something reading it first.
 
-| 23 attempts, $649 — never concluded | 3 minutes, $0 — closed |
+| At the beginning | Now |
 |---|---|
 | ![before](docs/before.png) | ![after](docs/after.png) |
-| `saturation 0.087 · 4 hues` | `saturation 0.216 · 8 hues` |
+| `saturation 0.128 · 2 hues · 48 distinct colours` | `saturation 0.216 · 8 hues · 220 distinct colours` |
 
-The first criterion asked for **"≥ 78/100"** — a score nothing computed. No
-deliverable could satisfy it in one go, a failure could not say which points were
-missing, and every attempt scored itself, which is recorded as inconclusive by
-design. So it could never conclude, and twenty-three passes went on trying.
-
-The second named its reader: **`orchestrator visual` on each shot, saturation
-≥ 0.20 and at least 7 hues.** The command ran, exit 0, and the objective closed.
-
-Both figures are reproducible on the files above:
+Those lines are not captions written afterwards. They are the output of a command
+that ran, and they are reproducible on the two files above:
 
 ```bash
 orchestrator visual docs/before.png --min-saturation 0.20 --min-hues 7   # exit 1
 orchestrator visual docs/after.png  --min-saturation 0.20 --min-hues 7   # exit 0
 ```
 
-That is the whole argument. Not that agents write better code when supervised —
-that **an objective whose criterion names what will read it costs a thirtieth of
-one that does not**, and the difference is written before any work starts.
+That is the whole argument. An objective that asked for **"≥ 78/100"** — a score
+nothing computed — ran twenty-three times and never concluded: no deliverable
+could satisfy it in one go, a failure could not say which points were missing,
+and every attempt scored itself. The one that replaced it named its reader —
+`orchestrator visual`, saturation ≥ 0.20, at least 7 hues — and closed on the
+first pass that ran the command.
+
+**A criterion that names what will read it is not a stricter version of one that
+does not. It is a different kind of thing**, and the difference is written before
+any work starts.
 
 It is meant to run unattended. The browser it drives is started, reopened and
 reloaded by the loop itself; a conversation that fills up is replaced without
@@ -126,6 +126,10 @@ execute anything on anyone's machine.
   "probes": {
     "migrations_touched": "git status --porcelain -- migrations | grep -c . || true"
   },
+  "teardown": {
+    "rented_gpu": "…terminate the pod…",
+    "editor_play_mode": "…leave play mode…"
+  },
   "binaries": { "codex": "/path/to/codex" },
   "env": { "NODE_ENV": "test" },
   "secrets": { "RUNPOD_API_KEY": "" }
@@ -138,6 +142,7 @@ execute anything on anyone's machine.
 | `blastRadius` | the sensitive paths: touching them demands real-world proof |
 | `proofs` | the **only** commands that may ever run — nothing else is executable |
 | `probes` | diagnostic readings, attached to the report |
+| `teardown` | what to shut down after **every** pass, whatever its verdict — a rented machine still billing, an editor left in play mode. Runs with the same environment and secrets the session had, and never throws: a failed teardown must not lose a pass already paid for. What it could not close is recorded as a failing proof, so it is visible rather than discovered on a bill |
 | `binaries` | where to find a harness; `ORCHESTRATOR_CODEX_BIN` wins, otherwise the PATH decides |
 | `env`, `secrets` | what gets injected into the agent's environment (an empty secret overrides nothing) |
 | `deliverableDirs`, `deliverableIgnore` | narrow the deliverable sweep when the default is not enough |

@@ -66,6 +66,9 @@ function loadConfig() {
     blastRadius: project.blastRadius ?? [],
     proofs: project.proofs ?? {},
     probes: project.probes ?? {},
+    // What to shut down after every pass, whatever its verdict. Declared here
+    // because the server must never hold a command it could run on your machine.
+    teardown: project.teardown ?? {},
     transcripts: project.transcripts ?? null,
     env: project.env ?? {},
     sessionTimeoutMin: project.sessionTimeoutMin ?? null,
@@ -3635,6 +3638,84 @@ function sessionDiagnostics(sinceMs, harness = 'claude') {
  * simply had a lower priority number.
  */
 /**
+ * Put out what the pass left burning.
+ *
+ * A session opens things that outlive it, and the tool had no notion of that at
+ * all: it closed the browser tab it used to talk to the judge, and nothing else.
+ * A rented GPU keeps billing by the hour until somebody remembers it. An editor
+ * left in play mode holds the project and quietly poisons the performance
+ * counters of the NEXT pass — which is how a measurement ends up wrong for a
+ * reason nobody can see in it.
+ *
+ * Declared per project, like `proofs` and `probes`, and for the same reason: the
+ * server never holds a command it could run on your machine. It says when, the
+ * repository says what.
+ *
+ *   "teardown": { "runpod": "…", "unity_exit_play": "…" }
+ *
+ * Two rules, both learned the hard way:
+ *
+ * It runs whatever the verdict — failed, halted, prevented, cut off by a
+ * ceiling. A leak is likeliest exactly when the pass went badly, which is when
+ * an early return would have skipped this.
+ *
+ * It never throws. A teardown that failed must not lose a pass that has already
+ * been paid for; it says so and gets out of the way.
+ */
+async function runTeardown(passageId = null) {
+  const entries = Object.entries(config.teardown ?? {})
+  if (!entries.length) return
+
+  const report = []
+
+  for (const [name, command] of entries) {
+    try {
+      const out = execFileSync('/bin/sh', ['-c', command], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60000,
+        // The same environment the session had. Without it, the one command that
+        // matters most — the one that closes a rented machine — has no key to
+        // close it with, and would fail silently every time.
+        env: { ...process.env, ...(config.secrets ?? {}), ...config.env },
+      })
+        .trim()
+        .split('\n')
+        .pop()
+
+      console.log(`    ⏻ ${name}${out ? ` — ${out.slice(0, 70)}` : ''}`)
+      report.push({ name, ok: true, said: out.slice(0, 200) })
+    } catch (e) {
+      // Said, not swallowed: something is still running and still costing.
+      const why = String(e.stderr || e.message).trim().split('\n').pop() ?? ''
+      console.log(`    ⏻ ${name} — DID NOT SHUT DOWN: ${why.slice(0, 70)}`)
+      report.push({ name, ok: false, said: why.slice(0, 200) })
+    }
+  }
+
+  const leaking = report.filter((r) => !r.ok)
+  if (leaking.length) {
+    console.log(`\n  ${leaking.length} thing(s) the pass could not shut down: ${leaking.map((r) => r.name).join(', ')}\n`)
+  }
+
+  if (passageId) {
+    await call(
+      'POST',
+      `/passages/${passageId}/evidences`,
+      {
+        type: leaking.length ? 'manual' : 'diff',
+        label: leaking.length
+          ? `Teardown incomplete — still up: ${leaking.map((r) => r.name).join(', ')}`
+          : `Teardown — ${report.length} service(s) shut down`,
+        verdict: leaking.length ? 'fail' : 'inconclusive',
+        payload: { teardown: report },
+      },
+      { soft: true },
+    ).catch(() => {})
+  }
+}
+
+/**
  * Should this objective's next attempt be measured by Codex rather than asked
  * of Claude again?
  *
@@ -4048,6 +4129,8 @@ async function runHarness(harness, task, withinChapter = null) {
       { soft: true },
     ).catch(() => {})
   }
+
+  await runTeardown(passage.id)
 
   const halts = findings.filter((f) => f.severity === 'halt')
   let stop = false
