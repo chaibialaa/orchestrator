@@ -173,10 +173,88 @@ const segColor: Record<string, string> = {
       </dl>
     </header>
 
+    <!-- Today, because every other figure here counts from the beginning of the
+         install and answers a question nobody asks in the morning. -->
+    <p v-if="data.today" class="text-[12px] -mt-4 flex items-baseline gap-5 flex-wrap">
+      <span class="label">Today</span>
+      <span :class="data.today.passages ? 'text-ink-300' : 'text-ink-600'">
+        <span class="num">{{ data.today.passages }}</span> attempt{{ data.today.passages === 1 ? '' : 's' }}
+      </span>
+      <span :class="data.today.cost_usd ? 'text-ink-300' : 'text-ink-600'">
+        <span class="num">${{ data.today.cost_usd.toFixed(0) }}</span> spent
+      </span>
+      <span :class="data.today.measured ? 'text-proof' : 'text-ink-600'">
+        <span class="num">{{ data.today.measured }}</span> settled by a command
+      </span>
+      <span :class="data.today.proven ? 'text-proof' : 'text-ink-600'">
+        <span class="num">{{ data.today.proven }}</span> objective{{ data.today.proven === 1 ? '' : 's' }} closed
+      </span>
+    </p>
+
     <p v-if="!needsYou" class="text-ink-500 -mt-4">
       <span class="label">Needs you</span>
       — nothing. The loop handles what it can handle on its own.
     </p>
+
+    <!-- The four things this tool manages come before the conditions that
+         might get in their way. They were below a wall of prose: eight cards
+         of explanation, six of them describing conditions that will never
+         change, and you had to scroll past all of it to reach the subject. -->
+    <!-- ═══ WHERE THE PROJECTS STAND ═══ -->
+    <section>
+      <div class="flex items-baseline gap-3 mb-3">
+        <h2 class="label">Projects — {{ data.projects.length }}</h2>
+        <NewProject class="ml-auto" @created="load" />
+      </div>
+      <!-- Cards on a grid rather than a stack of full-width rows. A project is a
+           thing you compare against other projects; laid out one per line at 1400px
+           you compare a name on the left with a repository path a screen away. -->
+      <div class="grid gap-3 grid-cols-1 md:grid-cols-2 2xl:grid-cols-3">
+        <RouterLink
+          v-for="p in data.projects"
+          :key="p.slug"
+          :to="`/p/${p.slug}`"
+          class="card p-4 block hover:border-ink-600 transition-colors"
+        >
+          <div class="flex items-baseline gap-3 flex-wrap">
+            <span class="text-ink-100 text-[14px]">{{ p.name }}</span>
+            <span class="num text-ink-400 text-[12px]">
+              <span class="text-proof">{{ p.proven }}</span
+              >/{{ p.total_objectives }}
+            </span>
+            <span v-if="p.awaiting_human" class="text-halt text-[12px]">
+              {{ p.awaiting_human }} waiting on you
+            </span>
+            <span
+              v-if="p.invariants.breached"
+              class="text-fail text-[12px]"
+              title="A measurement taken on the live site is out of bounds"
+            >
+              {{ p.invariants.breached }} out of bounds
+            </span>
+            <span class="ml-auto text-ink-600 text-[11px] shrink-0">{{ ago(p.last_activity) }}</span>
+          </div>
+
+          <!-- The bar IS the project: what is proven, what is moving, what is stuck. -->
+          <div class="h-1.5 bg-ink-800 rounded mt-3 overflow-hidden flex">
+            <div
+              v-for="seg in barSegments(p)"
+              :key="seg.status"
+              :class="segColor[seg.status]"
+              :style="{ width: `${seg.pct}%` }"
+              :title="`${seg.n} ${statusLabel[seg.status]}`"
+            />
+          </div>
+
+          <div class="flex items-center gap-4 mt-2.5 text-[11px] text-ink-600 flex-wrap">
+            <span class="num">{{ p.passages }} attempts</span>
+            <span v-if="p.tokens" class="num">{{ formatTokens(p.tokens) }} tokens</span>
+            <span v-if="p.cost_usd" class="num">${{ p.cost_usd.toFixed(2) }}</span>
+            <code v-if="p.repo_path" class="num w-full truncate text-ink-700">{{ p.repo_path }}</code>
+          </div>
+        </RouterLink>
+      </div>
+    </section>
 
     <!-- Two columns because these are two different questions, and stacking them
          full-width made the second look like more of the first. On the left, what
@@ -325,60 +403,5 @@ const segColor: Record<string, string> = {
 
     <ActivityFeed compact />
 
-    <!-- ═══ WHERE THE PROJECTS STAND ═══ -->
-    <section>
-      <div class="flex items-baseline gap-3 mb-3">
-        <h2 class="label">Projects — {{ data.projects.length }}</h2>
-        <NewProject class="ml-auto" @created="load" />
-      </div>
-      <!-- Cards on a grid rather than a stack of full-width rows. A project is a
-           thing you compare against other projects; laid out one per line at 1400px
-           you compare a name on the left with a repository path a screen away. -->
-      <div class="grid gap-3 grid-cols-1 md:grid-cols-2 2xl:grid-cols-3">
-        <RouterLink
-          v-for="p in data.projects"
-          :key="p.slug"
-          :to="`/p/${p.slug}`"
-          class="card p-4 block hover:border-ink-600 transition-colors"
-        >
-          <div class="flex items-baseline gap-3 flex-wrap">
-            <span class="text-ink-100 text-[14px]">{{ p.name }}</span>
-            <span class="num text-ink-400 text-[12px]">
-              <span class="text-proof">{{ p.proven }}</span
-              >/{{ p.total_objectives }}
-            </span>
-            <span v-if="p.awaiting_human" class="text-halt text-[12px]">
-              {{ p.awaiting_human }} waiting on you
-            </span>
-            <span
-              v-if="p.invariants.breached"
-              class="text-fail text-[12px]"
-              title="A measurement taken on the live site is out of bounds"
-            >
-              {{ p.invariants.breached }} out of bounds
-            </span>
-            <span class="ml-auto text-ink-600 text-[11px] shrink-0">{{ ago(p.last_activity) }}</span>
-          </div>
-
-          <!-- The bar IS the project: what is proven, what is moving, what is stuck. -->
-          <div class="h-1.5 bg-ink-800 rounded mt-3 overflow-hidden flex">
-            <div
-              v-for="seg in barSegments(p)"
-              :key="seg.status"
-              :class="segColor[seg.status]"
-              :style="{ width: `${seg.pct}%` }"
-              :title="`${seg.n} ${statusLabel[seg.status]}`"
-            />
-          </div>
-
-          <div class="flex items-center gap-4 mt-2.5 text-[11px] text-ink-600 flex-wrap">
-            <span class="num">{{ p.passages }} attempts</span>
-            <span v-if="p.tokens" class="num">{{ formatTokens(p.tokens) }} tokens</span>
-            <span v-if="p.cost_usd" class="num">${{ p.cost_usd.toFixed(2) }}</span>
-            <code v-if="p.repo_path" class="num w-full truncate text-ink-700">{{ p.repo_path }}</code>
-          </div>
-        </RouterLink>
-      </div>
-    </section>
   </div>
 </template>

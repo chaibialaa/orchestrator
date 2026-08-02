@@ -1287,6 +1287,27 @@ export function createServer() {
         requests: rollup.reduce((n, p) => n + p.requests, 0),
         cost_usd: rollup.reduce((n, p) => n + p.cost_usd, 0),
       },
+
+      /**
+       * The day, beside the running total.
+       *
+       * Every figure on this screen counted from the beginning of the install,
+       * so $1899 answered "what has this ever cost" and never "what did last
+       * night cost" — which is the one a person actually opens the page with. A
+       * total that only ever grows says nothing about whether anything moved.
+       */
+      today: db()
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM passages WHERE started_at >= date('now'))                    AS passages,
+             (SELECT COALESCE(SUM(cost_usd),0) FROM passages WHERE started_at >= date('now'))    AS cost_usd,
+             (SELECT COALESCE(SUM(tokens),0) FROM passages WHERE started_at >= date('now'))      AS tokens,
+             (SELECT COUNT(*) FROM objectives WHERE proven_at >= date('now'))                    AS proven,
+             (SELECT COUNT(*) FROM evidences
+               WHERE created_at >= date('now') AND verdict = 'pass'
+                 AND type IN ('test','e2e','invariant'))                                         AS measured`,
+        )
+        .get(),
       halts_by_reason: db()
         .prepare(
           `SELECT reason, COUNT(*) n, SUM(CASE WHEN resolved_at IS NULL THEN 1 ELSE 0 END) open

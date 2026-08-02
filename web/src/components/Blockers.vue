@@ -41,6 +41,17 @@ const warnings = computed(() => list.value.filter((b) => b.severity === 'warning
  * once per project — the reader had to compare four blocks to notice they were
  * identical. The condition is the thing; which projects have it is a detail of it.
  */
+/**
+ * The watch list, folded away until asked for.
+ *
+ * Six of the eight conditions here describe something that will never change —
+ * a harness that is never handed its rules, two MCP versions side by side — and
+ * they were the tallest thing on the page, pushing the four projects the tool
+ * manages below the fold. What blocks a pass stays open; what is merely worth
+ * knowing waits to be asked.
+ */
+const showWatch = ref(false)
+
 const groups = computed(() => {
   const out = new Map<string, { key: string; severity: string; title: string; detail: string; action: string; items: Blocker[] }>()
   for (const b of [...blocking.value, ...warnings.value]) {
@@ -78,7 +89,13 @@ function ago(iso: string | null) {
       <span v-if="blocking.length" class="label text-fail">
         {{ blocking.length }} blocking
       </span>
-      <span v-if="warnings.length" class="label text-ink-500">{{ warnings.length }} to watch</span>
+      <button
+        v-if="warnings.length"
+        class="label text-ink-500 hover:text-ink-300 transition-colors"
+        @click="showWatch = !showWatch"
+      >
+        {{ warnings.length }} to watch {{ showWatch ? '\u2303' : '\u2304' }}
+      </button>
     </header>
 
     <p class="text-ink-500 mt-1.5 text-[12px] max-w-3xl">
@@ -89,7 +106,7 @@ function ago(iso: string | null) {
 
     <ul class="mt-4 space-y-2.5" :class="columns > 1 ? 'lg:columns-2 lg:space-y-0 gap-2.5' : ''">
       <li
-        v-for="g in groups"
+        v-for="g in groups.filter((x) => x.severity === 'blocking' || showWatch)"
         :key="g.key"
         class="border rounded p-3 break-inside-avoid mb-2.5"
         :class="g.severity === 'blocking' ? 'border-fail/40 bg-fail/5' : 'border-ink-800'"

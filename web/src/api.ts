@@ -457,6 +457,9 @@ export interface ProjectRollup {
 
 export interface Dashboard {
   projects: ProjectRollup[]
+  /** The day, beside the running total: a figure that only grows says nothing
+   *  about whether anything moved last night. */
+  today: { passages: number; cost_usd: number; tokens: number; proven: number; measured: number }
   totals: {
     projects: number
     objectives: number
