@@ -10,7 +10,7 @@ import { evaluateGate, canStart, HUMAN_HALTS } from './gate.js'
 import { encrypt, decrypt, keyHint } from './crypto.js'
 import { upload, checkStorage, createDriveFolder } from './storage.js'
 import { blockersFor } from './blockers.js'
-import { attention, attentionFor, nextStep, nextStepForObjective } from './attention.js'
+import { attention, attentionFor, nextStep, nextStepForObjective, choices } from './attention.js'
 import { charts } from './charts.js'
 
 /**
@@ -2597,7 +2597,10 @@ export function createServer() {
   api.get('/objectives/:id/next', (req, res) => {
     const step = nextStepForObjective(Number(req.params.id))
     if (!step) throw new Rejected('This objective does not exist.', 404)
-    res.json(step)
+    // The same question always answered the same way: what can be done, and what
+    // each one costs. The analysis's branches were the only options on any
+    // screen, and they were the only thing anybody found readable.
+    res.json({ ...step, choices: choices(Number(req.params.id)) })
   })
 
   api.get('/objectives/:id/recalibration', (req, res) => {

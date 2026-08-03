@@ -292,6 +292,8 @@ export interface ObjectiveStep {
   from?: 'analysis' | 'decision' | 'halt' | 'running'
   /** The halt that must be cleared before anything else, when there is one. */
   halt?: number
+  /** What can be done right now, ranked, each with what it costs. */
+  choices?: { kind: string; label: string; price: string; href: string }[]
   /** Branches to choose between — two or three, each with its price. */
   options?: { label: string; gives_up: string; then: string }[]
   /** The full reasoning, folded away: there to be checked, not to be distilled. */

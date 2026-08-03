@@ -347,7 +347,7 @@ export function nextStep(slug) {
  * It says the same thing every time in the same order: what state this is in,
  * why, and the ONE thing to do about it.
  */
-export function nextStepForObjective(id) {
+export function nextStepForObjective(id, withChoices = true) {
   const db = base()
   const o = db
     .prepare(
@@ -589,4 +589,154 @@ export function nextStepForObjective(id) {
     why: gate.detail ?? '',
     action: known?.action ?? 'Look at what it has produced, then run it again or change what would prove it.',
   }
+}
+
+/**
+ * What can be DONE right now, as things to choose between.
+ *
+ * The screens stated facts — what is in the way, what waits on you, how far each
+ * chapter is — all true, none of them an action. The one place that spoke in
+ * options was an AI analysis, and only when it happened to produce them; that
+ * form was the only one anybody found readable, and it was a special case.
+ *
+ * So it becomes the form. Every state answers the same question with the same
+ * shape: two to four things you could do, each with what it costs you. Ranked,
+ * because ranking them is the judgement the tool already makes everywhere else,
+ * and a reader should not have to redo it.
+ *
+ * `price` is not decoration. An option with no cost is a preference, and a list
+ * of preferences is what a screen full of buttons already was.
+ */
+export function choices(objectiveId) {
+  const db = base()
+  const o = db
+    .prepare(
+      `SELECT o.*, p.slug, p.name project_name, p.gate_judge FROM objectives o
+       JOIN projects p ON p.id = o.project_id WHERE o.id = ?`,
+    )
+    .get(objectiveId)
+  if (!o) return []
+
+  const step = nextStepForObjective(objectiveId)
+  const out = []
+
+  // Whatever the state, these two are almost always available and almost always
+  // wrong to hide: a criterion can be rewritten, and work can be set aside.
+  const rewrite = {
+    kind: 'criterion',
+    label: 'Change what would prove it',
+    price: 'The attempts already made were measured against the old wording; they stop counting.',
+    href: `/p/${o.slug}/plan`,
+  }
+  const drop = {
+    kind: 'abandon',
+    label: 'Set it aside',
+    price: 'It stops being counted and nothing runs on it. What it proved is kept.',
+    href: `/o/${o.id}`,
+  }
+
+  if (step?.from === 'running') {
+    return [
+      { kind: 'wait', label: 'Let it work', price: 'Nothing to do. It reports when the turn ends.', href: `/o/${o.id}` },
+      { kind: 'stop', label: 'Stop it', price: 'It finishes the turn it is in; that turn is paid for either way.', href: `/o/${o.id}` },
+    ]
+  }
+
+  if (step?.from === 'halt') {
+    out.push({
+      kind: 'clear',
+      label: 'Clear the halt',
+      price: 'You are saying it is dealt with. Nothing runs until you start a pass.',
+      href: `/o/${o.id}`,
+    })
+    out.push(rewrite, drop)
+    return out
+  }
+
+  if (step?.tone === 'blocked') {
+    out.push({
+      kind: 'unblock',
+      label: step.headline,
+      price: 'Until this is cleared, every pass on this project bills and produces nothing.',
+      href: `/p/${o.slug}`,
+    })
+    return out
+  }
+
+  const gate = evaluateGate(objectiveId)
+
+  if (gate.ok) {
+    out.push({
+      kind: 'accept',
+      label: 'Conclude it',
+      price: 'You are accepting what came out. The chapter closes on it.',
+      href: `/o/${o.id}`,
+    })
+    out.push({
+      kind: 'reject',
+      label: 'Refuse it',
+      price: 'It goes back to work, and the next pass has to produce something new.',
+      href: `/o/${o.id}`,
+    })
+    return out
+  }
+
+  if (!o.proof_spec?.trim()) {
+    out.push({
+      kind: 'criterion',
+      label: 'Write what would prove it',
+      price: 'Until it exists, no agent can take this — whatever its priority.',
+      href: `/p/${o.slug}/plan`,
+    })
+    out.push({
+      kind: 'ask',
+      label: 'Ask what it should say',
+      price: 'A short session, and it may answer that nothing here can measure this.',
+      href: `/o/${o.id}`,
+    })
+    out.push(drop)
+    return out
+  }
+
+  /**
+   * Past three attempts, "start a pass" stops being a neutral offer, and its
+   * price says so — with the count rather than with an adjective. This sentence
+   * used to be a paragraph of its own further down the page; it belongs to the
+   * option it qualifies.
+   */
+  const tried = db
+    .prepare(
+      `SELECT COUNT(*) n,
+              (SELECT COUNT(*) FROM evidences WHERE objective_id = ? AND verdict = 'pass') settled
+       FROM passages WHERE objective_id = ?`,
+    )
+    .get(objectiveId, objectiveId)
+
+  const start = canStart(objectiveId)
+  if (start.ok) {
+    out.push({
+      kind: 'run',
+      label: 'Start a pass',
+      price:
+        tried.n >= 3
+          ? `A session, billed — and it repeats the ${tried.n} already made (${tried.settled} settled by ` +
+            'a verdict) unless what you ask for changes.'
+          : 'A session, billed. What you tell it is the whole of what it will try.',
+      href: `/o/${o.id}`,
+    })
+  }
+
+  // Asking what to do belongs wherever things are not converging, not only where
+  // a criterion is missing: three attempts in, it is often the useful one.
+  if (tried.n >= 3) {
+    out.push({
+      kind: 'ask',
+      label: 'Ask what to do about it',
+      price: 'A short session that reads its history. It may answer that nothing here can measure this.',
+      href: `/o/${o.id}`,
+    })
+  }
+
+  out.push(rewrite, drop)
+  return out
 }

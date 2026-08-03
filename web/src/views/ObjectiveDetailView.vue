@@ -46,6 +46,9 @@ const chosen = ref<number | null>(null)
 const prefill = ref('')
 const showWhy = ref(false)
 
+/** Which option is being taken. Only its control is shown. */
+const doing = ref<string | null>(null)
+
 /** Lifting a halt is an act, and it belongs on the halt. */
 const clearing = ref<number | null>(null)
 async function clear(id: number) {
@@ -399,6 +402,85 @@ const criterionItems = computed(() => {
         class="text-ink-500 text-[12px] mt-2 leading-relaxed max-w-[80ch] whitespace-pre-line border-l-2 border-ink-800 pl-3"
       >{{ step.reasoning }}</p>
 
+      <!-- What can be done, always, in the same shape.
+           Everything else on this page states a fact; this is the only thing that
+           says what to do, so it is the only thing shown until one is picked.
+           Picking reveals that option's control and nothing else — the page used
+           to show the run control, the verdict buttons, the decision box and the
+           ask button all at once, and asked the reader to work out which. -->
+      <div
+        v-if="step.choices?.length && !step.options?.length"
+        class="mt-4 grid gap-2.5"
+        :class="step.choices.length > 1 ? 'md:grid-cols-2' : ''"
+      >
+        <button
+          v-for="c in step.choices"
+          :key="c.kind"
+          class="text-left border rounded p-3.5 transition-colors"
+          :class="doing === c.kind ? 'border-run bg-run/10' : 'border-ink-700 hover:border-ink-600'"
+          @click="doing = doing === c.kind ? null : c.kind"
+        >
+          <div class="flex items-baseline gap-2">
+            <span
+              class="w-3 h-3 rounded-full border shrink-0 self-center"
+              :class="doing === c.kind ? 'border-run bg-run' : 'border-ink-600'"
+            />
+            <span class="text-ink-100 text-[13px]">{{ c.label }}</span>
+          </div>
+          <p class="text-ink-400 text-[12px] mt-1.5 leading-relaxed">
+            <span class="label text-ink-600">it costs</span> {{ c.price }}
+          </p>
+        </button>
+      </div>
+
+      <!-- The control for the one that was picked, and only that one. -->
+      <div v-if="doing" class="mt-4 pt-4 border-t border-run/20">
+        <RunControl
+          v-if="doing === 'run' && objective.project"
+          :slug="objective.project"
+          :objective-id="objective.id"
+          :proof-spec="objective.proof_spec"
+          :instruction="step.from === 'decision' ? (step.why ?? '') : ''"
+          label="Start it"
+        />
+        <div v-else-if="doing === 'accept' || doing === 'reject'" class="flex items-center gap-2">
+          <button
+            class="chip"
+            :class="doing === 'accept' ? 'border-proof text-proof bg-proof/10' : 'border-fail/60 text-fail'"
+            :disabled="busyOn"
+            @click="castVerdict(doing === 'accept' ? 'accept' : 'reject')"
+          >
+            {{ busyOn ? '…' : doing === 'accept' ? 'Yes — the criterion is met' : 'Yes — refuse it' }}
+          </button>
+        </div>
+        <div v-else-if="doing === 'clear' && step.halt" class="flex items-center gap-2">
+          <button class="chip border-halt/60 text-halt hover:bg-halt/10" :disabled="clearing === step.halt" @click="clear(step.halt)">
+            {{ clearing === step.halt ? '…' : 'Yes — clear it' }}
+          </button>
+        </div>
+        <AskWhatToDo
+          v-else-if="doing === 'ask'"
+          :objective-id="objective.id"
+          :current="objective.proof_spec"
+          @applied="load"
+        />
+        <div v-else-if="doing === 'abandon'" class="flex items-center gap-2">
+          <button class="chip border-fail/60 text-fail hover:bg-fail/10" @click="setAside">
+            Yes — stop counting it
+          </button>
+        </div>
+        <RouterLink
+          v-else-if="doing === 'criterion' && objective.project"
+          :to="`/p/${objective.project}/plan`"
+          class="chip border-ink-600 text-ink-300 hover:border-run hover:text-run"
+        >
+          Open the plan and rewrite it ▸
+        </RouterLink>
+        <RouterLink v-else-if="doing === 'unblock' && objective.project" :to="`/p/${objective.project}`" class="chip border-fail/60 text-fail">
+          See what is in the way ▸
+        </RouterLink>
+      </div>
+
       <!-- The branches, as things to press rather than a paragraph to distil. -->
       <div
         v-if="step.options?.length"
@@ -433,7 +515,7 @@ const criterionItems = computed(() => {
            down the page is the same defect as having no control at all: they read
            an instruction and look for what to press. -->
       <div
-        v-if="['decision', 'running'].includes(step.from ?? '') && objective.project"
+        v-if="step.from === 'running' && objective.project"
         class="mt-4 pt-4 border-t border-run/20"
       >
         <RunControl
@@ -443,10 +525,6 @@ const criterionItems = computed(() => {
           :instruction="step.why ?? ''"
           label="Start a pass with this decision"
         />
-        <p v-if="step.from === 'decision'" class="text-ink-500 text-[11px] mt-2">
-          Your decision is already written into what it will be told — open “what to tell it” to
-          read or change it before you start.
-        </p>
       </div>
 
       <!-- The instruction named a decision; this is where it is taken. Without
@@ -521,7 +599,7 @@ const criterionItems = computed(() => {
             Accepting means you have looked and you are satisfied, not that something measured it.
           </p>
         </div>
-        <div class="flex gap-2 shrink-0">
+        <div v-if="!step?.choices?.length" class="flex gap-2 shrink-0">
           <button
             class="px-4 py-2 rounded border border-proof text-proof bg-proof/10 hover:bg-proof/20 text-[13px] transition-colors disabled:opacity-40"
             :disabled="busyOn || !objective.gate?.ready"
@@ -547,59 +625,6 @@ const criterionItems = computed(() => {
            block, so it appeared only while a halt was open. In every other
            state, including the commonest one, this page could not start
            anything. -->
-      <div class="mt-5 pt-4 border-t border-ink-800">
-        <div class="flex items-baseline gap-4 flex-wrap">
-          <span class="label text-ink-500">or work on it</span>
-          <RunControl
-            v-if="objective.project"
-            :slug="objective.project"
-            :objective-id="objective.id"
-            :proof-spec="objective.proof_spec"
-            :label="passages.length ? 'Run it again' : 'Run it'"
-          />
-          <RouterLink
-            :to="`/p/${objective.project}/plan`"
-            class="chip border-ink-600 text-ink-300 hover:border-run hover:text-run transition-colors"
-          >
-            change what would prove it ▸
-          </RouterLink>
-
-          <!-- Two clicks rather than a confirm(): a browser dialog blocks
-               everything, and this is not urgent enough to freeze a page for. -->
-          <!-- No condition needed: this whole card only exists while the
-               objective is neither proven nor set aside. -->
-          <button
-            class="chip ml-auto transition-colors"
-            :class="dropping ? 'border-fail text-fail' : 'border-ink-700 text-ink-500 hover:border-fail hover:text-fail'"
-            @click="dropping ? setAside() : (dropping = true)"
-          >
-            {{ dropping ? 'yes — stop counting it' : 'set it aside' }}
-          </button>
-        </div>
-
-        <!-- When the answer is not "run it again", ask what it should be. The
-             request writes itself from the record; the reply proposes. -->
-        <AskWhatToDo
-          class="mt-3"
-          :objective-id="objective.id"
-          :current="objective.proof_spec"
-          @applied="load"
-        />
-
-        <!--
-          Three attempts in, "run it again" stops being neutral advice.
-          The page showed the tally and left the conclusion to the reader, so the
-          only visible move was the one that repeats what already happened: ten
-          passes and $531 went that way on this very chapter, against a criterion
-          that had been over-constrained since its first day. The figures are
-          already on the page; what was missing was the sentence they make.
-        -->
-        <p v-if="passages.length >= 3" class="text-ink-500 text-[12px] mt-3 max-w-[80ch] leading-relaxed">
-          {{ passages.length }} attempts so far, {{ tally.pass }} of them settled by something that
-          returned a verdict. Another run repeats those unless what you ask for changes — the
-          instruction, or the criterion itself.
-        </p>
-      </div>
     </section>
 
     <section v-if="objective.status === 'proven'" class="flex items-center gap-3 text-proof">
