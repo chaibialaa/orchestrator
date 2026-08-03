@@ -248,6 +248,43 @@ export interface Activity {
 }
 
 /** What is in the way, derived from traces — never typed. Every entry names its action. */
+/** The series behind the charts — counted from the same rows as everything else. */
+export interface Charts {
+  tools: { name: string; n: number; other?: boolean }[]
+  /** Tool use was not recorded from day one; the charts say so rather than imply otherwise. */
+  tools_from: { passages: number; of: number }
+  spend: { day: string; total: number; by: Record<string, number> }[]
+  harnesses: string[]
+  chapters: {
+    id: number
+    title: string
+    status: string
+    steps: number
+    done: number
+    pct: number
+    attempts: number
+    cost_usd: number
+  }[]
+  proof: { measured: number; accepted: number; failing: number; inconclusive: number }
+}
+
+/**
+ * One item waiting on a person, whatever kind of waiting it is. Every screen
+ * reads this rather than assembling its own answer — they used to disagree.
+ */
+export interface Attention {
+  kind: 'conclude' | 'verdict' | 'halt' | 'run_stopped' | 'invariant_breached' | 'blocking_condition'
+  /** `decide` is a judgement only you can make; `fix` is an errand. */
+  severity: 'decide' | 'fix'
+  project: string | null
+  objective: number | null
+  title: string
+  why: string
+  action: string
+  href: string
+  since: string | null
+}
+
 export interface Blocker {
   kind: string
   /** The same title without the project's name, so N projects share one card. */
@@ -255,6 +292,12 @@ export interface Blocker {
   severity: 'blocking' | 'warning'
   project: string | null
   objective: number | null
+  /** The objectives this condition is holding up, named rather than left to infer. */
+  stops?: { id: number; title: string; status: string }[]
+  /** Where the fix is done, when the tool itself is where it is done. */
+  link?: { to: string; label: string } | null
+  /** Projects whose allow list could be copied over, most equipped first. */
+  copy_from?: { slug: string; name: string; n: number }[]
   title: string
   detail: string
   action: string
@@ -622,7 +665,14 @@ export const api = {
       .get<{ live: Activity[]; feed: Activity[] }>(`/activity${slug ? `?project=${slug}` : ''}`)
       .then((r) => r.data),
 
-  blockers: () => http.get<Blocker[]>('/blockers').then((r) => r.data),
+  charts: (project?: string) =>
+    http.get<Charts>('/charts', { params: { project } }).then((r) => r.data),
+  attention: (project?: string) =>
+    http.get<Attention[]>('/attention', { params: { project } }).then((r) => r.data),
+  blockers: (scope?: { project?: string; objective?: number }) =>
+    http
+      .get<Blocker[]>('/blockers', { params: { project: scope?.project, objective: scope?.objective } })
+      .then((r) => r.data),
   createProject: (payload: {
     slug: string
     name: string

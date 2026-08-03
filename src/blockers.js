@@ -15,11 +15,61 @@ import { mcpServers } from './mcp.js'
  *
  * A blocker is worth showing only if it names the ONE action that clears it.
  * Anything else belongs in a log.
+ *
+ * Naming it is not enough, though. "Open Permissions and allow what this project
+ * needs" was printed on the overview while the permissions screen was four
+ * clicks away through a project it did not name — so each card now carries the
+ * way there, derived here rather than guessed by whichever page draws it.
  */
 
 /** `blocking` needs a human before any pass can succeed. `warning` costs money but proceeds. */
 const BLOCKING = 'blocking'
 const WARNING = 'warning'
+
+/**
+ * Which objectives a project-wide condition is actually stopping.
+ *
+ * A blocker that names only its project leaves the join to the reader: "the
+ * Unity editor is closed on Blockrise" sits on one screen, "chapter 3 has not
+ * moved in a day" on another, and nothing says they are the same sentence. The
+ * database already knows which objectives were going to run — naming them costs
+ * one query and turns a fact into a consequence.
+ *
+ * Started or halted only — NOT everything that could run. Blockrise has fifteen
+ * chapters ready to be picked up; a closed editor does not hold those up, nobody
+ * asked for them. Marking all sixteen would put a red flag on the whole track
+ * and teach the reader to ignore it. What is at a standstill is what somebody is
+ * already waiting on.
+ */
+function stopped(db, projectId) {
+  return db
+    .prepare(
+      `SELECT id, title, status FROM objectives
+       WHERE project_id = ? AND status IN ('in_progress','blocked')
+       ORDER BY CASE status WHEN 'in_progress' THEN 0 ELSE 1 END, priority, id`,
+    )
+    .all(projectId)
+}
+
+/**
+ * Keep only what concerns one project, or one objective.
+ *
+ * The panel was mounted in exactly one place — the overview — while every screen
+ * where a person asks "why is this not moving?" showed nothing. Scoping belongs
+ * here rather than in the page: the same rule then answers the project header,
+ * the chapter row and the objective screen.
+ */
+export function blockersFor({ project, objective } = {}) {
+  const all = blockers()
+  if (objective != null) {
+    const id = Number(objective)
+    return all.filter((b) => b.objective === id || b.stops?.some((s) => s.id === id))
+  }
+  // A condition with no project — two MCP versions, a storage nobody connected —
+  // holds on this project too. Warnings stay folded away, so it is not noise.
+  if (project) return all.filter((b) => b.project === project || b.project == null)
+  return all
+}
 
 export function blockers() {
   const db = base()
@@ -67,12 +117,18 @@ function unityClosed(db) {
       return conf?.unity?.instance ? { ...p, instance: conf.unity.instance } : null
     })
     .filter(Boolean)
-    // A project with no open objective is not waiting on anyone.
+    // A project with nothing an agent could pick up is not waiting on anyone.
+    //
+    // This read "not proven and not abandoned", which counts drafts — and a draft
+    // is held by its own missing criterion, not by an editor. Atlas, whose only
+    // open item is a draft, was reporting a BLOCKING condition that stopped
+    // nothing: a red card naming no consequence, on the one screen meant to say
+    // what to go and do.
     .filter(
       (p) =>
         db
           .prepare(
-            "SELECT COUNT(*) n FROM objectives WHERE project_id = ? AND status NOT IN ('proven','abandoned')",
+            "SELECT COUNT(*) n FROM objectives WHERE project_id = ? AND status IN ('in_progress','blocked','ready')",
           )
           .get(p.id).n > 0,
     )
@@ -83,6 +139,7 @@ function unityClosed(db) {
     severity: BLOCKING,
     project: p.slug,
     objective: null,
+    stops: stopped(db, p.id),
     title: `No Unity editor running — ${p.name} needs one`,
     detail:
       `Every mission on this project targets the \`${p.instance}\` instance. No editor process exists, ` +
@@ -120,11 +177,23 @@ function emptyPermissions(db) {
       severity: BLOCKING,
       project: p.slug,
       objective: null,
+      stops: stopped(db, p.id),
       title: `${p.name} has only ${p.allowed} allowed tool${p.allowed === 1 ? '' : 's'} for Claude`,
       detail:
         'A non-interactive session cannot ask for anything: a tool that is not on the allow list is ' +
         'refused silently. The pass runs, bills, and produces nothing.',
       action: 'Open Permissions and allow what this project actually needs, or copy another project’s list.',
+      link: { to: `/p/${p.slug}/permissions`, label: 'Open Permissions' },
+      // Offered on the card itself: the list of every other project that has one,
+      // so the fix is a click rather than a screen to learn.
+      copy_from: db
+        .prepare(
+          `SELECT p2.slug, p2.name, COUNT(*) n FROM permissions pe
+             JOIN projects p2 ON p2.id = pe.project_id
+            WHERE pe.harness = 'claude' AND pe.decision = 'allow' AND p2.id != ?
+            GROUP BY p2.slug, p2.name HAVING n >= ${FLOOR} ORDER BY n DESC`,
+        )
+        .all(p.id),
       since: null,
     }))
 }
@@ -259,6 +328,7 @@ function projectHasNoContext(db) {
       action:
         'Record what a newcomer would get wrong, as decisions on the project. The breakdown reads ' +
         'them and stops contradicting what was already settled.',
+      link: { to: `/p/${p.slug}/memory`, label: 'What it knows' },
       since: null,
     }))
 }
@@ -337,6 +407,7 @@ function nothingMeasuresIt(db) {
         `or threshold something can read. Across this install, ${tally.measured} proof(s) out of ` +
         `${tally.total} came from a command; that is the difference between a $22 chapter and a ` +
         '$634 one.',
+      link: { to: `/o/${o.id}`, label: 'Open the objective' },
       since: null,
     }))
 }
@@ -360,6 +431,7 @@ function undecidedRefusals(db) {
       title: `${r.pattern} refused ${r.requested}× on ${r.name}`,
       detail: `A session asked for this ${r.requested} time${r.requested === 1 ? '' : 's'} and it is still \`${r.decision}\`.`,
       action: 'Decide it in Permissions — a pending decision reads as a refusal to every pass.',
+      link: { to: `/p/${r.slug}/permissions`, label: 'Open Permissions' },
       since: r.last_requested_at,
     }))
 }
@@ -381,6 +453,7 @@ function storages(db) {
         action: oauthAppPresent(PROVIDER_OF[s.provider])
           ? 'Open Storage and connect an account — it takes one authorisation, once.'
           : `Register the OAuth app first: orchestrator oauth:set ${PROVIDER_OF[s.provider]} <client_id> <client_secret>`,
+        link: { to: '/setup', label: 'Open Storage' },
         since: null,
       })
       continue
@@ -395,6 +468,7 @@ function storages(db) {
         title: `${s.label} is not reachable`,
         detail: s.last_detail ?? 'The last check was refused.',
         action: 'Reconnect the account, or point it at a folder that still exists.',
+        link: { to: '/setup', label: 'Open Storage' },
         since: s.last_sync_at,
       })
     }

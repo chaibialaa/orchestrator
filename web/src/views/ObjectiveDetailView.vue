@@ -3,6 +3,7 @@ import { onMounted, ref, watch, computed } from 'vue'
 import { api, type Objective, type Passage, type Evidence } from '../api'
 import Chips from '../components/Chips.vue'
 import RunControl from '../components/RunControl.vue'
+import Blockers from '../components/Blockers.vue'
 import {
 
 
@@ -274,6 +275,11 @@ const criterionItems = computed(() => {
       </div>
     </header>
 
+    <!-- WHY IT IS NOT MOVING — above the decision, because half the time there is
+         no decision to take: the editor is closed, or the harness has no tool it
+         may use, and no verdict on this page would change that. -->
+    <Blockers :objective="Number(objective.id)" compact />
+
     <!-- THE DECISION -->
     <!-- Shown whether or not the gate is satisfied. It only appeared once
          everything was in place, so an objective the gate refuses offered no way
@@ -477,7 +483,7 @@ const criterionItems = computed(() => {
         ${{ totals.wasted.toFixed(2) }} of it with nothing to show
       </span>
       <span class="text-ink-500">{{ formatTokens(totals.tokens) }} tokens</span>
-      <span class="text-ink-500">{{ passages.length }} attempts</span>
+      <span class="text-ink-500">{{ passages.length }} attempt{{ passages.length === 1 ? '' : 's' }}</span>
     </section>
 
     <!-- HOW WE GOT THERE -->

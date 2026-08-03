@@ -160,7 +160,9 @@ function since(iso: string | null) {
         {{ busy ? '…' : (label ?? 'Run this chapter') }}
       </button>
       <button class="text-ink-600 hover:text-ink-300" @click="showOptions = !showOptions">
-        {{ showOptions ? 'hide' : 'how' }}
+        <!-- "how" said nothing to anyone who had not already opened it once. It
+             holds the instruction to hand over and the limits of the run. -->
+        {{ showOptions ? 'hide the settings' : 'what to tell it, and its limits' }}
       </button>
 
       <!-- The outcome, not the status: "done" was the same word for a chapter

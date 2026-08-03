@@ -141,6 +141,9 @@ export const outcomeLabel: Record<string, string> = {
   declared_done: 'closed by the judge',
   needs_you: 'needs you',
   judge_silent: 'the judge stopped answering',
+  // Recorded by the loop since the day a dead tab kept it reloading for an hour;
+  // it had no label here, so the screen printed the raw key.
+  judge_page_unreachable: 'the judge’s page could not be reached',
   judge_conversation_full: 'the conversation was full',
   no_progress_budget: 'spent its budget without proving anything',
   no_unity_editor: 'no Unity editor',
@@ -152,6 +155,8 @@ export const outcomeLabel: Record<string, string> = {
 /** Outcomes that mean nobody got anywhere — worth colouring, not just printing. */
 export const outcomeWorrying = [
   'judge_silent',
+  'judge_page_unreachable',
+  'needs_you',
   'judge_conversation_full',
   'no_progress_budget',
   'no_unity_editor',

@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref, computed, onUnmounted } from 'vue'
-import { api, type Dashboard, type Review } from '../api'
+import { api, type Attention, type Dashboard, type Review } from '../api'
 import Chips from '../components/Chips.vue'
 import ActivityFeed from '../components/ActivityFeed.vue'
 import Blockers from '../components/Blockers.vue'
+import Charts from '../components/Charts.vue'
 import NewProject from '../components/NewProject.vue'
 import JudgeFull from '../components/JudgeFull.vue'
 import NotConverging from '../components/NotConverging.vue'
@@ -32,6 +33,7 @@ async function load() {
   try {
     data.value = await api.dashboard()
     review.value = await api.review()
+    waiting.value = await api.attention()
     error.value = null
     announce()
   } catch (e: any) {
@@ -56,16 +58,17 @@ const breachedInvariants = computed(
 /**
  * One question, asked once: is anything waiting on a person?
  *
- * Verdicts, halts and breached measurements used to be three sections with three
- * headings and three paragraphs. They are the same question, and splitting them
- * made the answer something the reader had to assemble.
+ * This used to be added up here, on this page, from three of its own lists — and
+ * every other screen added up a different three. All of them missed the same
+ * things: a chapter whose criterion is met and which nothing will close, and a
+ * run that ended saying it needs you. The sum is now derived once, server side,
+ * and this page quotes it.
  */
-const needsYou = computed(
-  () =>
-    (review.value?.ready.length ?? 0) +
-    (data.value?.open_halts.length ?? 0) +
-    breachedInvariants.value.length,
-)
+const waiting = ref<Attention[]>([])
+const needsYou = computed(() => waiting.value.filter((a) => a.severity === 'decide').length)
+/** Errands — a closed editor, an empty allow list. Detailed by the panel below. */
+const errands = computed(() => waiting.value.filter((a) => a.severity === 'fix').length)
+const runsStopped = computed(() => waiting.value.filter((a) => a.kind === 'run_stopped'))
 
 /** decimal(20,4) arrives with trailing zeros: we do not show them. */
 function num(v: string | null) {
@@ -76,7 +79,11 @@ function num(v: string | null) {
 
 function ago(iso: string | null) {
   if (!iso) return '—'
-  const s = Math.round((Date.now() - new Date(iso).getTime()) / 1000)
+  // SQLite hands back "2026-08-02 23:51:58", which is UTC and says so nowhere.
+  // Parsed as written it is read as local time, so every age on this page was
+  // out by the timezone offset — an hour here, and "just now" for something that
+  // finished an hour ago.
+  const s = Math.round((Date.now() - new Date(iso.replace(' ', 'T') + 'Z').getTime()) / 1000)
   if (s < 60) return 'just now'
   if (s < 3600) return `${Math.round(s / 60)} min ago`
   if (s < 86400) return `${Math.round(s / 3600)} h ago`
@@ -248,7 +255,7 @@ const segColor: Record<string, string> = {
           </div>
 
           <div class="flex items-center gap-4 mt-2.5 text-[11px] text-ink-600 flex-wrap">
-            <span class="num">{{ p.passages }} attempts</span>
+            <span class="num">{{ p.passages }} attempt{{ p.passages === 1 ? '' : 's' }}</span>
             <span v-if="p.tokens" class="num">{{ formatTokens(p.tokens) }} tokens</span>
             <span v-if="p.cost_usd" class="num">${{ p.cost_usd.toFixed(2) }}</span>
             <code v-if="p.repo_path" class="num w-full truncate text-ink-700">{{ p.repo_path }}</code>
@@ -270,6 +277,11 @@ const segColor: Record<string, string> = {
       <h2 class="label mb-3">
         Needs you
         <span class="text-halt normal-case tracking-normal text-[12px] ml-1">— {{ needsYou }}</span>
+        <!-- Named, not counted in with the decisions: an errand can be done by
+             anyone at any time, a decision is what the tool is stuck on. -->
+        <span v-if="errands" class="text-ink-500 normal-case tracking-normal text-[12px] ml-2">
+          + {{ errands }} to clear, on the right
+        </span>
       </h2>
 
       <button
@@ -306,7 +318,7 @@ const segColor: Record<string, string> = {
           <div class="flex items-center gap-4 mt-3 text-[12px] flex-wrap">
             <span class="text-proof num">{{ o.evidences_pass }} passing</span>
             <span v-if="o.evidences_fail" class="text-fail num">{{ o.evidences_fail }} failing</span>
-            <span class="text-ink-500 num">{{ o.passages }} attempts</span>
+            <span class="text-ink-500 num">{{ o.passages }} attempt{{ o.passages === 1 ? '' : 's' }}</span>
 
             <div class="ml-auto flex gap-1.5">
               <button
@@ -326,6 +338,26 @@ const segColor: Record<string, string> = {
             </div>
           </div>
         </article>
+
+        <!-- A loop that stopped and said, in so many words, that it needs you.
+             This card did not exist. The word lived on the run row, one component
+             on the objective page displayed it, and every overview read "nothing
+             is waiting on you" — including the morning after run 43 ended on
+             `needs_you` at midnight. -->
+        <RouterLink
+          v-for="a in runsStopped"
+          :key="`rs${a.objective}`"
+          :to="a.href"
+          class="card p-4 block border-halt/35 bg-halt/[0.04] hover:border-halt/60 transition-colors"
+        >
+          <div class="flex items-start gap-3 flex-wrap">
+            <span class="label text-ink-600 mt-0.5">{{ a.project }}</span>
+            <span class="text-ink-100 flex-1 min-w-[12rem]">{{ a.title }}</span>
+            <span v-if="a.since" class="label text-ink-600">{{ ago(a.since) }}</span>
+          </div>
+          <p class="text-ink-300 mt-1.5 leading-relaxed">{{ a.why }}</p>
+          <p class="text-ink-500 mt-1 text-[12px]">→ {{ a.action }}</p>
+        </RouterLink>
 
         <!-- The one halt that has its own way out, rather than a description of
              the chore it expects from you. -->
@@ -415,6 +447,9 @@ const segColor: Record<string, string> = {
            of text: two caps fighting each other left a third of every card empty. -->
       <Blockers :columns="needsYou ? 1 : 2" :class="needsYou ? 'xl:sticky xl:top-16' : ''" />
     </div>
+
+    <!-- The totals in the header say how much. These say where. -->
+    <Charts />
 
     <ActivityFeed compact />
 

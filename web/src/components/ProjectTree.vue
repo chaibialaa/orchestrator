@@ -19,7 +19,14 @@ import RunControl from './RunControl.vue'
  * line rather than a border pretending to be one.
  */
 
-const props = defineProps<{ nodes: TreeNode[]; slug: string }>()
+/**
+ * `stalled` maps an objective to the condition holding it up, in three words.
+ *
+ * The track showed a chapter "in progress" with no attempt running and no
+ * explanation — the explanation being a closed editor, stated on a different
+ * page. A step nothing can run on should say so on its own line.
+ */
+const props = defineProps<{ nodes: TreeNode[]; slug: string; stalled?: Record<number, string> }>()
 const emit = defineEmits<{ changed: [] }>()
 
 /** Where the next one goes, so a new step lands after the existing ones. */
@@ -172,6 +179,12 @@ function when(iso: string) {
           :class="[stateOf(o).dot, o.live_since ? 'animate-pulse' : '']"
         />
         <span class="text-ink-100 text-[13px] flex-1 min-w-0 truncate">{{ o.title }}</span>
+        <!-- This band answers "what is moving right now", so it is the first place
+             that owes an answer when the honest one is "nothing, and here is why".
+             It said "started, nobody on it" and stopped there. -->
+        <span v-if="stalled?.[o.id]" class="chip border-fail/50 text-fail shrink-0">
+          {{ stalled[o.id] }}
+        </span>
         <span class="text-[12px] shrink-0" :class="stateOf(o).color">{{ stateOf(o).word }}</span>
         <span v-if="o.attempts.length" class="num text-ink-600 text-[11px] shrink-0">
           {{ o.attempts.length }} attempt{{ o.attempts.length > 1 ? 's' : '' }}
@@ -193,6 +206,9 @@ function when(iso: string) {
   >
     <span class="text-ink-700 text-[13px] leading-none">&#9671;</span>
     <span class="text-ink-400 text-[13px] flex-1 min-w-0 truncate">{{ root.title }}</span>
+    <span v-if="stalled?.[root.id]" class="chip border-fail/50 text-fail shrink-0">
+      {{ stalled[root.id] }}
+    </span>
     <span class="label text-ink-700 shrink-0">not started</span>
   </RouterLink>
 
@@ -223,6 +239,9 @@ function when(iso: string) {
       >
         before / after
       </button>
+      <span v-if="stalled?.[root.id]" class="chip border-fail/50 text-fail ml-2 align-middle">
+        at a standstill — {{ stalled[root.id] }}
+      </span>
       <div class="text-[12px] mt-0.5" :class="stateOf(root).color">
         {{ stateOf(root).word }}
         <span v-if="root.attempts.length" class="text-ink-500">
@@ -266,6 +285,9 @@ function when(iso: string) {
             >{{ o.title }}</RouterLink
           >
           <span class="text-[11px]" :class="stateOf(o).color">{{ stateOf(o).word }}</span>
+          <span v-if="stalled?.[o.id]" class="chip border-fail/50 text-fail">
+            at a standstill — {{ stalled[o.id] }}
+          </span>
           <span v-if="o.halt_reason" class="text-[11px] text-ink-400">
             {{ haltLabel[o.halt_reason] ?? o.halt_reason }}
           </span>

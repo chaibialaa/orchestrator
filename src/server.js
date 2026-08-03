@@ -9,7 +9,9 @@ import { base, json, nowStamp, dbPath as dbPathOf } from './db/index.js'
 import { evaluateGate, canStart, HUMAN_HALTS } from './gate.js'
 import { encrypt, decrypt, keyHint } from './crypto.js'
 import { upload, checkStorage, createDriveFolder } from './storage.js'
-import { blockers } from './blockers.js'
+import { blockersFor } from './blockers.js'
+import { attention, attentionFor } from './attention.js'
+import { charts } from './charts.js'
 import { signedIn } from './agent/relay.js'
 import { mcpServers } from './mcp.js'
 import {
@@ -1238,7 +1240,16 @@ export function createServer() {
       .all()
       .map((l) => ({ ...l, ...evaluateGate(l.id) }))
 
-    const pret = lines.filter((l) => l.ready && !l.ok)
+    /**
+     * `ready && !ok` and `!ready` do not cover `ready && ok`.
+     *
+     * An objective whose gate is entirely satisfied fell through both filters and
+     * appeared in neither list — on the endpoint whose only job is to show what
+     * awaits a decision. Iberis #7 has been concludable since the 2nd of August
+     * and was on no screen at all. A gate that is met is the strongest reason to
+     * show something, not a reason to hide it.
+     */
+    const pret = lines.filter((l) => l.ready)
     res.json({
       ready: pret,
       in_progress: lines.filter((l) => !l.ready),
@@ -1248,6 +1259,9 @@ export function createServer() {
 
   api.get('/dashboard', (_req, res) => {
     const projects = db().prepare('SELECT * FROM projects ORDER BY name').all()
+    // Computed once for the whole page rather than per project: every entry
+    // re-evaluates gates, and four projects would mean four full passes.
+    const waiting = attention()
     const rollup = projects.map((p) => {
       const s = db()
         .prepare(
@@ -1263,13 +1277,14 @@ export function createServer() {
            FROM passages WHERE objective_id IN (SELECT id FROM objectives WHERE project_id = ?)`,
         )
         .get(p.id)
-      const pendingAuth = db()
-        .prepare(
-          `SELECT COUNT(*) n FROM halts WHERE resolved_at IS NULL
-             AND reason IN (${HUMAN_HALTS.map(() => '?').join(',')})
-             AND objective_id IN (SELECT id FROM objectives WHERE project_id = ?)`,
-        )
-        .get(...HUMAN_HALTS, p.id).n
+      /**
+       * This counted open halts and nothing else, so it read 0 on all four
+       * projects while three of them were waiting on a decision: a chapter whose
+       * criterion was fully met and which nothing would close, a run that ended
+       * saying `needs_you`, a project with no allowed tool. One rule now answers
+       * it, the same one the panel below the projects reads.
+       */
+      const pendingAuth = waiting.filter((w) => w.project === p.slug).length
       return {
         slug: p.slug,
         name: p.name,
@@ -1364,7 +1379,27 @@ export function createServer() {
            ORDER BY pa.started_at DESC LIMIT 15`,
         )
         .all(),
-      invariants: [],
+      /**
+       * This was `[]`, written into the response.
+       *
+       * The page has a section for measurements out of bounds; it reads this
+       * field, so it has never drawn once — while Atlas has carried a breached
+       * invariant for days and the project card, counting from the database,
+       * said "1 out of bounds" three inches above the silence. Same family as
+       * the "four proofs out of 385" that was typed in on the day it was true:
+       * a field a screen believes is live and is in fact a decision made once.
+       */
+      invariants: db()
+        .prepare(
+          `SELECT i.id, p.slug project, i.name,
+                  COALESCE(i.description, i.name) statement,
+                  i.last_value, i.last_status, i.last_checked_at, i.armed
+           FROM invariants i JOIN projects p ON p.id = i.project_id
+           WHERE i.armed = 1
+           ORDER BY CASE i.last_status WHEN 'breached' THEN 0 WHEN 'unknown' THEN 1 ELSE 2 END, i.id`,
+        )
+        .all()
+        .map((i) => ({ ...i, armed: Boolean(i.armed) })),
     })
   })
 
@@ -1661,7 +1696,26 @@ export function createServer() {
     res.json({ ok: true })
   })
 
-  api.get('/blockers', (_req, res) => res.json(blockers()))
+  /**
+   * The one question every screen asks: is anything waiting on a person?
+   *
+   * One rule, one answer. Each page quoted its own version of it and they
+   * disagreed — see attention.js.
+   */
+  api.get('/attention', (req, res) => res.json(attentionFor(req.query.project)))
+
+  /** The series behind the charts. Same rows as the rest, counted differently. */
+  api.get('/charts', (req, res) => {
+    const c = charts({ project: req.query.project })
+    if (!c) throw new Rejected('This project does not exist.', 404)
+    res.json(c)
+  })
+
+  // Scoped on demand: the overview asks for everything, a project page for its
+  // own, an objective page for what is stopping that objective specifically.
+  api.get('/blockers', (req, res) =>
+    res.json(blockersFor({ project: req.query.project, objective: req.query.objective })),
+  )
 
   /** What each harness is wired to, read from the harnesses' own configuration. */
   api.get('/mcp', (_req, res) => res.json(mcpServers()))

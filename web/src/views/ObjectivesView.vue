@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref, watch, computed } from 'vue'
-import { api, type Objective, type Stats, type TreeNode, type Project } from '../api'
+import { api, type Attention, type Objective, type Stats, type TreeNode, type Project } from '../api'
 import Chips from '../components/Chips.vue'
 import ProjectTree from '../components/ProjectTree.vue'
 import AddObjective from '../components/AddObjective.vue'
 import RunQueue from '../components/RunQueue.vue'
 import ActivityFeed from '../components/ActivityFeed.vue'
+import Blockers from '../components/Blockers.vue'
+import Charts from '../components/Charts.vue'
 import { formatTokens } from '../labels'
 
 const props = defineProps<{ slug: string }>()
@@ -48,20 +50,40 @@ const loading = ref(true)
 const error = ref<string | null>(null)
 const showHelp = ref(false)
 
+/**
+ * Objective → the condition holding it up, in three words, for the track.
+ *
+ * Read from the same endpoint as the panel above rather than recomputed: one
+ * rule decides what is in the way, and every screen quotes it.
+ */
+const stalled = ref<Record<number, string>>({})
+
 async function load() {
   loading.value = true
   error.value = null
   try {
-    const [o, s, t, ps] = await Promise.all([
+    const [o, s, t, ps, bl, at] = await Promise.all([
       api.objectives(props.slug),
       api.stats(props.slug),
       api.tree(props.slug),
       api.projects(),
+      api.blockers({ project: props.slug }).catch(() => []),
+      api.attention(props.slug).catch(() => []),
     ])
+    waiting.value = at
     objectives.value = o
     stats.value = s
     tree.value = t.objectives
     project.value = ps.find((x) => x.slug === props.slug) ?? null
+
+    const marks: Record<number, string> = {}
+    for (const b of bl.filter((x) => x.severity === 'blocking')) {
+      const label = b.group ?? b.title
+      for (const id of [b.objective, ...(b.stops ?? []).map((x) => x.id)]) {
+        if (id != null && !marks[id]) marks[id] = label
+      }
+    }
+    stalled.value = marks
   } catch (e: any) {
     error.value = e?.message ?? 'error'
   } finally {
@@ -77,50 +99,27 @@ watch(() => props.slug, load)
 
 const NEEDS_HUMAN = ['blast_radius', 'no_provable_criterion', 'invariant_regression', 'human_request']
 
-// A halted objective is not necessarily waiting for someone. The loop clears a
-// verdict rejection or a stall on its own: counting those as decisions to make
-// manufactures a queue that does not exist.
-const waiting = computed(() =>
-  objectives.value.filter((o) => o.status === 'blocked' && NEEDS_HUMAN.includes(o.halt_reason ?? '')),
-)
+/**
+ * What is waiting on you here — asked of the tool, not recomputed.
+ *
+ * This page looked at halted objectives and nothing else, so a chapter whose
+ * criterion was fully met, or a run that ended saying `needs_you`, showed
+ * nothing: the project read as quietly progressing. A halted objective is still
+ * not automatically yours — the loop clears a rejected verdict on its own — and
+ * that judgement now lives in one place for every screen.
+ */
+const waiting = ref<Attention[]>([])
+const decisions = computed(() => waiting.value.filter((a) => a.severity === 'decide'))
+
 const autoResumed = computed(() =>
   objectives.value.filter((o) => o.status === 'blocked' && !NEEDS_HUMAN.includes(o.halt_reason ?? '')),
 )
 const done = computed(() => objectives.value.filter((o) => o.status === 'proven'))
 
-/** How long the open attempt has been running. */
-function since(iso: string): string {
-  const min = Math.max(0, Math.round((Date.now() - new Date(iso + 'Z').getTime()) / 60000))
-  if (min < 60) return `${min} min`
-  const h = Math.floor(min / 60)
-  return `${h} h ${String(min % 60).padStart(2, '0')}`
-}
-
-/** One sentence saying where this objective stands. */
-function story(o: Objective): string {
-  const n = o.passages_count ?? 0
-  const tries = n === 0 ? 'no attempts' : n === 1 ? '1 attempt' : `${n} attempts`
-
-  if (o.status === 'draft') {
-    return 'One question is unanswered: how will we know this is done? Until it has an answer, no agent can pick it up.'
-  }
-  if (o.status === 'blocked') {
-    return `${tries}, then the tool stopped by itself. It is waiting for you to decide.`
-  }
-  if (o.status === 'in_progress') {
-    return o.live_since
-      ? `An agent has been on it for ${since(o.live_since)}. ${tries} in total.`
-      : `Started, but no agent is on it right now. ${tries}.`
-  }
-  if (o.status === 'ready') {
-    return 'The goal and the way to verify it are clear. The next available agent can take it.'
-  }
-  if (o.status === 'proven') {
-    const e = o.evidences_count ?? 0
-    return `Done and verified — ${e} proof${e > 1 ? 's' : ''} produced and accepted.`
-  }
-  return ''
-}
+// `story()` lived here — one plain sentence per status, written for the card
+// this page used to draw itself. The card now carries the tool's own account of
+// why something is waiting, which is the same sentence written from evidence
+// rather than from a status word.
 
 </script>
 
@@ -259,22 +258,29 @@ function story(o: Objective): string {
       </div>
     </section>
 
+    <!-- What is stopping THIS project, before anything it could do about it.
+         This panel existed only on the overview: a person opening the project
+         because nothing had moved found four chapters, no attempt running, and
+         no reason anywhere. The reason was two clicks away, on another page. -->
+    <Blockers :project="slug" :columns="2" compact />
+
     <!-- What genuinely needs a person. -->
-    <section v-if="waiting.length">
-      <h2 class="label text-halt mb-3">Waiting for you — {{ waiting.length }}</h2>
+    <section v-if="decisions.length">
+      <h2 class="label text-halt mb-3">Waiting for you — {{ decisions.length }}</h2>
       <div class="space-y-2.5">
         <RouterLink
-          v-for="o in waiting"
-          :key="o.id"
-          :to="`/o/${o.id}`"
+          v-for="a in decisions"
+          :key="`${a.kind}${a.objective}`"
+          :to="a.href"
           class="card p-4 block border-halt/35 bg-halt/[0.04] hover:border-halt/60 transition-colors"
         >
-          <div class="flex items-start gap-3">
-            <div class="flex-1">
-              <div class="text-ink-100">{{ o.title }}</div>
-              <p class="text-ink-400 mt-1.5 leading-relaxed">{{ story(o) }}</p>
+          <div class="flex items-start gap-3 flex-wrap">
+            <div class="flex-1 min-w-[14rem]">
+              <div class="text-ink-100">{{ a.title }}</div>
+              <p class="text-ink-400 mt-1.5 leading-relaxed">{{ a.why }}</p>
+              <p class="text-ink-300 mt-1 text-[12px]">→ {{ a.action }}</p>
             </div>
-            <Chips kind="blast" :value="o.blast_radius" />
+            <span v-if="a.objective" class="num text-ink-600 text-[11px]">#{{ a.objective }}</span>
           </div>
         </RouterLink>
       </div>
@@ -296,7 +302,7 @@ function story(o: Objective): string {
       />
     </div>
 
-    <ProjectTree :nodes="tree" :slug="slug" @changed="load" />
+    <ProjectTree :nodes="tree" :slug="slug" :stalled="stalled" @changed="load" />
     </section>
 
     <p v-if="autoResumed.length" class="text-ink-600 text-[12px]">
@@ -304,6 +310,9 @@ function story(o: Objective): string {
       loop clears by itself — nothing for you to do:
       <span class="num text-ink-500">{{ autoResumed.map((o) => `#${o.id}`).join(', ') }}</span>
     </p>
+
+    <!-- Per project, the same four questions the overview answers for all of them. -->
+    <Charts :project="slug" />
 
     <ActivityFeed :slug="slug" />
 
