@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -27,7 +27,57 @@ const CDP_PORT = 9222
  * 127.0.0.1 — it is not reachable from the network.
  */
 const CHROME_PROFILE = join(homedir(), '.chrome-orchestrator')
-const CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+
+/**
+ * Where Chrome is, asked of the machine rather than assumed.
+ *
+ * This was one hard-coded macOS path, which is a fine assumption right up to the
+ * moment somebody installs the package from npm on Linux — and then the loop
+ * fails at the only step nobody thinks to check, with a message about a file
+ * that does not exist. The order matters: an explicit choice wins, then the
+ * platform's usual homes, then whatever is on the PATH.
+ */
+const CHROME_CANDIDATES = {
+  darwin: [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    join(homedir(), 'Applications/Google Chrome.app/Contents/MacOS/Google Chrome'),
+  ],
+  linux: [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/snap/bin/chromium',
+  ],
+  win32: [
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  ],
+}
+
+function chromeBinary() {
+  if (process.env.ORCHESTRATOR_CHROME) return process.env.ORCHESTRATOR_CHROME
+
+  for (const p of CHROME_CANDIDATES[process.platform] ?? []) if (existsSync(p)) return p
+
+  // Last resort: the PATH. On Windows `where`, everywhere else `command -v`.
+  for (const name of ['google-chrome', 'google-chrome-stable', 'chromium', 'chrome']) {
+    try {
+      const found = execFileSync(
+        process.platform === 'win32' ? 'where' : '/bin/sh',
+        process.platform === 'win32' ? [name] : ['-c', `command -v ${name}`],
+        { encoding: 'utf8', timeout: 3000 },
+      )
+        .trim()
+        .split('\n')[0]
+      if (found) return found
+    } catch {
+      /* not there — keep looking */
+    }
+  }
+  return null
+}
 
 async function cdpTargets(port) {
   const res = await fetch(`http://127.0.0.1:${port}/json/list`)
@@ -44,9 +94,10 @@ async function cdpTargets(port) {
  * yours — that one really is a decision, and a password is never mine to type.
  */
 async function startBrowser(port) {
-  if (!existsSync(CHROME_BIN)) return false
+  const bin = chromeBinary()
+  if (!bin) return false
   spawn(
-    CHROME_BIN,
+    bin,
     [
       `--remote-debugging-port=${port}`,
       `--user-data-dir=${CHROME_PROFILE}`,
@@ -113,9 +164,17 @@ export async function attach(match, port = CDP_PORT, { openIfMissing = null } = 
   } catch {
     console.error(`    ! nothing on port ${port} — starting the browser`)
     if (!(await startBrowser(port))) {
+      // Two different failures, and telling them apart is the whole message:
+      // a browser that is missing needs installing, one that is present needs
+      // starting — and the second is a line you can paste.
+      const bin = chromeBinary()
       throw new Error(
-        `Chrome is not listening on port ${port} and could not be started.\n` +
-          `  Start it with:  "${CHROME_BIN}" --remote-debugging-port=${port} --user-data-dir=${CHROME_PROFILE}`,
+        bin
+          ? `Chrome is not listening on port ${port} and could not be started.\n` +
+            `  Start it with:  "${bin}" --remote-debugging-port=${port} --user-data-dir=${CHROME_PROFILE}`
+          : `No Chrome or Chromium found on this machine (looked in the usual places for ` +
+            `${process.platform}, then on the PATH).\n` +
+            `  Install one, or point at it: ORCHESTRATOR_CHROME=/path/to/chrome`,
       )
     }
     targets = await cdpTargets(port)

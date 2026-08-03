@@ -1,9 +1,9 @@
-import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { base, json } from './db/index.js'
 import { oauthAppPresent, PROVIDER_OF } from './oauth.js'
 import { mcpServers } from './mcp.js'
+import { editorRunning, editorFor } from './unity.js'
 
 /**
  * What is standing in the way, derived — never declared.
@@ -111,15 +111,7 @@ export function blockers() {
  * what made two passes believe they could work.
  */
 function unityClosed(db) {
-  const alive = (() => {
-    try {
-      execFileSync('pgrep', ['-f', 'Unity.app/Contents/MacOS/Unity'], { stdio: 'pipe' })
-      return true
-    } catch {
-      return false
-    }
-  })()
-  if (alive) return []
+  if (editorRunning()) return []
 
   const expecting = db
     .prepare("SELECT id, slug, name, repo_path FROM projects WHERE repo_path IS NOT NULL")
@@ -155,13 +147,8 @@ function unityClosed(db) {
      * `ProjectVersion.txt` asks for, and offer the button only if it is there.
      * An offer that would fail is worse than no offer.
      */
-    const wanted = (() => {
-      const f = join(p.repo_path, 'ProjectSettings', 'ProjectVersion.txt')
-      if (!existsSync(f)) return null
-      const v = /m_EditorVersion:\s*(\S+)/.exec(readFileSync(f, 'utf8'))?.[1]
-      if (!v) return null
-      return { version: v, installed: existsSync(`/Applications/Unity/Hub/Editor/${v}/Unity.app`) }
-    })()
+    const found = editorFor(p.repo_path)
+    const wanted = found.version ? { version: found.version, installed: Boolean(found.path) } : null
 
     return {
       kind: 'unity_closed',

@@ -12,6 +12,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSy
 import { resolve, relative, basename, dirname, join } from 'node:path'
 import { homedir, hostname } from 'node:os'
 import { RULES, checkFile } from './rules.js'
+import { editorRunning, editorFor } from '../unity.js'
 import { recentSessions, readSince, encodeCwd } from './watch.js'
 import { generateImage, ADAPTERS } from './images.js'
 import { inventoryMemories, assembleContext, memoryInstruction, memoryFingerprint } from './memories.js'
@@ -111,24 +112,8 @@ function loadConfig() {
  * `.orchestrator.json` may override with `unity.editor` for an install that is
  * not where the Hub puts it.
  */
-function unityEditor(root = process.cwd()) {
-  if (config.unity?.editor) {
-    return existsSync(config.unity.editor)
-      ? { path: config.unity.editor, version: 'declared' }
-      : { error: `the declared editor is not there: ${config.unity.editor}` }
-  }
+const unityEditor = (root = process.cwd()) => editorFor(root, config.unity?.editor ?? null)
 
-  const file = join(root, 'ProjectSettings', 'ProjectVersion.txt')
-  if (!existsSync(file)) return { error: 'no ProjectSettings/ProjectVersion.txt — is this a Unity project?' }
-
-  const version = /m_EditorVersion:\s*(\S+)/.exec(readFileSync(file, 'utf8'))?.[1]
-  if (!version) return { error: 'ProjectVersion.txt does not say which editor version' }
-
-  const path = `/Applications/Unity/Hub/Editor/${version}/Unity.app/Contents/MacOS/Unity`
-  return existsSync(path)
-    ? { path, version }
-    : { error: `this project wants Unity ${version} and it is not installed`, version }
-}
 
 /**
  * Open it. Detached, because the editor outlives the worker that started it.
@@ -157,16 +142,8 @@ function openUnity(root = process.cwd()) {
  * server keeps answering after the editor has died, and that is exactly what made
  * two sessions believe they could work.
  */
-function editeurUnityVivant() {
-  try {
-    // Unity Hub carries the same name without the editor binary: target the full
-    // path, otherwise the Hub alone would be enough to say "all good".
-    execFileSync('pgrep', ['-f', 'Unity.app/Contents/MacOS/Unity'], { stdio: 'pipe' })
-    return true
-  } catch {
-    return false
-  }
-}
+const editeurUnityVivant = () => editorRunning()
+
 
 const config = loadConfig()
 

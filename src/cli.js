@@ -93,7 +93,24 @@ const commandes = {
     const { homedir } = await import('node:os')
     const { join, resolve } = await import('node:path')
 
-    const dir = join(homedir(), 'Library', 'LaunchAgents')
+    // launchd on macOS, systemd on Linux. The two write different files and are
+    // loaded by different commands, but they answer the same question: what
+    // brings this back after a reboot, a crash, or a closed laptop.
+    if (!['darwin', 'linux'].includes(process.platform)) {
+      console.error(
+        `\n  No service writer for ${process.platform} yet.\n` +
+          '  Everything else runs here; wrap these two commands in whatever your\n' +
+          '  system uses to keep a process alive:\n' +
+          `    ${process.execPath} ${resolve(fileURLToPath(import.meta.url))} serve\n` +
+          `    ${process.execPath} ${resolve(fileURLToPath(import.meta.url))} work --every 5   (in the repository)\n`,
+      )
+      process.exit(1)
+    }
+
+    const linux = process.platform === 'linux'
+    const dir = linux
+      ? join(homedir(), '.config', 'systemd', 'user')
+      : join(homedir(), 'Library', 'LaunchAgents')
     mkdirSync(dir, { recursive: true })
 
     const node = process.execPath
@@ -124,29 +141,64 @@ ${argv.map((a) => `    <string>${a}</string>`).join('\n')}
 </plist>
 `
 
+    /**
+     * The systemd equivalent, unit for unit.
+     *
+     * `Restart=always` is KeepAlive; `RestartSec` is ThrottleInterval; the
+     * journal replaces the log files, which is why no path is given — asking
+     * systemd to write its own file when `journalctl --user -u <name>` already
+     * has it would only give you two places to look.
+     */
+    const unit = (label, argv, cwd) =>
+      `[Unit]
+Description=${label}
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=${cwd}
+ExecStart=${argv.map((a) => (a.includes(' ') ? `"${a}"` : a)).join(' ')}
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+`
+
+    const write = (label, argv, cwd) => {
+      const name = linux ? `${label}.service` : `${label}.plist`
+      writeFileSync(join(dir, name), linux ? unit(label, argv, cwd) : plist(label, argv, cwd))
+      return label
+    }
+
     const written = []
     const serverLabel = 'io.orchestrator.server'
-    writeFileSync(join(dir, `${serverLabel}.plist`), plist(serverLabel, [node, cli, 'serve'], homedir()))
-    written.push(serverLabel)
+    written.push(write(serverLabel, [node, cli, 'serve'], homedir()))
 
     const repo = f.repo ? resolve(String(f.repo)) : null
     if (repo) {
       const name = repo.split('/').filter(Boolean).pop()
       const workerLabel = `io.orchestrator.worker.${name.toLowerCase().replace(/[^a-z0-9.-]/g, '-')}`
-      writeFileSync(
-        join(dir, `${workerLabel}.plist`),
-        plist(workerLabel, [node, cli, 'work', '--every', '5'], repo),
-      )
-      written.push(workerLabel)
+      written.push(write(workerLabel, [node, cli, 'work', '--every', '5'], repo))
     }
 
     console.log(`\n  written to ${dir}:`)
-    for (const l of written) console.log(`    ${l}.plist`)
+    for (const l of written) console.log(`    ${l}${linux ? '.service' : '.plist'}`)
     console.log('\n  Nothing is running yet — loading a background service is your decision.')
     console.log('  To start them now and at every login:')
-    for (const l of written) console.log(`    launchctl bootstrap gui/$(id -u) ${join(dir, l + '.plist')}`)
+    if (linux) {
+      console.log('    systemctl --user daemon-reload')
+      for (const l of written) console.log(`    systemctl --user enable --now ${l}`)
+      // Without this a user service dies at logout, which on a machine you drive
+      // over ssh means "it worked while I watched and stopped when I left".
+      console.log(`\n  To keep them running when you are not logged in:\n    sudo loginctl enable-linger $(whoami)`)
+    } else {
+      for (const l of written) console.log(`    launchctl bootstrap gui/$(id -u) ${join(dir, l + '.plist')}`)
+    }
     console.log('\n  To stop one for good:')
-    for (const l of written) console.log(`    launchctl bootout gui/$(id -u)/${l}`)
+    for (const l of written) {
+      console.log(linux ? `    systemctl --user disable --now ${l}` : `    launchctl bootout gui/$(id -u)/${l}`)
+    }
     if (!repo) console.log('\n  For a worker too: orchestrator service --repo /path/to/the/repository')
     console.log('')
   },

@@ -28,6 +28,22 @@ const RUN_NEEDS_PERSON = [
   'out_of_turns',
 ]
 
+/**
+ * A reading old enough that acting on it would be acting on a memory.
+ *
+ * Six hours is not a threshold anybody agreed on; it is the point past which a
+ * working tree, a production table or a frame time has had every opportunity to
+ * change without anybody watching. Returns how old, in words, or null when it is
+ * recent enough to be treated as current.
+ */
+function staleness(iso) {
+  if (!iso) return 'never measured'
+  const hours = (Date.now() - new Date(iso.replace(' ', 'T') + 'Z').getTime()) / 3600000
+  if (hours < 6) return null
+  const days = Math.round(hours / 24)
+  return days >= 1 ? `taken ${days} day${days > 1 ? 's' : ''} ago` : `taken ${Math.round(hours)} hours ago`
+}
+
 export function attention() {
   const db = base()
   const out = []
@@ -156,8 +172,21 @@ export function attention() {
       project: i.project,
       objective: i.objective_id,
       title: i.name,
-      why: 'A measurement that used to hold no longer does.',
-      action: 'Look at what broke it before starting anything else on this project.',
+      /**
+       * How old the reading is, in the sentence itself.
+       *
+       * Atlas carried "out of bounds, 2 files" for six days. The probe returned
+       * 0 the whole time — nobody had re-run it, and the screen showed the
+       * remembered value with nothing to say when it was taken. A breach is a
+       * measurement, and a measurement without its date is an opinion.
+       */
+      why: staleness(i.last_checked_at)
+        ? `A measurement that no longer held when it was last taken — ${staleness(i.last_checked_at)}. ` +
+          'It may well have been fixed since; nothing has measured it again.'
+        : 'A measurement that used to hold no longer does.',
+      action: staleness(i.last_checked_at)
+        ? 'Re-run it before acting on it: `orchestrator invariants:check` in the repository.'
+        : 'Look at what broke it before starting anything else on this project.',
       href: i.objective_id ? `/o/${i.objective_id}` : `/p/${i.project}/analysis`,
       since: i.last_checked_at,
     })
