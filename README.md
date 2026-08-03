@@ -69,7 +69,15 @@ behalf — and cannot award itself a success.
 
 ## Getting started
 
-The package is not published on npm yet; install it from source.
+```bash
+npx @chaibialaa/orchestrator@beta serve     # http://localhost:4747
+```
+
+The interface ships built inside the package — nothing to compile. `orchestrator`
+is the command name; the scope is only there because the bare name was already
+taken on npm.
+
+To work on the tool itself, run it from source instead:
 
 ```bash
 git clone https://github.com/chaibialaa/orchestrator.git
@@ -238,6 +246,13 @@ come back when they exit and start again at login. It only WRITES them: loading
 a background service on your machine is your decision, and the command to take
 it is printed. `launchctl bootout gui/$(id -u)/io.orchestrator.server` removes
 one for good.
+
+**This command is macOS-only for now** — it is the one part that is. Everything
+else runs wherever Node does; on Linux or Windows, write the equivalent unit
+yourself (systemd `--user`, Task Scheduler) around the same two commands,
+`orchestrator serve` and `orchestrator work --every 5`. Two other spots still
+assume a Mac and will need the same treatment: finding a running Unity editor
+(`pgrep -f Unity.app/…`) and the Chrome binary the judge is read through.
 
 Stopping a single pass is different and does not need any of that: ask it to
 stop, from the screen or `POST /runs/:id/cancel`. The worker sees the flag

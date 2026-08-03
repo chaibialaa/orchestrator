@@ -1,7 +1,7 @@
 {
-  "name": "orchestrator",
-  "version": "0.1.0",
-  "description": "Boucle de pilotage d'agents : un juge décide, un agent exécute, une preuve tranche.",
+  "name": "@chaibialaa/orchestrator",
+  "version": "0.1.0-beta.1",
+  "description": "A driving loop for coding agents: a judge decides, an agent executes, a proof settles it. Cost, deliverables and progress are derived from the traces — never declared.",
   "type": "module",
   "bin": {
     "orchestrator": "./src/cli.js"
@@ -13,7 +13,8 @@
     "start": "node src/cli.js serve",
     "build": "npm --prefix web run build -- --outDir ../public --emptyOutDir",
     "dev": "npm --prefix web run dev",
-    "test": "node --test \"test/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
@@ -21,9 +22,32 @@
     "zod": "^3.23.8"
   },
   "license": "PolyForm-Noncommercial-1.0.0",
+  "author": "Chaibi Alaa",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chaibialaa/orchestrator.git"
+  },
+  "homepage": "https://github.com/chaibialaa/orchestrator#readme",
+  "bugs": {
+    "url": "https://github.com/chaibialaa/orchestrator/issues"
+  },
+  "keywords": [
+    "agents",
+    "orchestration",
+    "claude-code",
+    "codex",
+    "unity",
+    "mcp",
+    "automation"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  },
   "files": [
     "src",
     "public",
-    "README.md"
+    "README.md",
+    "LICENSE.md"
   ]
 }
