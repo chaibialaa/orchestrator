@@ -2248,6 +2248,7 @@ const commands = {
    *
    * usage: orchestrator visual <image.png> [--ref target.png] [--min-colours 1500]
    *          [--min-hues 7] [--min-saturation 0.5] [--min-contrast 0.6] [--min-shadow 0.08]
+   *          [--min-highlight 0.01]
    *
    * Exits 1 when a floor is not met, so it can be declared as a proof in
    * .orchestrator.json and produce a real pass/fail — rather than a score the
@@ -2260,7 +2261,7 @@ const commands = {
     if (!file)
       fail(
         'usage: orchestrator visual <image.png> [--ref target.png] [--min-colours N] ' +
-          '[--min-hues N] [--min-saturation X] [--min-contrast X] [--min-shadow X]',
+          '[--min-hues N] [--min-saturation X] [--min-contrast X] [--min-shadow X] [--min-highlight X]',
       )
 
     const { measureImage, compareToReference } = await import('../visual.js')
@@ -2297,6 +2298,12 @@ const commands = {
     }
     if (opts['min-shadow'] && m.shadowShare < Number(opts['min-shadow'])) {
       failures.push(`shadow share ${m.shadowShare} < ${opts['min-shadow']}`)
+    }
+    // Reported and not gateable: the recalibration caught it — a criterion could
+    // ask for shadow and had no way to ask for the light end, which is half of
+    // what makes an image dramatic rather than merely dark.
+    if (opts['min-highlight'] && m.highlightShare < Number(opts['min-highlight'])) {
+      failures.push(`highlight share ${m.highlightShare} < ${opts['min-highlight']}`)
     }
     if (opts['min-saturation'] && m.saturation < Number(opts['min-saturation'])) {
       failures.push(`saturation ${m.saturation} < ${opts['min-saturation']}`)

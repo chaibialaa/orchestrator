@@ -90,7 +90,7 @@ async function ask(project: string, kind: string) {
   } catch (e: any) {
     asked.value = {
       ...asked.value,
-      [`${project}:${kind}`]: e?.response?.data?.error ?? e?.message ?? 'the request was refused',
+      [`${project}:${kind}`]: e?.response?.data?.message ?? e?.message ?? 'the request was refused',
     }
   } finally {
     asking.value = null
@@ -104,7 +104,7 @@ async function copyList(project: string, from: string) {
     await api.copyPermissions(project, from)
     await load()
   } catch (e: any) {
-    copyFailed.value = e?.response?.data?.error ?? e?.message ?? 'the copy was refused'
+    copyFailed.value = e?.response?.data?.message ?? e?.message ?? 'the copy was refused'
   } finally {
     copying.value = null
   }

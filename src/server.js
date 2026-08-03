@@ -2744,6 +2744,34 @@ export function createServer() {
       L.push('Its steps today:')
       for (const c of children) L.push(`- ${c.title} (${c.status})`)
     }
+    /**
+     * What was refused THEN, and whether it is still refused NOW.
+     *
+     * The history handed over is full of tool refusals, and a reader with no
+     * present-tense view will raise them as obstacles to clear — the first
+     * recalibration on Atlas demanded two permissions that had been granted the
+     * week before, and told the reader to open them before relaunching. History
+     * read as the present, which is the fault this tool exists to catch, made by
+     * the analysis meant to catch it.
+     */
+    const pending = db()
+      .prepare(
+        `SELECT pattern, decision, requested FROM permissions
+         WHERE project_id = ? AND requested > 0 AND decision != 'allow'`,
+      )
+      .all(o.project_id)
+
+    L.push('')
+    if (pending.length) {
+      L.push('Tools an agent asked for on this project and that are STILL refused today:')
+      for (const r of pending) L.push(`- \`${r.pattern}\` (${r.decision}, asked ${r.requested}×)`)
+    } else {
+      L.push(
+        'Every tool refusal that appears in the history above has since been granted: nothing is ' +
+          'refused on this project today. Do not raise past refusals as work to be done.',
+      )
+    }
+
     if (measured.length) {
       L.push('')
       L.push('What this project can measure, and what it reads TODAY:')

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { api, type Brief } from '../api'
 
 /**
@@ -59,7 +59,7 @@ async function ask() {
     brief.value = await api.recalibrate(props.objectiveId)
     poll()
   } catch (e: any) {
-    error.value = e?.response?.data?.error ?? e?.message ?? 'the request was refused'
+    error.value = e?.response?.data?.message ?? e?.message ?? 'the request was refused'
   } finally {
     busy.value = false
   }
@@ -109,7 +109,7 @@ async function apply() {
     brief.value = null
     emit('applied')
   } catch (e: any) {
-    error.value = e?.response?.data?.error ?? e?.message ?? 'it was refused'
+    error.value = e?.response?.data?.message ?? e?.message ?? 'it was refused'
     // A refusal on the size is a question, not a wall: confirming once more is
     // the answer, and the button says so rather than repeating the same refusal.
     if (/shorter than the one it replaces/.test(error.value ?? '')) shrinkOk.value = true
@@ -119,6 +119,12 @@ async function apply() {
 }
 
 const shrinkOk = ref(false)
+
+/** Is there anything this apply could actually write? */
+const applicable = computed(() => {
+  const p: any = brief.value?.proposal
+  return Boolean(p?.criterion?.trim() || p?.steps?.length)
+})
 
 const VERDICT: Record<string, { word: string; ink: string }> = {
   provable: { word: 'It can be proven as written', ink: 'text-proof' },
@@ -211,13 +217,23 @@ const VERDICT: Record<string, { word: string; ink: string }> = {
 
         <div class="flex items-center gap-2 mt-3">
           <template v-if="brief.actionable !== false">
+            <!-- Nothing to apply is a real answer, and it had a button anyway.
+                 `instrument_missing` proposes no criterion and no steps — there
+                 is nothing to write — so pressing apply could only ever fail,
+                 and it did: a bare 422 where a sentence belonged. What this
+                 verdict asks for is a decision, and that box is below. -->
             <button
+              v-if="applicable"
               class="chip border-proof text-proof bg-proof/10 hover:bg-proof/20"
               :disabled="busy"
               @click="apply"
             >
               {{ busy ? '…' : shrinkOk ? 'yes — apply it anyway' : 'apply it' }}
             </button>
+            <span v-else class="text-ink-500 text-[11px]">
+              Nothing to apply — it proposes no criterion and no steps. What it asks for is a
+              decision, below.
+            </span>
             <button class="chip border-ink-700 text-ink-500 hover:text-ink-300" @click="brief = null">
               leave it
             </button>

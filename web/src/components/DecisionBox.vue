@@ -45,7 +45,7 @@ async function record() {
     text.value = ''
     emit('recorded')
   } catch (e: any) {
-    error.value = e?.response?.data?.error ?? e?.message ?? 'it was refused'
+    error.value = e?.response?.data?.message ?? e?.message ?? 'it was refused'
   } finally {
     busy.value = false
   }
