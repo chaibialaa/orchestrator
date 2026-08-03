@@ -193,6 +193,30 @@ const RISKS: BlastRadius[] = ['cosmetic', 'feature', 'api', 'critical']
         </button>
       </header>
 
+      <!-- A chapter's own criterion, editable like a step's.
+           Only the title was, so a chapter carrying its criterion directly —
+           and one with no steps carries nothing else — could not be re-aimed
+           from any screen at all. That is the exact move an arbitration makes:
+           "the relief costs these frames, say so in the criterion". Ten passes
+           and $531 went into a criterion nobody could rewrite without a
+           database. -->
+      <label class="block -mt-2 mb-5">
+        <span class="label">What will prove this chapter is finished</span>
+        <textarea
+          rows="3"
+          class="mt-1 w-full bg-ink-950 border rounded px-2.5 py-2 text-[12px] text-ink-300 leading-relaxed resize-y focus:outline-none focus:border-run"
+          :class="chapter.proof_spec ? 'border-ink-800' : 'border-ink-800'"
+          :placeholder="
+            steps.length
+              ? 'Optional — the steps below carry the proof for this chapter'
+              : 'A checkable condition — this chapter has no steps, so nothing else can prove it'
+          "
+          :value="chapter.proof_spec ?? ''"
+          @change="patch(chapter, 'proof_spec', ($event.target as HTMLTextAreaElement).value)"
+        />
+        <span v-if="state[`${chapter.id}:proof_spec`]" class="label text-proof">saved</span>
+      </label>
+
       <!-- Launch the whole chapter, rather than returning here between each step. -->
       <div class="-mt-3 mb-4">
         <RunSeries :slug="slug" :chapter="chapter" :steps="steps" @queued="load" />
