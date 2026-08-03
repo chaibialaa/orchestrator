@@ -479,7 +479,10 @@ function undecidedRefusals(db) {
 function unpricedHarness(db) {
   return db
     .prepare(
-      `SELECT p.slug, p.name, pa.harness, COUNT(*) n, COALESCE(SUM(pa.tokens),0) tokens
+      `SELECT p.slug, p.name, pa.harness, COUNT(*) n, COALESCE(SUM(pa.tokens),0) tokens,
+              (SELECT pa2.model FROM passages pa2 JOIN objectives o2 ON o2.id = pa2.objective_id
+                WHERE o2.project_id = p.id AND pa2.harness = pa.harness AND pa2.model IS NOT NULL
+                ORDER BY pa2.id DESC LIMIT 1) model
        FROM passages pa
        JOIN objectives o ON o.id = pa.objective_id
        JOIN projects p ON p.id = o.project_id
@@ -493,16 +496,21 @@ function unpricedHarness(db) {
       group: 'Work counted in tokens and never priced',
       severity: WARNING,
       project: r.slug,
-      title: `${r.harness} on ${r.name}: ${r.n} attempt(s), ${(r.tokens / 1e6).toFixed(1)} M tokens, no price`,
+      title:
+        `${r.harness} on ${r.name}: ${r.n} attempt(s), ${(r.tokens / 1e6).toFixed(1)} M tokens, no price` +
+        (r.model ? ` — it ran \`${r.model}\`` : ''),
       detail:
         `Nothing declares what a million tokens cost for \`${r.harness}\` here, so every one of ` +
         'those attempts is recorded at zero — and zero is what the screens add up. The budget ' +
         'guardrails count it as free too, which is the part that matters: a run can spend its ' +
         'whole allowance on a harness the guard believes costs nothing.',
-      action:
-        `Add the rates to .orchestrator.json → codexPricing, as $ per million ` +
-        `[input, output, cached]. No rate is invented for you: a wrong figure inside a budget ` +
-        'guard is worse than an honest gap.',
+      action: r.model
+        ? `Look up what ${r.model} costs per million tokens and put it in .orchestrator.json → ` +
+          `codexPricing: {"${r.model}": [input, output, cached]}. No rate is invented for you — a ` +
+          'wrong figure inside a budget guard is worse than an honest gap.'
+        : 'Add the rates to .orchestrator.json → codexPricing, as $ per million [input, output, ' +
+          'cached]. No rate is invented for you: a wrong figure inside a budget guard is worse ' +
+          'than an honest gap.',
       since: null,
     }))
 }

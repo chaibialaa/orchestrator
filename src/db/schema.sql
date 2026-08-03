@@ -76,6 +76,10 @@ CREATE TABLE IF NOT EXISTS passages (
   -- thing it certainly is not. 21 Codex passes and 13 million tokens showed as
   -- $0 on every screen of a tool whose whole argument is that cost is derived.
   cost_known   INTEGER NOT NULL DEFAULT 1,
+  -- Which model actually ran. Read from the harness traces and, until now, read
+  -- and thrown away — so "no rate is declared for Codex" was a question nobody
+  -- could answer: you cannot look up the price of a model you are not told.
+  model        TEXT,
   tokens       INTEGER NOT NULL DEFAULT 0,
   requests     INTEGER NOT NULL DEFAULT 0,
   -- Dates as TEXT: in MySQL, the first TIMESTAMP column received an implicit

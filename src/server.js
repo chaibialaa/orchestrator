@@ -1026,8 +1026,14 @@ export function createServer() {
      */
     const priced = b.cost_usd !== undefined && b.cost_usd !== null
     db()
-      .prepare('UPDATE passages SET tokens = ?, requests = ?, cost_usd = ?, cost_known = ? WHERE id = ?')
-      .run(nombre(b.tokens, 0), nombre(b.requests, 0), nombre(b.cost_usd, 0), priced ? 1 : 0, p.id)
+      .prepare(
+        `UPDATE passages SET tokens = ?, requests = ?, cost_usd = ?, cost_known = ?,
+                             model = COALESCE(?, model) WHERE id = ?`,
+      )
+      .run(
+        nombre(b.tokens, 0), nombre(b.requests, 0), nombre(b.cost_usd, 0),
+        priced ? 1 : 0, b.model ?? null, p.id,
+      )
     res.json(sortirPassage(db().prepare('SELECT * FROM passages WHERE id = ?').get(p.id)))
   })
 

@@ -2726,6 +2726,10 @@ const commands = {
     // expensive turn that proves an objective is cheap.
     let budgetWithoutProgress = Number(opts['budget-sans-progres'] ?? 40)
 
+    /** Turns the budget guard could not see, because nothing priced them. */
+    let blindTurns = 0
+    let blindTokens = 0
+
     // The declared workflow beats these defaults: it is what says where to stop,
     // what to absorb, and how far to go. Command-line options still win — they are
     // explicit.
@@ -3175,7 +3179,11 @@ const commands = {
 
       if (spentSinceProgress >= budgetWithoutProgress) {
         console.log(
-          `\n  STOP — $${spentSinceProgress.toFixed(2)} spent without a single objective being proven.\n  This is no longer a question of means: the approach is not converging.\n`,
+          `\n  STOP — $${spentSinceProgress.toFixed(2)} spent without a single objective being proven.` +
+            (blindTurns
+              ? `\n  (plus ${blindTurns} turn(s) and ${(blindTokens / 1e6).toFixed(1)} M tokens this guard could not price)`
+              : '') +
+            `\n  This is no longer a question of means: the approach is not converging.\n`,
         )
         if (willPost) {
           await postToJudgeWrapped(page)
@@ -3311,6 +3319,25 @@ const commands = {
       spent += coutTour
       spentSinceProgress += coutTour
       tokensWithoutProgress += Number(passage?.tokens ?? 0)
+
+      /**
+       * A turn the guard cannot see.
+       *
+       * `budget-sans-progres` is the only guardrail here that measures progress
+       * rather than turns, and it counts dollars. A harness nothing prices adds
+       * zero to it — so a loop can burn its whole allowance on Codex and the
+       * guard will never fire, silently, exactly when it is most needed. It
+       * cannot be fixed by inventing a rate; it can be said, on the turn it
+       * happens, so nobody reads the running total as the running total.
+       */
+      if (passage && !passage.cost_known && Number(passage.tokens ?? 0) > 0) {
+        blindTurns++
+        blindTokens += Number(passage.tokens ?? 0)
+        console.log(
+          `    ! this turn is invisible to the budget guard — ${(Number(passage.tokens) / 1e6).toFixed(1)} M tokens` +
+            `${passage.model ? ` on ${passage.model}` : ''}, and no rate prices them`,
+        )
+      }
 
       console.log(
         `    → ${outcome.verdict}${outcome.denied?.length ? ` · ${outcome.denied.length} tool(s) refused` : ''} · total $${spent.toFixed(2)}`,
@@ -4710,7 +4737,13 @@ async function runHarness(harness, task, withinChapter = null) {
       await call(
         'POST',
         `/passages/${passage.id}/usage`,
-        { tokens: diag.tokens, cost_usd: diag.cost > 0 ? Number(diag.cost.toFixed(3)) : undefined },
+        {
+          tokens: diag.tokens,
+          cost_usd: diag.cost > 0 ? Number(diag.cost.toFixed(3)) : undefined,
+          // Sent even when nothing prices it: naming the model is what turns
+          // "I do not have that figure" into one price to look up.
+          model: diag.model ?? null,
+        },
         { soft: true },
       ).catch(() => {})
 
