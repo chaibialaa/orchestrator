@@ -805,8 +805,18 @@ export const api = {
     http.post<Brief>(`/objectives/${objectiveId}/recalibrate`).then((r) => r.data),
   applyRecalibration: (
     briefId: number,
-    payload: { criterion?: string; steps?: { title: string; proof_spec?: string | null }[] },
-  ) => http.post(`/briefs/${briefId}/apply`, payload).then((r) => r.data),
+    payload: {
+      criterion?: string
+      steps?: { title: string; proof_spec?: string | null }[]
+      /** Replacing the criterion is a separate decision from accepting the diagnosis. */
+      replace_criterion?: boolean
+      /** A criterion half the length of the one it replaces is refused once, on purpose. */
+      shrink_ok?: boolean
+    },
+  ) =>
+    http
+      .post<{ steps: number; criterion_replaced: boolean }>(`/briefs/${briefId}/apply`, payload)
+      .then((r) => r.data),
   briefs: (slug: string) => http.get<Brief[]>(`/projects/${slug}/briefs`).then((r) => r.data),
   createBrief: (slug: string, body: string) =>
     http.post<Brief>(`/projects/${slug}/briefs`, { body }).then((r) => r.data),

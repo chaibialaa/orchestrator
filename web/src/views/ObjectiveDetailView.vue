@@ -396,7 +396,12 @@ const criterionItems = computed(() => {
 
         <!-- When the answer is not "run it again", ask what it should be. The
              request writes itself from the record; the reply proposes. -->
-        <AskWhatToDo class="mt-3" :objective-id="objective.id" @applied="load" />
+        <AskWhatToDo
+          class="mt-3"
+          :objective-id="objective.id"
+          :current="objective.proof_spec"
+          @applied="load"
+        />
 
         <!--
           Three attempts in, "run it again" stops being neutral advice.

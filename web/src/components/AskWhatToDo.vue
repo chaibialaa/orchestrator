@@ -17,8 +17,21 @@ import { api, type Brief } from '../api'
  * chapter 3: this cannot be proven as written, and here are the two
  * requirements that contradict each other.
  */
-const props = defineProps<{ objectiveId: number }>()
+const props = defineProps<{ objectiveId: number; current: string | null }>()
 const emit = defineEmits<{ applied: [] }>()
+
+/**
+ * Replacing the criterion is a separate, deliberate act.
+ *
+ * The first real use of this button replaced a four-item criterion with the
+ * model's one-line summary of it — a reply that MEANT "leave it alone" and was
+ * read as "here is the new text". Off by default; the current text is what sits
+ * in the box until you decide otherwise.
+ */
+const replace = ref(false)
+
+/** What the apply actually did, said afterwards rather than left to infer. */
+const done = ref<string | null>(null)
 
 const brief = ref<Brief | null>(null)
 const busy = ref(false)
@@ -33,8 +46,7 @@ async function existing() {
   const b = await api.recalibration(props.objectiveId).catch(() => null)
   if (!b) return
   brief.value = b
-  const p: any = b.proposal
-  if (p?.criterion) criterion.value = p.criterion
+  seed(b)
   if (b.status === 'pending' || b.status === 'running') poll()
 }
 onMounted(existing)
@@ -53,6 +65,18 @@ async function ask() {
   }
 }
 
+/**
+ * The box starts from what the objective SAYS today.
+ *
+ * A proposal is a proposal: pre-filling with it and hiding the original is how a
+ * paraphrase gets applied by somebody who only meant to accept the diagnosis.
+ */
+function seed(b: Brief) {
+  const p: any = b.proposal
+  criterion.value = p?.criterion ?? props.current ?? ''
+  replace.value = false
+}
+
 function poll() {
   window.clearInterval(timer)
   timer = window.setInterval(async () => {
@@ -62,8 +86,7 @@ function poll() {
     brief.value = b
     if (b.status === 'proposed' || b.status === 'failed' || b.status === 'applied') {
       window.clearInterval(timer)
-      const p: any = b.proposal
-      if (p?.criterion) criterion.value = p.criterion
+      seed(b)
     }
   }, 3000)
 }
@@ -74,18 +97,28 @@ async function apply() {
   busy.value = true
   try {
     const p: any = brief.value.proposal
-    await api.applyRecalibration(brief.value.id, {
-      criterion: criterion.value.trim() || undefined,
+    const r = await api.applyRecalibration(brief.value.id, {
+      criterion: replace.value ? criterion.value.trim() : undefined,
       steps: p?.steps ?? [],
+      replace_criterion: replace.value,
+      shrink_ok: shrinkOk.value,
     })
+    done.value =
+      (r.criterion_replaced ? 'The criterion was replaced.' : 'The criterion was left as it was.') +
+      (r.steps ? ` ${r.steps} step(s) created under this objective.` : ' No steps were created.')
     brief.value = null
     emit('applied')
   } catch (e: any) {
     error.value = e?.response?.data?.error ?? e?.message ?? 'it was refused'
+    // A refusal on the size is a question, not a wall: confirming once more is
+    // the answer, and the button says so rather than repeating the same refusal.
+    if (/shorter than the one it replaces/.test(error.value ?? '')) shrinkOk.value = true
   } finally {
     busy.value = false
   }
 }
+
+const shrinkOk = ref(false)
 
 const VERDICT: Record<string, { word: string; ink: string }> = {
   provable: { word: 'It can be proven as written', ink: 'text-proof' },
@@ -97,6 +130,13 @@ const VERDICT: Record<string, { word: string; ink: string }> = {
 
 <template>
   <div>
+    <!-- What just happened, said here rather than left to infer from a page that
+         looks the same afterwards. It stays until the next thing is asked. -->
+    <p v-if="done" class="text-proof text-[12px] mb-2 flex items-baseline gap-2">
+      <span>✓ {{ done }}</span>
+      <button class="label text-ink-600 hover:text-ink-300" @click="done = null">dismiss</button>
+    </p>
+
     <button
       v-if="!brief"
       class="chip border-ink-600 text-ink-300 hover:border-run hover:text-run transition-colors"
@@ -139,13 +179,29 @@ const VERDICT: Record<string, { word: string; ink: string }> = {
           Only you can settle: {{ (brief.proposal as any).decision_needed }}
         </p>
 
-        <label class="block mt-4">
-          <span class="label">The criterion it proposes — edit before applying</span>
+        <!-- Off by default, and the box holds what the objective says TODAY until
+             it is ticked. Accepting a diagnosis and rewriting the target are two
+             decisions, and only one of them was being asked for. -->
+        <label class="flex items-baseline gap-2 mt-4 cursor-pointer">
+          <input v-model="replace" type="checkbox" class="accent-run" />
+          <span class="text-ink-300 text-[12px]">
+            replace the criterion
+            <span v-if="!(brief.proposal as any).criterion" class="text-ink-600">
+              — it did not propose a new one
+            </span>
+          </span>
+        </label>
+
+        <label v-if="replace" class="block mt-2">
+          <span class="label">What it would become — edit before applying</span>
           <textarea
             v-model="criterion"
-            rows="4"
+            rows="5"
             class="mt-1 w-full bg-ink-950 border border-ink-800 rounded px-2.5 py-2 text-[12px] text-ink-300 leading-relaxed resize-y focus:outline-none focus:border-run"
           />
+          <span v-if="current" class="label text-ink-600 mt-1 block">
+            it is {{ current.length }} characters today, {{ criterion.length }} after
+          </span>
         </label>
 
         <p v-if="(brief.proposal as any).steps?.length" class="text-ink-400 text-[12px] mt-2">
@@ -159,7 +215,7 @@ const VERDICT: Record<string, { word: string; ink: string }> = {
             :disabled="busy"
             @click="apply"
           >
-            {{ busy ? '…' : 'apply it' }}
+            {{ busy ? '…' : shrinkOk ? 'yes — apply it anyway' : 'apply it' }}
           </button>
           <button class="chip border-ink-700 text-ink-500 hover:text-ink-300" @click="brief = null">
             leave it

@@ -2571,13 +2571,18 @@ export function createServer() {
    * it asked for is a page that asks twice.
    */
   api.get('/objectives/:id/recalibration', (req, res) => {
+    /**
+     * The LAST one, whatever became of it — and nothing at all once it is applied.
+     *
+     * This asked for "the latest that is not applied", so the moment a
+     * recalibration was applied the panel fell back to the failed attempt before
+     * it and displayed its error. A success then read, word for word, as the
+     * failure of the thing that had just worked.
+     */
     const b = db()
-      .prepare(
-        `SELECT * FROM briefs WHERE objective_id = ? AND status != 'applied'
-         ORDER BY id DESC LIMIT 1`,
-      )
+      .prepare('SELECT * FROM briefs WHERE objective_id = ? ORDER BY id DESC LIMIT 1')
       .get(req.params.id)
-    res.json(b ? sortirBrief(b) : null)
+    res.json(b && b.status !== 'applied' ? sortirBrief(b) : null)
   })
 
   api.post('/objectives/:id/recalibrate', (req, res) => {
@@ -2770,8 +2775,32 @@ export function createServer() {
       const steps = Array.isArray(d.steps) ? d.steps.filter((e) => e?.title?.trim()) : []
       if (!criterion && !steps.length) throw new Rejected('Nothing to apply: no criterion and no steps.')
 
+      /**
+       * Replacing a criterion is not a side effect of pressing apply.
+       *
+       * The first real use of this button replaced a four-item criterion with the
+       * model's own one-line summary of it — "(unchanged — this is an arbitration,
+       * not a rewrite)" — and deleted the three items the summary did not mention.
+       * The reply meant "leave it alone" and the apply read it as "here is the new
+       * text". So the caller now has to SAY it is replacing, and a criterion that
+       * loses more than half its substance is refused unless it says so twice.
+       */
+      const replacing = criterion && criterion !== o.proof_spec
+      if (replacing && !d.replace_criterion) {
+        throw new Rejected(
+          'This would rewrite the criterion. Tick “replace the criterion” if that is what you mean.',
+        )
+      }
+      if (replacing && o.proof_spec && criterion.length < o.proof_spec.length * 0.5 && !d.shrink_ok) {
+        throw new Rejected(
+          `The proposed criterion is ${Math.round((1 - criterion.length / o.proof_spec.length) * 100)}% ` +
+            'shorter than the one it replaces — that usually means a summary, not a rewrite. ' +
+            'Confirm again if you really mean to drop what it leaves out.',
+        )
+      }
+
       db().transaction(() => {
-        if (criterion && criterion !== o.proof_spec) {
+        if (replacing) {
           // `proof_spec_changed_at` is not bookkeeping: the stalling guard counts
           // attempts SINCE it, so a criterion rewritten without stamping it would
           // leave ten failures counting against a question that no longer exists
@@ -2802,9 +2831,12 @@ export function createServer() {
         db().prepare("UPDATE briefs SET status = 'applied' WHERE id = ?").run(b.id)
       })()
 
+      // What it DID, in the words the screen will repeat. "Applied" alone leaves
+      // the reader to guess whether the criterion moved.
       return res.json({
         objective: db().prepare('SELECT * FROM objectives WHERE id = ?').get(o.id),
         steps: steps.length,
+        criterion_replaced: Boolean(replacing),
       })
     }
 
