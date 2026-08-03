@@ -19,6 +19,14 @@ const objective = ref<Objective | null>(null)
 const loading = ref(true)
 const busyOn = ref(false)
 const detailsOpen = ref(false)
+
+/** Setting aside destroys nothing: it stops being counted, and nothing runs on it. */
+const dropping = ref(false)
+async function setAside() {
+  await api.updateObjective(Number(props.id), { status: 'abandoned' })
+  dropping.value = false
+  await load()
+}
 const expanded = ref<Set<number>>(new Set())
 const preview = ref<{ url: string; name: string; text?: string; id: number } | null>(null)
 
@@ -355,18 +363,49 @@ const criterionItems = computed(() => {
            block, so it appeared only while a halt was open. In every other
            state, including the commonest one, this page could not start
            anything. -->
-      <div class="mt-5 pt-4 border-t border-ink-800 flex items-baseline gap-4 flex-wrap">
-        <span class="label text-ink-500">or work on it</span>
-        <RunControl
-          v-if="objective.project"
-          :slug="objective.project"
-          :objective-id="objective.id"
-          :proof-spec="objective.proof_spec"
-          :label="passages.length ? 'Run it again' : 'Run it'"
-        />
-        <RouterLink :to="`/p/${objective.project}/plan`" class="label hover:text-ink-300">
-          change what would prove it ▸
-        </RouterLink>
+      <div class="mt-5 pt-4 border-t border-ink-800">
+        <div class="flex items-baseline gap-4 flex-wrap">
+          <span class="label text-ink-500">or work on it</span>
+          <RunControl
+            v-if="objective.project"
+            :slug="objective.project"
+            :objective-id="objective.id"
+            :proof-spec="objective.proof_spec"
+            :label="passages.length ? 'Run it again' : 'Run it'"
+          />
+          <RouterLink
+            :to="`/p/${objective.project}/plan`"
+            class="chip border-ink-600 text-ink-300 hover:border-run hover:text-run transition-colors"
+          >
+            change what would prove it ▸
+          </RouterLink>
+
+          <!-- Two clicks rather than a confirm(): a browser dialog blocks
+               everything, and this is not urgent enough to freeze a page for. -->
+          <!-- No condition needed: this whole card only exists while the
+               objective is neither proven nor set aside. -->
+          <button
+            class="chip ml-auto transition-colors"
+            :class="dropping ? 'border-fail text-fail' : 'border-ink-700 text-ink-500 hover:border-fail hover:text-fail'"
+            @click="dropping ? setAside() : (dropping = true)"
+          >
+            {{ dropping ? 'yes — stop counting it' : 'set it aside' }}
+          </button>
+        </div>
+
+        <!--
+          Three attempts in, "run it again" stops being neutral advice.
+          The page showed the tally and left the conclusion to the reader, so the
+          only visible move was the one that repeats what already happened: ten
+          passes and $531 went that way on this very chapter, against a criterion
+          that had been over-constrained since its first day. The figures are
+          already on the page; what was missing was the sentence they make.
+        -->
+        <p v-if="passages.length >= 3" class="text-ink-500 text-[12px] mt-3 max-w-[80ch] leading-relaxed">
+          {{ passages.length }} attempts so far, {{ tally.pass }} of them settled by something that
+          returned a verdict. Another run repeats those unless what you ask for changes — the
+          instruction, or the criterion itself.
+        </p>
       </div>
     </section>
 
