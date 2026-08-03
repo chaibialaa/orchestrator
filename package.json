@@ -4,7 +4,7 @@
   "description": "A driving loop for coding agents: a judge decides, an agent executes, a proof settles it. Cost, deliverables and progress are derived from the traces — never declared.",
   "type": "module",
   "bin": {
-    "orchestrator": "./src/cli.js"
+    "orchestrator": "src/cli.js"
   },
   "engines": {
     "node": ">=20"
@@ -14,7 +14,8 @@
     "build": "npm --prefix web run build -- --outDir ../public --emptyOutDir",
     "dev": "npm --prefix web run dev",
     "test": "node --test \"test/*.test.js\"",
-    "prepublishOnly": "npm run build && npm test"
+    "prerelease-guard": "node -e \"const v=require('./package.json').version, t=process.env.npm_config_tag||'latest'; if(v.includes('-')&&t==='latest'){console.error('\\n  '+v+' is a pre-release and would be published as the default version.\\n  publishConfig.tag is NOT honoured by this npm, so it has to be on the command:\\n\\n    npm publish --tag beta\\n');process.exit(1)}\"",
+    "prepublishOnly": "npm run prerelease-guard && npm run build && npm test"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
@@ -41,8 +42,7 @@
     "automation"
   ],
   "publishConfig": {
-    "access": "public",
-    "tag": "beta"
+    "access": "public"
   },
   "files": [
     "src",
