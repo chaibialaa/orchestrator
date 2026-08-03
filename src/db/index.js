@@ -137,12 +137,24 @@ function addMissingColumns(db) {
     ['agents', 'kind', 'TEXT'],
     // A brief that is about one objective rather than about new work.
     ['briefs', 'objective_id', 'INTEGER'],
+    // Whether a recorded cost means anything, or whether nothing priced it.
+    ['passages', 'cost_known', 'INTEGER NOT NULL DEFAULT 1'],
   ]
 
   for (const [table, column, type] of additions) {
     const exists = db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)
     if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
   }
+
+  /**
+   * Rows recorded before the column existed claim to be priced, because that is
+   * what its default says. Tokens burned with a cost of exactly zero were not
+   * priced by anything — nobody spends a million tokens for free — so they are
+   * corrected once. Idempotent by construction: after this they no longer match.
+   */
+  db.exec(
+    "UPDATE passages SET cost_known = 0 WHERE cost_known = 1 AND tokens > 0 AND cost_usd = 0",
+  )
 
   renameLegacyColumns(db)
   translateStoredKeys(db)

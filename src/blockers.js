@@ -86,6 +86,7 @@ export function blockers() {
   out.push(...nothingMeasuresIt(db))
   out.push(...undecidedRefusals(db))
   out.push(...storages(db))
+  out.push(...unpricedHarness(db))
 
   /**
    * One shape, whichever condition fired.
@@ -460,6 +461,49 @@ function undecidedRefusals(db) {
       action: 'Decide it in Permissions — a pending decision reads as a refusal to every pass.',
       link: { to: `/p/${r.slug}/permissions`, label: 'Open Permissions' },
       since: r.last_requested_at,
+    }))
+}
+
+/**
+ * A harness whose work is counted and never priced.
+ *
+ * The pricing code says it out loud — "an unmeasured harness looks free, and
+ * free is the one thing it certainly is not" — and then writes zero, which every
+ * screen prints as $0. Twenty-one Codex passes and thirteen million tokens read
+ * as costing nothing, in a tool whose entire argument is that cost is derived
+ * from the traces rather than declared.
+ *
+ * A warning rather than a blocker: the work happens, it is the accounting that
+ * is blind. But it is the accounting this tool sells.
+ */
+function unpricedHarness(db) {
+  return db
+    .prepare(
+      `SELECT p.slug, p.name, pa.harness, COUNT(*) n, COALESCE(SUM(pa.tokens),0) tokens
+       FROM passages pa
+       JOIN objectives o ON o.id = pa.objective_id
+       JOIN projects p ON p.id = o.project_id
+       WHERE pa.cost_known = 0 AND pa.tokens > 0
+       GROUP BY p.slug, p.name, pa.harness
+       HAVING n > 0`,
+    )
+    .all()
+    .map((r) => ({
+      kind: 'harness_unpriced',
+      group: 'Work counted in tokens and never priced',
+      severity: WARNING,
+      project: r.slug,
+      title: `${r.harness} on ${r.name}: ${r.n} attempt(s), ${(r.tokens / 1e6).toFixed(1)} M tokens, no price`,
+      detail:
+        `Nothing declares what a million tokens cost for \`${r.harness}\` here, so every one of ` +
+        'those attempts is recorded at zero — and zero is what the screens add up. The budget ' +
+        'guardrails count it as free too, which is the part that matters: a run can spend its ' +
+        'whole allowance on a harness the guard believes costs nothing.',
+      action:
+        `Add the rates to .orchestrator.json → codexPricing, as $ per million ` +
+        `[input, output, cached]. No rate is invented for you: a wrong figure inside a budget ` +
+        'guard is worse than an honest gap.',
+      since: null,
     }))
 }
 

@@ -1017,9 +1017,17 @@ export function createServer() {
     const p = db().prepare('SELECT * FROM passages WHERE id = ?').get(req.params.id)
     if (!p) throw new Rejected('This attempt does not exist.', 404)
     const b = req.body ?? {}
+    /**
+     * A cost of zero and a cost nobody could compute are not the same figure.
+     *
+     * The caller sends `cost_usd` only when something priced it; absent, we
+     * record the tokens and say plainly that the amount means nothing, rather
+     * than letting a harness with no declared rate read as free.
+     */
+    const priced = b.cost_usd !== undefined && b.cost_usd !== null
     db()
-      .prepare('UPDATE passages SET tokens = ?, requests = ?, cost_usd = ? WHERE id = ?')
-      .run(nombre(b.tokens, 0), nombre(b.requests, 0), nombre(b.cost_usd, 0), p.id)
+      .prepare('UPDATE passages SET tokens = ?, requests = ?, cost_usd = ?, cost_known = ? WHERE id = ?')
+      .run(nombre(b.tokens, 0), nombre(b.requests, 0), nombre(b.cost_usd, 0), priced ? 1 : 0, p.id)
     res.json(sortirPassage(db().prepare('SELECT * FROM passages WHERE id = ?').get(p.id)))
   })
 

@@ -101,6 +101,17 @@ const proof = computed(() => {
           :harnesses="data.harnesses"
         />
         <p v-else class="text-ink-600 text-[12px] mt-3">Nothing spent yet.</p>
+
+        <!-- The gap in the total, next to the total. A chart that adds up costs
+             and says nothing about the attempts nobody priced reports a figure as
+             if it were the figure. -->
+        <p v-if="data.unpriced?.length" class="text-halt text-[11px] mt-3 leading-relaxed">
+          Not in this total:
+          <span v-for="(u, i) in data.unpriced" :key="u.harness">
+            <span v-if="i">, </span>{{ u.n }} {{ u.harness }} attempt{{ u.n > 1 ? 's' : '' }} and
+            {{ (u.tokens / 1e6).toFixed(1) }} M tokens that nothing prices</span
+          >. Declare the rates in <span class="num">.orchestrator.json → codexPricing</span>.
+        </p>
       </div>
 
       <!-- HOW FAR EACH CHAPTER IS -->

@@ -310,6 +310,8 @@ export interface NextStep {
 
 /** The series behind the charts — counted from the same rows as everything else. */
 export interface Charts {
+  /** Attempts whose cost nothing could compute — named rather than added as zero. */
+  unpriced: { harness: string; n: number; tokens: number }[]
   tools: { name: string; n: number; other?: boolean }[]
   /** Tool use was not recorded from day one; the charts say so rather than imply otherwise. */
   tools_from: { passages: number; of: number }

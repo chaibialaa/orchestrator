@@ -121,7 +121,23 @@ export function charts({ project } = {}) {
     )
     .get(args)
 
+  /**
+   * What is missing from the money, said beside the money.
+   *
+   * A chart that adds up costs and stays silent about the attempts nothing
+   * priced is not neutral: it reports a total as if it were the total.
+   */
+  const unpriced = db
+    .prepare(
+      `SELECT pa.harness, COUNT(*) n, COALESCE(SUM(pa.tokens),0) tokens
+       FROM passages pa JOIN objectives o ON o.id = pa.objective_id
+       WHERE pa.cost_known = 0 AND pa.tokens > 0 ${scope}
+       GROUP BY pa.harness`,
+    )
+    .all(args)
+
   return {
+    unpriced,
     tools,
     /** Said out loud: half the attempts predate the recording of tool use. */
     tools_from: { passages: counted, of: passages.length },

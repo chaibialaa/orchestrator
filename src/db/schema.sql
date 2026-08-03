@@ -71,6 +71,11 @@ CREATE TABLE IF NOT EXISTS passages (
   git_before   TEXT,
   git_after    TEXT,
   cost_usd     REAL NOT NULL DEFAULT 0,
+  -- Whether that figure means anything. A harness with no declared rate records
+  -- its tokens and a cost of zero, and zero reads as "free" — which is the one
+  -- thing it certainly is not. 21 Codex passes and 13 million tokens showed as
+  -- $0 on every screen of a tool whose whole argument is that cost is derived.
+  cost_known   INTEGER NOT NULL DEFAULT 1,
   tokens       INTEGER NOT NULL DEFAULT 0,
   requests     INTEGER NOT NULL DEFAULT 0,
   -- Dates as TEXT: in MySQL, the first TIMESTAMP column received an implicit
