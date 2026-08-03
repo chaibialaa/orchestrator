@@ -460,6 +460,40 @@ export function nextStepForObjective(id) {
   }
 
   /**
+   * A pass in flight outranks everything: there is nothing to do but watch it.
+   *
+   * The band went on saying "you have decided — nothing has run on it since"
+   * with `turn 1 — codex on #26` printed directly underneath. Two states of the
+   * same objective, contradicting each other, four lines apart. An instruction
+   * that does not follow the machine is worse than none: it teaches the reader
+   * that the top of the page is decoration.
+   */
+  const live = db
+    .prepare(
+      `SELECT id, harness, started_at FROM passages
+       WHERE objective_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1`,
+    )
+    .get(id)
+  const queued = db
+    .prepare(
+      `SELECT id, status FROM runs WHERE objective_id = ? AND status IN ('pending','running')
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(id)
+
+  if ((live || queued) && o.status !== 'proven') {
+    return {
+      tone: 'work',
+      headline: live ? 'A pass is working on it right now' : 'A pass is queued and about to start',
+      why: live
+        ? `${live.harness} has been on it since ${live.started_at?.slice(11, 16) ?? 'a moment ago'}.`
+        : 'The worker on the machine that holds the repository takes it within seconds.',
+      action: 'Nothing to do but let it work — or stop it, which finishes the turn it is in.',
+      from: 'running',
+    }
+  }
+
+  /**
    * A halt outranks a decision, because it outranks a start.
    *
    * The band went on saying "you have decided — start a pass" while the pass it

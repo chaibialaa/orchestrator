@@ -169,8 +169,13 @@ function since(iso: string | null) {
 
     <!-- Nothing to start: the gate refuses an objective that does not say how it
          would be proven, and offering the button anyway teaches people that this
-         tool's buttons do not work. -->
-    <template v-if="mode === 'chapter' && proofSpec !== undefined && !proofSpec?.trim()">
+         tool's buttons do not work.
+
+         `v-else-if`, not `v-if`: this opened a SECOND condition chain, so its
+         `v-else` — the start button — had no idea a run was live. A pass showing
+         "turn 0 · stop" also offered "start a pass", side by side, and had done
+         since the control was written. -->
+    <template v-else-if="mode === 'chapter' && proofSpec !== undefined && !proofSpec?.trim()">
       <span class="text-ink-600">
         Nothing can run this until someone writes what would prove it.
       </span>

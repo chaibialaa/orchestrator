@@ -360,7 +360,9 @@ const criterionItems = computed(() => {
               ? 'from a reading of this objective'
               : step.from === 'halt'
                 ? 'the loop stopped itself'
-                : 'your decision, recorded'
+                : step.from === 'running'
+                  ? 'measured on this machine'
+                  : 'your decision, recorded'
           }}
         </span>
       </div>
@@ -430,7 +432,10 @@ const criterionItems = computed(() => {
            Telling somebody to do a thing and leaving the control for it further
            down the page is the same defect as having no control at all: they read
            an instruction and look for what to press. -->
-      <div v-if="step.from === 'decision' && objective.project" class="mt-4 pt-4 border-t border-run/20">
+      <div
+        v-if="['decision', 'running'].includes(step.from ?? '') && objective.project"
+        class="mt-4 pt-4 border-t border-run/20"
+      >
         <RunControl
           :slug="objective.project"
           :objective-id="objective.id"
@@ -438,7 +443,7 @@ const criterionItems = computed(() => {
           :instruction="step.why ?? ''"
           label="Start a pass with this decision"
         />
-        <p class="text-ink-500 text-[11px] mt-2">
+        <p v-if="step.from === 'decision'" class="text-ink-500 text-[11px] mt-2">
           Your decision is already written into what it will be told — open “what to tell it” to
           read or change it before you start.
         </p>

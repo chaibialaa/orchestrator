@@ -289,7 +289,7 @@ export interface ObjectiveStep {
   why: string
   action: string | null
   /** Set when the instruction comes from an analysis of this objective, not from the gate. */
-  from?: 'analysis' | 'decision' | 'halt'
+  from?: 'analysis' | 'decision' | 'halt' | 'running'
   /** The halt that must be cleared before anything else, when there is one. */
   halt?: number
   /** Branches to choose between — two or three, each with its price. */
