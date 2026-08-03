@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { api } from '../api'
 
 /**
@@ -16,10 +16,19 @@ import { api } from '../api'
  * it asks for a sentence rather than a click on "A" or "B" — a branch label
  * means nothing to a session that never read the analysis.
  */
-const props = defineProps<{ slug: string; objectiveId: number; question: string }>()
+const props = defineProps<{ slug: string; objectiveId: number; question: string; prefill?: string }>()
 const emit = defineEmits<{ recorded: [] }>()
 
 const text = ref('')
+
+// Picking a branch above writes the sentence here; it stays editable, because
+// those are the model's words about your choice and you may not mean them.
+watch(
+  () => props.prefill,
+  (v) => {
+    if (v) text.value = v
+  },
+)
 const busy = ref(false)
 const error = ref<string | null>(null)
 

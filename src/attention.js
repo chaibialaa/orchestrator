@@ -413,17 +413,48 @@ export function nextStepForObjective(id) {
     )
     .get(id)
 
-  if (verdict?.verdict && verdict.verdict !== 'provable' && o.status !== 'proven' && !decided) {
+  /**
+   * Shown when there is something to CHOOSE, not when the verdict is bad.
+   *
+   * This first read "any verdict except provable", and the second analysis of
+   * chapter 3 came back `provable` with three branches and a question — the most
+   * useful answer yet, and the rule would have dropped it on the floor. What
+   * decides is whether a person still has something to settle.
+   */
+  const toSettle = Boolean(verdict?.options?.length || verdict?.decision_needed)
+
+  if (verdict && toSettle && o.status !== 'proven' && !decided) {
     const WORD = {
       over_constrained: 'Two of its requirements cannot both hold',
       unmeasurable: 'Nothing can measure this as written',
       too_big: 'Too big for one session — it wants splitting',
+      provable: 'It can be proven — but not without a choice from you',
     }
     return {
       tone: 'decide',
       headline: WORD[verdict.verdict] ?? verdict.verdict,
-      why: (verdict.contradiction ?? []).join('\n') || verdict.why,
+      /**
+       * Only what is SHORT enough to be read standing up.
+       *
+       * A contradiction arrives as two lines and belongs at the top. The long
+       * reasoning does not: with no contradiction this fell back to it, printed a
+       * wall above the options, and then offered the same wall again behind
+       * "read the reasoning". The fold is where it lives when there are branches
+       * to choose instead.
+       */
+      why: (verdict.contradiction ?? []).join('\n') || (verdict.options?.length ? '' : verdict.why),
       action: verdict.decision_needed ?? 'Read what it found, below, and decide.',
+      /**
+       * The branches, as things to choose rather than as a paragraph to distil.
+       *
+       * The first version of this returned the whole reasoning in `action` — 1500
+       * characters of prose with "Branche A" and "Branche B" buried in it — and
+       * asked the reader to synthesise a decision out of it. The tool held the
+       * structure and handed over the work of finding it.
+       */
+      options: Array.isArray(verdict.options) ? verdict.options : [],
+      /** The long reasoning, kept but folded away: it is there to be checked. */
+      reasoning: verdict.why ?? null,
       from: 'analysis',
     }
   }

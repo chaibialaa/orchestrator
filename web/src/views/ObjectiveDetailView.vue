@@ -41,6 +41,19 @@ const preview = ref<{ url: string; name: string; text?: string; id: number } | n
  */
 const step = ref<ObjectiveStep | null>(null)
 
+/** Which branch is picked, and the sentence it writes. Both stay editable. */
+const chosen = ref<number | null>(null)
+const prefill = ref('')
+const showWhy = ref(false)
+
+function choose(i: number, opt: { label: string; gives_up: string; then: string }) {
+  chosen.value = i
+  // The sentence says what is GIVEN UP, because that is what makes a decision a
+  // decision — and it lands in a box that stays editable: these are the model's
+  // words about your choice, not your words.
+  prefill.value = `${opt.label}. We give up: ${opt.gives_up} Next: ${opt.then}`
+}
+
 async function load() {
   loading.value = true
   objective.value = await api.objective(props.id)
@@ -333,11 +346,67 @@ const criterionItems = computed(() => {
           {{ step.from === 'analysis' ? 'from a reading of this objective' : 'your decision, recorded' }}
         </span>
       </div>
+      <!-- The contradiction, one short line each. It arrives structured; printing
+           it as a paragraph made the reader find it again. -->
+      <ul v-if="step.why" class="mt-2 space-y-1">
+        <li
+          v-for="(line, i) in step.why.split('\n').filter(Boolean)"
+          :key="i"
+          class="text-ink-400 text-[12px] leading-relaxed flex gap-2"
+        >
+          <span class="text-ink-700">·</span><span>{{ line }}</span>
+        </li>
+      </ul>
+
+      <!-- The question, one sentence. The reasoning behind it is folded away: it
+           is there to be checked, not to be distilled by whoever must decide. -->
+      <!-- No reading measure on two lines: an 80-character cap inside a full-width
+           card leaves half of it empty, which reads as a layout that broke rather
+           than as a line somebody chose to keep short. The cap stays on the folded
+           reasoning below, where the paragraphs are long enough to need it. -->
+      <p v-if="step.action" class="text-ink-100 mt-3 leading-relaxed">
+        → {{ step.options?.length ? step.action.split(/(?<=[.!?])\s/)[0] : step.action }}
+      </p>
+      <button
+        v-if="step.options?.length && step.reasoning"
+        class="label text-ink-600 hover:text-ink-300 mt-1"
+        @click="showWhy = !showWhy"
+      >
+        {{ showWhy ? 'hide the reasoning' : 'read the reasoning behind it' }}
+      </button>
       <p
-        v-if="step.why"
-        class="text-ink-400 mt-2 leading-relaxed max-w-[80ch] whitespace-pre-line"
-      >{{ step.why }}</p>
-      <p v-if="step.action" class="text-ink-100 mt-2 leading-relaxed max-w-[80ch]">→ {{ step.action }}</p>
+        v-if="showWhy && step.reasoning"
+        class="text-ink-500 text-[12px] mt-2 leading-relaxed max-w-[80ch] whitespace-pre-line border-l-2 border-ink-800 pl-3"
+      >{{ step.reasoning }}</p>
+
+      <!-- The branches, as things to press rather than a paragraph to distil. -->
+      <div
+        v-if="step.options?.length"
+        class="mt-4 grid gap-2.5"
+        :class="step.options.length > 1 ? 'md:grid-cols-2' : ''"
+      >
+        <button
+          v-for="(opt, i) in step.options"
+          :key="i"
+          class="text-left border rounded p-3.5 transition-colors"
+          :class="chosen === i ? 'border-halt bg-halt/10' : 'border-ink-700 hover:border-ink-600'"
+          @click="choose(i, opt)"
+        >
+          <div class="flex items-baseline gap-2">
+            <span
+              class="w-3 h-3 rounded-full border shrink-0 self-center"
+              :class="chosen === i ? 'border-halt bg-halt' : 'border-ink-600'"
+            />
+            <span class="text-ink-100 text-[13px]">{{ opt.label }}</span>
+          </div>
+          <p class="text-halt text-[12px] mt-1.5 leading-relaxed">
+            <span class="label text-ink-600">you give up</span> {{ opt.gives_up }}
+          </p>
+          <p class="text-ink-400 text-[12px] mt-1 leading-relaxed">
+            <span class="label text-ink-600">then</span> {{ opt.then }}
+          </p>
+        </button>
+      </div>
 
       <!-- The instruction named a decision; this is where it is taken. Without
            it the page asked for a judgement and offered only the button that
@@ -347,6 +416,7 @@ const criterionItems = computed(() => {
         :slug="objective.project"
         :objective-id="objective.id"
         :question="step.action"
+        :prefill="prefill"
         @recorded="load"
       />
     </section>

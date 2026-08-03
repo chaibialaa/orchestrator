@@ -171,6 +171,7 @@ export interface Breakdown {
 export interface Recalibration {
   verdict: 'provable' | 'unmeasurable' | 'over_constrained' | 'too_big'
   why: string
+  options?: { label: string; gives_up: string; then: string }[]
   criterion?: string | null
   contradiction?: string[]
   decision_needed?: string | null
@@ -289,6 +290,10 @@ export interface ObjectiveStep {
   action: string | null
   /** Set when the instruction comes from an analysis of this objective, not from the gate. */
   from?: 'analysis' | 'decision'
+  /** Branches to choose between — two or three, each with its price. */
+  options?: { label: string; gives_up: string; then: string }[]
+  /** The full reasoning, folded away: there to be checked, not to be distilled. */
+  reasoning?: string | null
 }
 
 /** The one thing to do next on a project, ranked by the tool rather than by the reader. */
