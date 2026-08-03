@@ -347,6 +347,27 @@ const criterionItems = computed(() => {
           </button>
         </div>
       </div>
+
+      <!-- Two verdicts and no way to work.
+           A page that says "not ready to conclude" and offers only the buttons
+           that conclude leaves you to guess which other screen has the one that
+           advances. The run control lived here already — inside the open-halts
+           block, so it appeared only while a halt was open. In every other
+           state, including the commonest one, this page could not start
+           anything. -->
+      <div class="mt-5 pt-4 border-t border-ink-800 flex items-baseline gap-4 flex-wrap">
+        <span class="label text-ink-500">or work on it</span>
+        <RunControl
+          v-if="objective.project"
+          :slug="objective.project"
+          :objective-id="objective.id"
+          :proof-spec="objective.proof_spec"
+          :label="passages.length ? 'Run it again' : 'Run it'"
+        />
+        <RouterLink :to="`/p/${objective.project}/plan`" class="label hover:text-ink-300">
+          change what would prove it ▸
+        </RouterLink>
+      </div>
     </section>
 
     <section v-if="objective.status === 'proven'" class="flex items-center gap-3 text-proof">
@@ -366,21 +387,7 @@ const criterionItems = computed(() => {
           {{ h.detail }}
         </p>
 
-        <!-- The halt said "this is an instruction to redo" and gave nothing to
-             redo it with. A page that announces "waiting on you" and offers no
-             way to act is a page that leaves you to guess which of the other
-             screens has the button. -->
-        <div v-if="objective.project" class="mt-2.5 flex items-baseline gap-4 flex-wrap">
-          <RunControl
-            :slug="objective.project"
-            :objective-id="objective.id"
-            :proof-spec="objective.proof_spec"
-            label="Run it again"
-          />
-          <RouterLink :to="`/p/${objective.project}/plan`" class="label hover:text-ink-300">
-            change what would prove it ▸
-          </RouterLink>
-        </div>
+
       </div>
     </section>
 
