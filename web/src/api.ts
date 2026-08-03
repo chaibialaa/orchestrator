@@ -288,7 +288,7 @@ export interface ObjectiveStep {
   why: string
   action: string | null
   /** Set when the instruction comes from an analysis of this objective, not from the gate. */
-  from?: 'analysis'
+  from?: 'analysis' | 'decision'
 }
 
 /** The one thing to do next on a project, ranked by the tool rather than by the reader. */
@@ -650,6 +650,10 @@ export const api = {
   objective: (id: number | string) => http.get<Objective>(`/objectives/${id}`).then((r) => r.data),
   stats: (slug: string) => http.get<Stats>(`/projects/${slug}/stats`).then((r) => r.data),
   graph: (slug: string) => http.get<{ mermaid: string }>(`/projects/${slug}/graph`).then((r) => r.data),
+  createDecision: (
+    slug: string,
+    payload: { title: string; body: string; objective_id?: number; paths?: string[] },
+  ) => http.post<Decision>(`/projects/${slug}/decisions`, payload).then((r) => r.data),
   decisions: (slug: string) => http.get<Decision[]>(`/projects/${slug}/decisions`).then((r) => r.data),
   createObjective: (slug: string, payload: Partial<Objective>) =>
     http.post<Objective>(`/projects/${slug}/objectives`, payload).then((r) => r.data),

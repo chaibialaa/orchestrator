@@ -400,7 +400,20 @@ export function nextStepForObjective(id) {
     .get(id)
   const verdict = judged ? json.read(judged.proposal, null) : null
 
-  if (verdict?.verdict && verdict.verdict !== 'provable' && o.status !== 'proven') {
+  /**
+   * A decision taken after the analysis answers it, and the page must move on.
+   *
+   * Otherwise the screen keeps asking for a judgement that has been made — and
+   * the person who made it has no way to tell whether it registered.
+   */
+  const decided = db
+    .prepare(
+      `SELECT title, body, decided_at FROM decisions
+       WHERE objective_id = ? ORDER BY id DESC LIMIT 1`,
+    )
+    .get(id)
+
+  if (verdict?.verdict && verdict.verdict !== 'provable' && o.status !== 'proven' && !decided) {
     const WORD = {
       over_constrained: 'Two of its requirements cannot both hold',
       unmeasurable: 'Nothing can measure this as written',
@@ -412,6 +425,18 @@ export function nextStepForObjective(id) {
       why: (verdict.contradiction ?? []).join('\n') || verdict.why,
       action: verdict.decision_needed ?? 'Read what it found, below, and decide.',
       from: 'analysis',
+    }
+  }
+
+  if (decided && o.status !== 'proven') {
+    return {
+      tone: 'work',
+      headline: 'You have decided — nothing has run on it since',
+      why: decided.body,
+      action:
+        'Start a pass. Every session is handed this decision and is told not to contradict it, so ' +
+        'what it does next follows from it.',
+      from: 'decision',
     }
   }
 

@@ -5,6 +5,7 @@ import Chips from '../components/Chips.vue'
 import RunControl from '../components/RunControl.vue'
 import Blockers from '../components/Blockers.vue'
 import AskWhatToDo from '../components/AskWhatToDo.vue'
+import DecisionBox from '../components/DecisionBox.vue'
 import {
 
 
@@ -328,8 +329,8 @@ const criterionItems = computed(() => {
         <span class="text-ink-100 text-[15px]">{{ step.headline }}</span>
         <!-- A rule that refuses and a reading of THIS objective are not the same
              authority, and the reader is entitled to know which is speaking. -->
-        <span v-if="step.from === 'analysis'" class="label text-ink-600 ml-auto">
-          from a reading of this objective
+        <span v-if="step.from" class="label text-ink-600 ml-auto">
+          {{ step.from === 'analysis' ? 'from a reading of this objective' : 'your decision, recorded' }}
         </span>
       </div>
       <p
@@ -337,6 +338,17 @@ const criterionItems = computed(() => {
         class="text-ink-400 mt-2 leading-relaxed max-w-[80ch] whitespace-pre-line"
       >{{ step.why }}</p>
       <p v-if="step.action" class="text-ink-100 mt-2 leading-relaxed max-w-[80ch]">→ {{ step.action }}</p>
+
+      <!-- The instruction named a decision; this is where it is taken. Without
+           it the page asked for a judgement and offered only the button that
+           repeats the attempt. -->
+      <DecisionBox
+        v-if="step.from === 'analysis' && step.action && objective.project"
+        :slug="objective.project"
+        :objective-id="objective.id"
+        :question="step.action"
+        @recorded="load"
+      />
     </section>
 
     <!-- WHY IT IS NOT MOVING — the conditions of the machine, when there are any.
