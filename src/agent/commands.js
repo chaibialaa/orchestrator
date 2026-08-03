@@ -2248,7 +2248,10 @@ const commands = {
    *
    * usage: orchestrator visual <image.png> [--ref target.png] [--min-colours 1500]
    *          [--min-hues 7] [--min-saturation 0.5] [--min-contrast 0.6] [--min-shadow 0.08]
-   *          [--min-highlight 0.01]
+   *          [--min-highlight 0.01] [--json]
+   *
+   * The last line of stdout is always the measurement as JSON, so a criterion
+   * can be settled by comparing a value rather than by reading a sentence.
    *
    * Exits 1 when a floor is not met, so it can be declared as a proof in
    * .orchestrator.json and produce a real pass/fail — rather than a score the
@@ -2256,6 +2259,10 @@ const commands = {
    * is why thirteen attempts on one objective proved nothing.
    */
   async visual(...argv) {
+    // Taken out before anything else parses: `--json` carries no value, and a
+    // flag that takes one would have swallowed the image path behind it.
+    const jsonOnly = argv.includes('--json')
+    argv = argv.filter((a) => a !== '--json')
     const opts = parseFlags(argv)
     const file = argv.find((a) => !a.startsWith('--') && argv[argv.indexOf(a) - 1]?.startsWith('--') !== true)
     if (!file)
@@ -2267,25 +2274,47 @@ const commands = {
     const { measureImage, compareToReference } = await import('../visual.js')
 
     const m = measureImage(file)
-    console.log(`\n  ${basename(file)}`)
-    console.log(
+    // `--json` prints the object alone, for a caller that needs stdout to BE
+    // JSON rather than to contain it.
+    const say = jsonOnly ? () => {} : (line) => console.log(line)
+    say(`\n  ${basename(file)}`)
+    say(
       `    saturation ${m.saturation} · ${m.hues} hues · ${m.distinctColours} distinct colours · ` +
         `green ${(m.greenShare * 100).toFixed(1)}%`,
     )
     // The value range, on its own line: it answers a different question from the
     // palette, and printing it inline invited reading them as one verdict.
-    console.log(
+    say(
       `    contrast ${m.contrast} (p95−p5) · shadow ${(m.shadowShare * 100).toFixed(1)}% · ` +
         `highlight ${(m.highlightShare * 100).toFixed(1)}%`,
     )
 
     if (opts.ref) {
       const c = compareToReference(file, opts.ref)
-      console.log(`\n  against ${basename(opts.ref)}`)
+      say(`\n  against ${basename(opts.ref)}`)
       for (const [k, v] of Object.entries(c.ratios)) {
-        console.log(`    ${k.padEnd(16)} ${v === null ? '—' : `${(v * 100).toFixed(0)}% of the reference`}`)
+        say(`    ${k.padEnd(16)} ${v === null ? '—' : `${(v * 100).toFixed(0)}% of the reference`}`)
       }
     }
+
+    /**
+     * The same six numbers, in a form a criterion can compare.
+     *
+     * A proof criterion that names this command had to be settled by someone
+     * reading the block above and retyping a number, which is the failure this
+     * file exists to remove. The line below is printed last, on stdout, on both
+     * the passing and the failing path: a gate reads it, a person reads the
+     * block, and neither depends on the other.
+     */
+    const measurement = JSON.stringify({
+      file: basename(file),
+      saturation: m.saturation,
+      hues: m.hues,
+      distinctColours: m.distinctColours,
+      contrast: m.contrast,
+      shadowShare: m.shadowShare,
+      highlightShare: m.highlightShare,
+    })
 
     // Floors only where one was asked for: a threshold nobody set is not a
     // threshold that failed.
@@ -2322,12 +2351,14 @@ const commands = {
     }
 
     if (failures.length) {
-      console.log(`\n  below the floor: ${failures.join(' · ')}\n`)
+      say(`\n  below the floor: ${failures.join(' · ')}\n`)
+      console.log(measurement)
       process.exitCode = 1
       return
     }
-    if (opts['min-colours'] || opts['min-saturation'] || opts['min-hues']) console.log('\n  floors met\n')
-    else console.log('')
+    if (opts['min-colours'] || opts['min-saturation'] || opts['min-hues']) say('\n  floors met\n')
+    else say('')
+    console.log(measurement)
   },
 
   async 'agents:check'() {

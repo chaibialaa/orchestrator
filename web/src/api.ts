@@ -282,6 +282,18 @@ export interface Chore {
   ended_at: string | null
 }
 
+/** What a running pass is doing, read from the harness's own transcript. */
+export interface Live {
+  passage: number
+  harness: string
+  started_at: string
+  /** What it was told, in full. */
+  mission: string | null
+  events: { at: string | null; kind: 'says' | 'asked' | 'uses' | 'got' | 'refused'; tool?: string; text: string }[]
+  total?: number
+  note?: string
+}
+
 /** What to do about one objective, said as an instruction rather than as a state. */
 export interface ObjectiveStep {
   tone: 'blocked' | 'decide' | 'work' | 'done'
@@ -738,6 +750,7 @@ export const api = {
   chores: (slug: string) => http.get<Chore[]>(`/projects/${slug}/chores`).then((r) => r.data),
   askChore: (slug: string, kind: string) =>
     http.post<Chore>(`/projects/${slug}/chores`, { kind }).then((r) => r.data),
+  live: (id: number) => http.get<Live | null>(`/objectives/${id}/live`).then((r) => r.data),
   objectiveNext: (id: number) =>
     http.get<ObjectiveStep>(`/objectives/${id}/next`).then((r) => r.data),
   nextStep: (slug: string) => http.get<NextStep>(`/projects/${slug}/next`).then((r) => r.data),

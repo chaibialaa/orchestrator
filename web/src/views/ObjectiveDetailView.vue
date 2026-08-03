@@ -5,6 +5,7 @@ import Chips from '../components/Chips.vue'
 import RunControl from '../components/RunControl.vue'
 import Blockers from '../components/Blockers.vue'
 import AskWhatToDo from '../components/AskWhatToDo.vue'
+import LiveFeed from '../components/LiveFeed.vue'
 import DecisionBox from '../components/DecisionBox.vue'
 import {
 
@@ -525,6 +526,8 @@ const criterionItems = computed(() => {
           :instruction="step.why ?? ''"
           label="Start a pass with this decision"
         />
+        <!-- Behind the band that says a pass is working, not beside it. -->
+        <LiveFeed :objective-id="objective.id" />
       </div>
 
       <!-- The instruction named a decision; this is where it is taken. Without

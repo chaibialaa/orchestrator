@@ -12,6 +12,7 @@ import { upload, checkStorage, createDriveFolder } from './storage.js'
 import { blockersFor } from './blockers.js'
 import { attention, attentionFor, nextStep, nextStepForObjective, choices } from './attention.js'
 import { charts } from './charts.js'
+import { live } from './live.js'
 
 /**
  * Errands the worker knows how to run. A whitelist rather than a command: the
@@ -2593,6 +2594,14 @@ export function createServer() {
    * verdict sitting in the database, bought and unread. A page that forgets what
    * it asked for is a page that asks twice.
    */
+  /**
+   * What the open attempt is doing, right now.
+   *
+   * Null when nothing runs — the caller then falls back to the recorded mission
+   * and reply, which beat a stale stream.
+   */
+  api.get('/objectives/:id/live', (req, res) => res.json(live(Number(req.params.id))))
+
   /** What to do about this one objective, in the words of somebody who has to act. */
   api.get('/objectives/:id/next', (req, res) => {
     const step = nextStepForObjective(Number(req.params.id))
