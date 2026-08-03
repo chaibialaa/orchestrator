@@ -2586,10 +2586,24 @@ export function createServer() {
      * it and displayed its error. A success then read, word for word, as the
      * failure of the thing that had just worked.
      */
+    /**
+     * The answer is kept, applied or not.
+     *
+     * This returned nothing once a recalibration had been applied, so the best
+     * diagnosis this tool has ever produced — a named contradiction, two branches
+     * to choose between, paid for with a real session — vanished from every
+     * screen the moment somebody acted on it. What you bought was a judgement,
+     * and a judgement does not stop being true because it was used.
+     *
+     * `actionable` says whether there is still something to press.
+     */
     const b = db()
-      .prepare('SELECT * FROM briefs WHERE objective_id = ? ORDER BY id DESC LIMIT 1')
+      .prepare(
+        `SELECT * FROM briefs WHERE objective_id = ? AND (proposal IS NOT NULL OR status != 'applied')
+         ORDER BY id DESC LIMIT 1`,
+      )
       .get(req.params.id)
-    res.json(b && b.status !== 'applied' ? sortirBrief(b) : null)
+    res.json(b ? { ...sortirBrief(b), actionable: b.status !== 'applied' } : null)
   })
 
   api.post('/objectives/:id/recalibrate', (req, res) => {

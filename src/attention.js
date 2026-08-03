@@ -1,4 +1,4 @@
-import { base } from './db/index.js'
+import { base, json } from './db/index.js'
 import { evaluateGate, canStart, HUMAN_HALTS } from './gate.js'
 import { blockers } from './blockers.js'
 
@@ -380,6 +380,38 @@ export function nextStepForObjective(id) {
       headline: blocking.group ?? blocking.title,
       why: blocking.detail,
       action: blocking.action,
+    }
+  }
+
+  /**
+   * A diagnosis beats a rule.
+   *
+   * The gate can say "nothing new has been produced to judge", which is true of
+   * a thousand objectives. When something has actually READ this one — its
+   * history, its failures, its criterion — and come back with "these two
+   * requirements cannot both hold, here is the decision", that is the more
+   * useful sentence, and it was sitting unread in a table.
+   */
+  const judged = db
+    .prepare(
+      `SELECT proposal FROM briefs WHERE objective_id = ? AND proposal IS NOT NULL
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(id)
+  const verdict = judged ? json.read(judged.proposal, null) : null
+
+  if (verdict?.verdict && verdict.verdict !== 'provable' && o.status !== 'proven') {
+    const WORD = {
+      over_constrained: 'Two of its requirements cannot both hold',
+      unmeasurable: 'Nothing can measure this as written',
+      too_big: 'Too big for one session — it wants splitting',
+    }
+    return {
+      tone: 'decide',
+      headline: WORD[verdict.verdict] ?? verdict.verdict,
+      why: (verdict.contradiction ?? []).join('\n') || verdict.why,
+      action: verdict.decision_needed ?? 'Read what it found, below, and decide.',
+      from: 'analysis',
     }
   }
 

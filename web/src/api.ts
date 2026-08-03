@@ -287,6 +287,8 @@ export interface ObjectiveStep {
   headline: string
   why: string
   action: string | null
+  /** Set when the instruction comes from an analysis of this objective, not from the gate. */
+  from?: 'analysis'
 }
 
 /** The one thing to do next on a project, ranked by the tool rather than by the reader. */
@@ -810,7 +812,9 @@ export const api = {
     http.patch('/agents/reorder', { ordre }).then((r) => r.data),
 
   recalibration: (objectiveId: number) =>
-    http.get<Brief | null>(`/objectives/${objectiveId}/recalibration`).then((r) => r.data),
+    http
+      .get<(Brief & { actionable: boolean }) | null>(`/objectives/${objectiveId}/recalibration`)
+      .then((r) => r.data),
   recalibrate: (objectiveId: number) =>
     http.post<Brief>(`/objectives/${objectiveId}/recalibrate`).then((r) => r.data),
   applyRecalibration: (

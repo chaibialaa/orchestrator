@@ -33,7 +33,7 @@ const replace = ref(false)
 /** What the apply actually did, said afterwards rather than left to infer. */
 const done = ref<string | null>(null)
 
-const brief = ref<Brief | null>(null)
+const brief = ref<(Brief & { actionable?: boolean }) | null>(null)
 const busy = ref(false)
 const error = ref<string | null>(null)
 let timer: number | undefined
@@ -182,7 +182,7 @@ const VERDICT: Record<string, { word: string; ink: string }> = {
         <!-- Off by default, and the box holds what the objective says TODAY until
              it is ticked. Accepting a diagnosis and rewriting the target are two
              decisions, and only one of them was being asked for. -->
-        <label class="flex items-baseline gap-2 mt-4 cursor-pointer">
+        <label v-if="brief.actionable !== false" class="flex items-baseline gap-2 mt-4 cursor-pointer">
           <input v-model="replace" type="checkbox" class="accent-run" />
           <span class="text-ink-300 text-[12px]">
             replace the criterion
@@ -192,7 +192,7 @@ const VERDICT: Record<string, { word: string; ink: string }> = {
           </span>
         </label>
 
-        <label v-if="replace" class="block mt-2">
+        <label v-if="replace && brief.actionable !== false" class="block mt-2">
           <span class="label">What it would become — edit before applying</span>
           <textarea
             v-model="criterion"
@@ -210,16 +210,34 @@ const VERDICT: Record<string, { word: string; ink: string }> = {
         </p>
 
         <div class="flex items-center gap-2 mt-3">
-          <button
-            class="chip border-proof text-proof bg-proof/10 hover:bg-proof/20"
-            :disabled="busy"
-            @click="apply"
-          >
-            {{ busy ? '…' : shrinkOk ? 'yes — apply it anyway' : 'apply it' }}
-          </button>
-          <button class="chip border-ink-700 text-ink-500 hover:text-ink-300" @click="brief = null">
-            leave it
-          </button>
+          <template v-if="brief.actionable !== false">
+            <button
+              class="chip border-proof text-proof bg-proof/10 hover:bg-proof/20"
+              :disabled="busy"
+              @click="apply"
+            >
+              {{ busy ? '…' : shrinkOk ? 'yes — apply it anyway' : 'apply it' }}
+            </button>
+            <button class="chip border-ink-700 text-ink-500 hover:text-ink-300" @click="brief = null">
+              leave it
+            </button>
+          </template>
+
+          <!-- Already acted on, and still worth reading: a judgement does not stop
+               being true because it was used. Asking again is a new session and
+               says so. -->
+          <template v-else>
+            <span class="label text-ink-600">
+              read on {{ brief.created_at?.slice(0, 16) }} · already acted on
+            </span>
+            <button
+              class="chip border-ink-700 text-ink-500 hover:border-run hover:text-run ml-auto"
+              :disabled="busy"
+              @click="ask"
+            >
+              {{ busy ? '…' : 'ask again ▸' }}
+            </button>
+          </template>
         </div>
       </template>
 
