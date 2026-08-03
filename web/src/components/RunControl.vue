@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { outcomeLabel, outcomeWorrying } from '../labels'
 import { api, type Run } from '../api'
 
@@ -24,6 +24,11 @@ const props = withDefaults(
     label?: string
     /** Absent means the gate will refuse: better to say so than to offer a button. */
     proofSpec?: string | null
+    /**
+     * What to tell the pass. Prefilled by whatever is asking for the run — a
+     * decision just recorded, a halt just answered — and editable before it goes.
+     */
+    instruction?: string
   }>(),
   { mode: 'chapter' },
 )
@@ -35,6 +40,22 @@ const showOptions = ref(false)
 let timer: number | undefined
 
 const options = ref({ max_turns: 8, budget_without_progress: 120, post: true, hold_between_turns: false })
+
+/**
+ * The instruction handed to the pass, and it did not exist.
+ *
+ * The fold was relabelled "what to tell it, and its limits" this morning and
+ * only ever held the limits: turns, budget, whether it may write. `startRun`
+ * has always accepted a `reason` and this control never sent one — so a decision
+ * taken on the screen had no way of reaching the session it was taken for.
+ */
+const instruction = ref(props.instruction ?? '')
+watch(
+  () => props.instruction,
+  (v) => {
+    if (v) instruction.value = v
+  },
+)
 
 /** Runs this control is answerable for — one objective, or the project's breakdowns. */
 const mine = computed(() =>
@@ -76,6 +97,7 @@ async function start(alongside = false) {
       mode: props.mode,
       ...(props.mode === 'plan' ? {} : { objective: props.objectiveId }),
       ...options.value,
+      ...(instruction.value.trim() ? { reason: instruction.value.trim() } : {}),
     })
     showOptions.value = false
     clash.value = false
@@ -191,6 +213,18 @@ function since(iso: string | null) {
 
   <!-- The choices that change what a run costs and how far it goes. Folded,
        because a default that works is the common case. -->
+  <div v-if="showOptions && !live" class="mt-2 space-y-2">
+    <label class="block">
+      <span class="label">What to tell it</span>
+      <textarea
+        v-model="instruction"
+        rows="3"
+        class="mt-1 w-full bg-ink-950 border border-ink-800 rounded px-2.5 py-2 text-[12px] text-ink-300 leading-relaxed resize-y focus:outline-none focus:border-run"
+        placeholder="What this pass is for, in a sentence. It is handed the criterion and the project's decisions already."
+      />
+    </label>
+  </div>
+
   <div v-if="showOptions && !live" class="mt-2 flex items-center gap-4 flex-wrap text-[11px]">
     <label v-if="mode !== 'plan'" class="flex items-center gap-1.5">
       <span class="text-ink-500">turns</span>
