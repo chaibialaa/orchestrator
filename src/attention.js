@@ -459,6 +459,34 @@ export function nextStepForObjective(id) {
     }
   }
 
+  /**
+   * A halt outranks a decision, because it outranks a start.
+   *
+   * The band went on saying "you have decided — start a pass" while the pass it
+   * was inviting could not begin: a halt had been opened by the previous
+   * attempt, and nothing on the page mentioned it. The instruction has to fail
+   * the same way the machine does.
+   */
+  const halt = db
+    .prepare(
+      `SELECT id, reason, detail FROM halts WHERE objective_id = ? AND resolved_at IS NULL
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(id)
+  if (halt && o.status !== 'proven') {
+    return {
+      tone: 'decide',
+      headline: 'A pass stopped here and nothing goes round it',
+      why: halt.detail ?? halt.reason,
+      action:
+        decided
+          ? 'You have since decided. Clear this, below, and start a pass — it will be handed your decision.'
+          : 'Answer what it asks, below, then clear it.',
+      from: 'halt',
+      halt: halt.id,
+    }
+  }
+
   if (decided && o.status !== 'proven') {
     return {
       tone: 'work',

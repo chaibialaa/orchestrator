@@ -46,6 +46,18 @@ const chosen = ref<number | null>(null)
 const prefill = ref('')
 const showWhy = ref(false)
 
+/** Lifting a halt is an act, and it belongs on the halt. */
+const clearing = ref<number | null>(null)
+async function clear(id: number) {
+  clearing.value = id
+  try {
+    await api.resolveHalt(id)
+    await load()
+  } finally {
+    clearing.value = null
+  }
+}
+
 function choose(i: number, opt: { label: string; gives_up: string; then: string }) {
   chosen.value = i
   // The sentence says what is GIVEN UP, because that is what makes a decision a
@@ -343,7 +355,13 @@ const criterionItems = computed(() => {
         <!-- A rule that refuses and a reading of THIS objective are not the same
              authority, and the reader is entitled to know which is speaking. -->
         <span v-if="step.from" class="label text-ink-600 ml-auto">
-          {{ step.from === 'analysis' ? 'from a reading of this objective' : 'your decision, recorded' }}
+          {{
+            step.from === 'analysis'
+              ? 'from a reading of this objective'
+              : step.from === 'halt'
+                ? 'the loop stopped itself'
+                : 'your decision, recorded'
+          }}
         </span>
       </div>
       <!-- The contradiction, one short line each. It arrives structured; printing
@@ -596,7 +614,23 @@ const criterionItems = computed(() => {
           {{ h.detail }}
         </p>
 
-
+        <!-- The way out, on the thing that blocks.
+             This section listed halts and offered nothing: an objective could be
+             stopped by one, say so plainly, and leave you with no control on the
+             page — every start refused afterwards for a reason displayed three
+             inches above and unreachable. -->
+        <div class="mt-2.5 flex items-baseline gap-3 flex-wrap">
+          <button
+            class="chip border-halt/60 text-halt hover:bg-halt/10"
+            :disabled="clearing === h.id"
+            @click="clear(h.id)"
+          >
+            {{ clearing === h.id ? '…' : 'clear it' }}
+          </button>
+          <span class="text-ink-600 text-[11px]">
+            Clearing says you have dealt with it. Nothing runs until you start a pass.
+          </span>
+        </div>
       </div>
     </section>
 

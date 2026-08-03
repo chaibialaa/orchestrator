@@ -261,10 +261,19 @@ export function canStart(objectiveId) {
 export function attemptsSinceProof(objectiveId) {
   const db = base()
 
-  // The clock restarts on whichever came last: a passing proof, or a rewrite of
-  // the criterion. Both mean the attempts before them were answering a different
-  // question, and counting them against the current one would leave the halt
-  // unclearable — its only remedy is the rewrite.
+  /**
+   * The clock restarts on whichever came last: a passing proof, a rewrite of the
+   * criterion, or a DECISION taken on this objective. All three mean the
+   * attempts before them were answering a different question, and counting them
+   * against the current one leaves the halt unclearable.
+   *
+   * The decision was missing, and its absence contradicted the refusal's own
+   * words. "Trying again changes nothing on its own: the criterion or the
+   * approach has to change" — said to somebody who had just changed the
+   * approach, in the box the screen provides for it, and whose decision is
+   * handed to every session that follows. The tool held the proof that its own
+   * condition had been met and refused anyway.
+   */
   const { at: lastProof } =
     db
       .prepare(
@@ -272,6 +281,8 @@ export function attemptsSinceProof(objectiveId) {
            SELECT created_at AS at FROM evidences WHERE objective_id = @id AND verdict = 'pass'
            UNION ALL
            SELECT proof_spec_changed_at FROM objectives WHERE id = @id
+           UNION ALL
+           SELECT decided_at FROM decisions WHERE objective_id = @id
          )`,
       )
       .get({ id: objectiveId }) ?? {}
