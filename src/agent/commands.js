@@ -26,6 +26,12 @@ import { attach, openTab, parseDirective, parseVerdict, parseDone, jsPost, attac
 const PRICING = {
   'claude-fable-5': [10, 50],
   'claude-mythos-5': [10, 50],
+  // Fable and Mythos were missing, and a model absent from this table is billed
+  // at [0, 0] — silently free, the exact defect this tool spent a day removing on
+  // the Codex side. Anything unknown is now recorded as UNPRICED rather than as
+  // costing nothing: see priceFor().
+  'claude-fable-5': [10, 50],
+  'claude-mythos-5': [10, 50],
   'claude-opus-5': [5, 25],
   'claude-opus-4-8': [5, 25],
   'claude-opus-4-7': [5, 25],
@@ -35,14 +41,42 @@ const PRICING = {
   'claude-sonnet-4-6': [3, 15],
   'claude-sonnet-4-5': [3, 15],
   'claude-haiku-4-5': [1, 5],
+  'claude-haiku-3-5': [0.8, 4],
+  'claude-opus-4-1': [15, 75],
+  'claude-opus-4': [15, 75],
+  'claude-sonnet-4': [3, 15],
 }
+
+/**
+ * Sonnet 5 is introductory until the 31st of August 2026, then standard.
+ *
+ * A rate with an expiry date cannot be a constant: on the 1st of September the
+ * same work costs half as much again, and a table that does not know that would
+ * go on reporting yesterday's price for ever — a figure that looks live and is a
+ * memory, which is the fault this tool exists to catch.
+ */
+const SONNET5_INTRO_UNTIL = Date.parse('2026-09-01T00:00:00Z')
+
+/**
+ * Server-side tools billed per call rather than per token.
+ *
+ * Web search is $10 per thousand searches on top of the tokens; web fetch is
+ * free beyond the tokens it brings back. The tool already counts these calls in
+ * `tools_used`, so the figure was there and simply never added.
+ *
+ * $0.01 a search is small until a loop does four hundred of them overnight,
+ * which is precisely the kind of spending this tool exists to make visible.
+ */
+const PER_CALL = { WebSearch: 0.01 }
 
 /** Model ids sometimes carry a suffix (`[1m]`, a date): match on the prefix. */
 function priceFor(model) {
   const key = Object.keys(PRICING)
     .sort((a, b) => b.length - a.length)
     .find((k) => model.startsWith(k))
-  return key ? PRICING[key] : [0, 0]
+  if (!key) return null // unknown: not free, unpriced — the caller must say so
+  if (key === 'claude-sonnet-5' && Date.now() < SONNET5_INTRO_UNTIL) return [2, 10]
+  return PRICING[key]
 }
 
 /** Claude Code files its transcripts by encoded working directory. */
@@ -902,8 +936,11 @@ const commands = {
     let cost = 0
 
     console.log('')
+    let unpricedModels = []
     for (const [model, t] of Object.entries(totals)) {
-      const [inPrice, outPrice] = priceFor(model)
+      const rate = priceFor(model)
+      if (!rate) unpricedModels.push(model)
+      const [inPrice, outPrice] = rate ?? [0, 0]
       const modelTokens = t.input + t.output + t.cache5m + t.cache1h + t.cacheRead
       // Écriture de cache : ×1,25 (5 min) ou ×2 (1 h). Lecture : ×0,1.
       const modelCost =
@@ -927,9 +964,53 @@ const commands = {
       )
     }
 
+    /**
+     * What the session called that is billed by the call, not by the token.
+     * Read from the same transcripts, in the same window.
+     */
+    let perCall = 0
+    const searches = {}
+    for (const file of files) {
+      for (const line of readFileSync(file, 'utf8').split('\n')) {
+        if (!line.includes('tool_use')) continue
+        let entry
+        try {
+          entry = JSON.parse(line)
+        } catch {
+          continue
+        }
+        const at = Date.parse(entry.timestamp ?? '')
+        if (!at || at < since || at > until) continue
+        for (const block of entry.message?.content ?? []) {
+          if (block?.type !== 'tool_use' || !PER_CALL[block.name]) continue
+          searches[block.name] = (searches[block.name] ?? 0) + 1
+          perCall += PER_CALL[block.name]
+        }
+      }
+    }
+    if (perCall) {
+      cost += perCall
+      console.log(
+        `  billed by the call: ` +
+          Object.entries(searches)
+            .map(([k, n]) => `${n} × ${k}`)
+            .join(', ') +
+          ` — $${perCall.toFixed(2)}`,
+      )
+    }
+
+    if (unpricedModels.length) {
+      console.error(
+        `  ! no rate for ${unpricedModels.join(', ')} — those tokens are counted and not priced`,
+      )
+    }
+
     const updated = await call('POST', `/passages/${passageId}/usage`, {
       tokens,
-      cost_usd: Number(cost.toFixed(3)),
+      // A model this table does not know contributes zero, so the total would
+      // read as complete while missing a model entirely. Say it is partial.
+      cost_usd: unpricedModels.length ? undefined : Number(cost.toFixed(3)),
+      model: Object.keys(totals)[0] ?? null,
     })
 
     console.log(
@@ -3954,6 +4035,10 @@ function codexDiagnostics(file) {
     tools,
     model,
     tokens,
+    // The split as the traces give it, so a rate found later still applies.
+    tokensIn: usage?.input_tokens ?? null,
+    tokensOut: usage?.output_tokens ?? null,
+    tokensCached: usage?.cached_input_tokens ?? null,
     cost,
     pricingKnown: Boolean(rate),
     limitReset: parseLimitReset(lastMessage),
@@ -4743,6 +4828,12 @@ async function runHarness(harness, task, withinChapter = null) {
           // Sent even when nothing prices it: naming the model is what turns
           // "I do not have that figure" into one price to look up.
           model: diag.model ?? null,
+          // And the split, so a rate found later can still be applied. Input,
+          // output and cached differ by a factor of sixty: a total cannot be
+          // priced after the fact, whatever the rate.
+          tokens_in: diag.tokensIn ?? null,
+          tokens_out: diag.tokensOut ?? null,
+          tokens_cached: diag.tokensCached ?? null,
         },
         { soft: true },
       ).catch(() => {})

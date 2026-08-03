@@ -94,6 +94,16 @@ const proof = computed(() => {
           <h3 class="text-ink-100 text-[13px]">What each day cost</h3>
           <span class="label text-ink-600">days worked, not calendar days</span>
         </div>
+        <!-- What the figure IS. "Spent" reads as an invoice, and it is not one:
+             the harnesses run on subscriptions, so this is what the same work
+             would cost at published API rates. It is the right number for
+             comparing chapters and for a budget guard, and the wrong one to
+             expect on a statement. -->
+        <p class="text-ink-500 text-[11px] mt-1 leading-relaxed">
+          Measured in tokens, valued at published rates — what this work would cost through the
+          APIs. The judging conversation is not in it: it runs in a browser on a flat
+          subscription, and costs nothing per turn.
+        </p>
         <SpendByDay
           v-if="data.spend.length"
           class="mt-3"

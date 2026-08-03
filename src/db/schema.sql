@@ -80,6 +80,13 @@ CREATE TABLE IF NOT EXISTS passages (
   -- and thrown away — so "no rate is declared for Codex" was a question nobody
   -- could answer: you cannot look up the price of a model you are not told.
   model        TEXT,
+  -- The split, not only the total. Nine Codex attempts and twenty million tokens
+  -- could not be priced retroactively the day the rates were found, because only
+  -- the sum had been kept — and input, output and cached are billed at rates that
+  -- differ by a factor of sixty.
+  tokens_in    INTEGER,
+  tokens_out   INTEGER,
+  tokens_cached INTEGER,
   tokens       INTEGER NOT NULL DEFAULT 0,
   requests     INTEGER NOT NULL DEFAULT 0,
   -- Dates as TEXT: in MySQL, the first TIMESTAMP column received an implicit

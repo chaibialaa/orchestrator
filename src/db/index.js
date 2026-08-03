@@ -140,6 +140,9 @@ function addMissingColumns(db) {
     // Whether a recorded cost means anything, or whether nothing priced it.
     ['passages', 'cost_known', 'INTEGER NOT NULL DEFAULT 1'],
     ['passages', 'model', 'TEXT'],
+    ['passages', 'tokens_in', 'INTEGER'],
+    ['passages', 'tokens_out', 'INTEGER'],
+    ['passages', 'tokens_cached', 'INTEGER'],
   ]
 
   for (const [table, column, type] of additions) {

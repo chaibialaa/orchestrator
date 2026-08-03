@@ -170,7 +170,7 @@ const segColor: Record<string, string> = {
           <dt class="label">Attempts</dt>
           <dd class="num text-[18px] text-ink-100 mt-0.5">{{ t!.passages }}</dd>
         </div>
-        <div>
+        <div title="Tokens measured in the traces, valued at published API rates. The harnesses run on subscriptions, so this is what the work would cost, not what was invoiced. The judge runs in a browser and adds nothing.">
           <dt class="label">Spent</dt>
           <dd class="num text-[18px] text-ink-100 mt-0.5">${{ t!.cost_usd.toFixed(0) }}</dd>
         </div>

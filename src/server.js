@@ -1028,11 +1028,16 @@ export function createServer() {
     db()
       .prepare(
         `UPDATE passages SET tokens = ?, requests = ?, cost_usd = ?, cost_known = ?,
-                             model = COALESCE(?, model) WHERE id = ?`,
+                             model = COALESCE(?, model),
+                             tokens_in = COALESCE(?, tokens_in),
+                             tokens_out = COALESCE(?, tokens_out),
+                             tokens_cached = COALESCE(?, tokens_cached)
+         WHERE id = ?`,
       )
       .run(
         nombre(b.tokens, 0), nombre(b.requests, 0), nombre(b.cost_usd, 0),
-        priced ? 1 : 0, b.model ?? null, p.id,
+        priced ? 1 : 0, b.model ?? null,
+        b.tokens_in ?? null, b.tokens_out ?? null, b.tokens_cached ?? null, p.id,
       )
     res.json(sortirPassage(db().prepare('SELECT * FROM passages WHERE id = ?').get(p.id)))
   })
