@@ -383,3 +383,30 @@ CREATE TABLE IF NOT EXISTS attachments (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_owner ON attachments(kind, owner_id);
+
+-- Errands, as opposed to work.
+--
+-- Some blockers are not decisions and not passes: the Unity editor is closed,
+-- and every mission on the project will refuse to start until someone opens it.
+-- The screen could name that condition and could not lift it, so the one action
+-- standing between an idle machine and a night of work was a trip to the Dock.
+--
+-- It is a queue rather than a call because the server must never run a command
+-- on your machine — that separation is the whole reason it would be safe to host.
+-- The worker already sitting in the repository claims the errand and carries it
+-- out, exactly as it does for a run.
+CREATE TABLE IF NOT EXISTS chores (
+  id           INTEGER PRIMARY KEY,
+  project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  kind         TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed')),
+  -- What happened, in the words the screen will show. A failed errand that does
+  -- not say why sends somebody to a terminal to find out.
+  detail       TEXT,
+  machine      TEXT,
+  asked_by     TEXT,
+  requested_at TEXT NOT NULL DEFAULT (datetime('now')),
+  taken_at     TEXT,
+  ended_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_chores_pending ON chores(project_id, status);

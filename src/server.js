@@ -12,6 +12,13 @@ import { upload, checkStorage, createDriveFolder } from './storage.js'
 import { blockersFor } from './blockers.js'
 import { attention, attentionFor } from './attention.js'
 import { charts } from './charts.js'
+
+/**
+ * Errands the worker knows how to run. A whitelist rather than a command: the
+ * server holds a NAME, and what that name does lives on the machine that has the
+ * repository — which is the only place it could be decided anyway.
+ */
+const KNOWN_CHORES = ['open_unity']
 import { signedIn } from './agent/relay.js'
 import { mcpServers } from './mcp.js'
 import {
@@ -1703,6 +1710,71 @@ export function createServer() {
    * disagreed — see attention.js.
    */
   api.get('/attention', (req, res) => res.json(attentionFor(req.query.project)))
+
+  // ---- errands -------------------------------------------------------------
+  //
+  // The server records what is asked for; the worker on the machine that holds
+  // the repository carries it out. Nothing here ever spawns a process: a server
+  // able to run commands on your machine is a far worse thing to expose than one
+  // that keeps a list.
+
+  /** What a person asked the machine to go and do. */
+  api.get('/projects/:slug/chores', (req, res) => {
+    const p = projectBy(req.params.slug)
+    res.json(
+      db()
+        .prepare(
+          `SELECT * FROM chores WHERE project_id = ?
+           ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'running' THEN 1 ELSE 2 END, id DESC
+           LIMIT 10`,
+        )
+        .all(p.id),
+    )
+  })
+
+  api.post('/projects/:slug/chores', (req, res) => {
+    const p = projectBy(req.params.slug)
+    const kind = String(req.body?.kind ?? '')
+    if (!KNOWN_CHORES.includes(kind)) throw new Rejected(`Nothing here knows how to “${kind}”.`)
+
+    // Asking twice while the first is still in flight queues nothing: a button
+    // pressed three times would otherwise open three editors.
+    const already = db()
+      .prepare("SELECT * FROM chores WHERE project_id = ? AND kind = ? AND status IN ('pending','running')")
+      .get(p.id, kind)
+    if (already) return res.json(already)
+
+    const r = db()
+      .prepare('INSERT INTO chores (project_id, kind, asked_by) VALUES (?, ?, ?)')
+      .run(p.id, kind, req.body?.by ?? 'screen')
+    res.status(201).json(db().prepare('SELECT * FROM chores WHERE id = ?').get(r.lastInsertRowid))
+  })
+
+  /** The worker takes one. Same shape as claiming a run, for the same reason. */
+  api.post('/projects/:slug/chores/claim', (req, res) => {
+    const p = projectBy(req.params.slug)
+    const taken = db().transaction(() => {
+      const c = db()
+        .prepare("SELECT * FROM chores WHERE project_id = ? AND status = 'pending' ORDER BY id LIMIT 1")
+        .get(p.id)
+      if (!c) return null
+      db()
+        .prepare("UPDATE chores SET status='running', machine=?, taken_at=? WHERE id=?")
+        .run(req.body?.machine ?? null, nowStamp(), c.id)
+      return db().prepare('SELECT * FROM chores WHERE id = ?').get(c.id)
+    })()
+    res.json({ chore: taken })
+  })
+
+  api.patch('/chores/:id', (req, res) => {
+    const c = db().prepare('SELECT * FROM chores WHERE id = ?').get(req.params.id)
+    if (!c) throw new Rejected('This errand does not exist.', 404)
+    const status = ['done', 'failed'].includes(req.body?.status) ? req.body.status : c.status
+    db()
+      .prepare('UPDATE chores SET status=?, detail=?, ended_at=? WHERE id=?')
+      .run(status, req.body?.detail ?? c.detail, status === c.status ? c.ended_at : nowStamp(), c.id)
+    res.json(db().prepare('SELECT * FROM chores WHERE id = ?').get(c.id))
+  })
 
   /** The series behind the charts. Same rows as the rest, counted differently. */
   api.get('/charts', (req, res) => {

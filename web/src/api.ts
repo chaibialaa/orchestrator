@@ -248,6 +248,21 @@ export interface Activity {
 }
 
 /** What is in the way, derived from traces — never typed. Every entry names its action. */
+/**
+ * An errand asked of the machine — not a decision, not a pass.
+ *
+ * The screen records the ask; the worker in the repository carries it out. The
+ * server never holds the command itself.
+ */
+export interface Chore {
+  id: number
+  kind: string
+  status: 'pending' | 'running' | 'done' | 'failed'
+  detail: string | null
+  requested_at: string
+  ended_at: string | null
+}
+
 /** The series behind the charts — counted from the same rows as everything else. */
 export interface Charts {
   tools: { name: string; n: number; other?: boolean }[]
@@ -296,6 +311,8 @@ export interface Blocker {
   stops?: { id: number; title: string; status: string }[]
   /** Where the fix is done, when the tool itself is where it is done. */
   link?: { to: string; label: string } | null
+  /** An errand the machine can run itself, by name — never a command. */
+  chore?: { kind: string; label: string } | null
   /** Projects whose allow list could be copied over, most equipped first. */
   copy_from?: { slug: string; name: string; n: number }[]
   title: string
@@ -665,6 +682,9 @@ export const api = {
       .get<{ live: Activity[]; feed: Activity[] }>(`/activity${slug ? `?project=${slug}` : ''}`)
       .then((r) => r.data),
 
+  chores: (slug: string) => http.get<Chore[]>(`/projects/${slug}/chores`).then((r) => r.data),
+  askChore: (slug: string, kind: string) =>
+    http.post<Chore>(`/projects/${slug}/chores`, { kind }).then((r) => r.data),
   charts: (project?: string) =>
     http.get<Charts>('/charts', { params: { project } }).then((r) => r.data),
   attention: (project?: string) =>

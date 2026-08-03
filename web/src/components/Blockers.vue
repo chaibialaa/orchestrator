@@ -65,6 +65,38 @@ const showWatch = ref(false)
 const copying = ref<string | null>(null)
 const copyFailed = ref<string | null>(null)
 
+/**
+ * Errands asked from this panel, and what became of them.
+ *
+ * The card named a condition it could not lift: "open Blockrise in Unity" on a
+ * screen with no way to open anything. The worker in the repository can, so the
+ * button asks it — and then says what happened, because an editor takes a minute
+ * or two to import before the condition clears on its own.
+ */
+const asking = ref<string | null>(null)
+const asked = ref<Record<string, string>>({})
+
+async function ask(project: string, kind: string) {
+  asking.value = `${project}:${kind}`
+  try {
+    const c = await api.askChore(project, kind)
+    asked.value = {
+      ...asked.value,
+      [`${project}:${kind}`]:
+        c.status === 'failed'
+          ? (c.detail ?? 'it did not work')
+          : 'asked — the worker picks it up within seconds, then Unity takes a minute to import',
+    }
+  } catch (e: any) {
+    asked.value = {
+      ...asked.value,
+      [`${project}:${kind}`]: e?.response?.data?.error ?? e?.message ?? 'the request was refused',
+    }
+  } finally {
+    asking.value = null
+  }
+}
+
 async function copyList(project: string, from: string) {
   copying.value = `${project}:${from}`
   copyFailed.value = null
@@ -183,7 +215,28 @@ function ago(iso: string | null) {
              Every action here was a sentence and nothing else: "open Permissions"
              on a screen that does not link to Permissions, for a project it does
              not name. The reader had to know the app to obey the instruction. -->
-        <div v-if="g.items.some((b) => b.link) || g.items.some((b) => b.copy_from?.length)" class="mt-2.5 flex flex-wrap items-center gap-1.5">
+        <div
+          v-if="g.items.some((b) => b.link || b.chore || b.copy_from?.length)"
+          class="mt-2.5 flex flex-wrap items-center gap-1.5"
+        >
+          <!-- The condition, lifted from the card that states it. -->
+          <template v-for="b in g.items.filter((x) => x.chore)" :key="`ch${b.project}`">
+            <button
+              class="chip border-run/60 text-run hover:bg-run/10 transition-colors"
+              :disabled="asking === `${b.project}:${b.chore!.kind}`"
+              @click="ask(b.project!, b.chore!.kind)"
+            >
+              {{ asking === `${b.project}:${b.chore!.kind}` ? '…' : b.chore!.label }}
+              <span v-if="g.items.length > 1" class="text-ink-500 ml-1">{{ b.project }}</span>
+            </button>
+            <span
+              v-if="asked[`${b.project}:${b.chore!.kind}`]"
+              class="text-ink-400 text-[11px]"
+            >
+              {{ asked[`${b.project}:${b.chore!.kind}`] }}
+            </span>
+          </template>
+
           <RouterLink
             v-for="b in g.items.filter((x) => x.link)"
             :key="`l${b.project}${b.kind}`"

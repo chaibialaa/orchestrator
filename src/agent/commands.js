@@ -7,7 +7,7 @@
  * is what will make a hosted version defensible.
  */
 
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { readFileSync, writeFileSync, mkdirSync, existsSync, statSync, readdirSync } from 'node:fs'
 import { resolve, relative, basename, dirname, join } from 'node:path'
 import { homedir, hostname } from 'node:os'
@@ -97,6 +97,58 @@ function loadConfig() {
     // change to review.
     readDirs: [...(project.readDirs ?? []), join(homedir(), '.orchestrator', 'attachments')],
     unity: project.unity ?? null,
+  }
+}
+
+/**
+ * Which editor this project wants, and where it is.
+ *
+ * Derived, like everything else: `ProjectSettings/ProjectVersion.txt` says the
+ * version the project was authored with, and opening it with a different one
+ * would silently upgrade the project — a change nobody asked for, in every
+ * asset. So we look for that exact editor and refuse rather than substitute.
+ *
+ * `.orchestrator.json` may override with `unity.editor` for an install that is
+ * not where the Hub puts it.
+ */
+function unityEditor(root = process.cwd()) {
+  if (config.unity?.editor) {
+    return existsSync(config.unity.editor)
+      ? { path: config.unity.editor, version: 'declared' }
+      : { error: `the declared editor is not there: ${config.unity.editor}` }
+  }
+
+  const file = join(root, 'ProjectSettings', 'ProjectVersion.txt')
+  if (!existsSync(file)) return { error: 'no ProjectSettings/ProjectVersion.txt — is this a Unity project?' }
+
+  const version = /m_EditorVersion:\s*(\S+)/.exec(readFileSync(file, 'utf8'))?.[1]
+  if (!version) return { error: 'ProjectVersion.txt does not say which editor version' }
+
+  const path = `/Applications/Unity/Hub/Editor/${version}/Unity.app/Contents/MacOS/Unity`
+  return existsSync(path)
+    ? { path, version }
+    : { error: `this project wants Unity ${version} and it is not installed`, version }
+}
+
+/**
+ * Open it. Detached, because the editor outlives the worker that started it.
+ *
+ * The MCP bridge is a package inside the project, so it comes up with the editor
+ * — there is no second thing to start. What there is, is a wait: an editor takes
+ * a minute or two to load and import before it answers anything, and the blocker
+ * clears itself when the process appears.
+ */
+function openUnity(root = process.cwd()) {
+  if (editeurUnityVivant()) return { ok: true, detail: 'an editor was already running' }
+
+  const found = unityEditor(root)
+  if (found.error) return { ok: false, detail: found.error }
+
+  const child = spawn(found.path, ['-projectPath', root], { detached: true, stdio: 'ignore' })
+  child.unref()
+  return {
+    ok: true,
+    detail: `Unity ${found.version} starting on ${basename(root)} — it answers once it has finished importing`,
   }
 }
 
@@ -2458,8 +2510,45 @@ const commands = {
      */
     let mute = 0
 
+    /**
+     * Errands, before work.
+     *
+     * They are cheap, they take seconds, and one of them — opening the editor —
+     * is precisely what a run would fail without. Doing them first means a
+     * button pressed on the screen acts before the next pass is claimed.
+     */
+    const runChores = async () => {
+      const claimed = await call(
+        'POST',
+        `/projects/${config.project}/chores/claim`,
+        { machine: hostname() },
+        { soft: true },
+      ).catch(() => null)
+      const chore = claimed?.chore
+      if (!chore) return
+
+      console.log(`  errand — ${chore.kind}`)
+      let outcome
+      try {
+        outcome =
+          chore.kind === 'open_unity'
+            ? openUnity()
+            : { ok: false, detail: `this worker does not know how to “${chore.kind}”` }
+      } catch (e) {
+        outcome = { ok: false, detail: e?.message ?? 'it failed without saying why' }
+      }
+      console.log(`    ${outcome.ok ? '·' : '!'} ${outcome.detail}`)
+      await call(
+        'PATCH',
+        `/chores/${chore.id}`,
+        { status: outcome.ok ? 'done' : 'failed', detail: outcome.detail },
+        { soft: true },
+      ).catch(() => {})
+    }
+
     for (;;) {
       await sweepDeadRuns()
+      await runChores()
       const claimed = await call(
         'POST',
         `/projects/${config.project}/runs/claim`,

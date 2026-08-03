@@ -87,9 +87,22 @@ export function blockers() {
   out.push(...undecidedRefusals(db))
   out.push(...storages(db))
 
+  /**
+   * One shape, whichever condition fired.
+   *
+   * `stops`, `link`, `copy_from` and `chore` each belong to some kinds and not
+   * others, so the fields a client could count on depended on which blockers
+   * happened to be true that minute — and a screen written against a day when
+   * Unity was closed reads a key that is simply absent the day it is open. The
+   * shape is declared here once; a kind fills in what it has.
+   */
+  const SHAPE = { group: null, objective: null, stops: [], link: null, copy_from: [], chore: null, since: null }
+
   // Blocking first, then by project, so the list reads as a queue of actions
   // rather than a pile of facts.
-  return out.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === BLOCKING ? -1 : 1))
+  return out
+    .map((b) => ({ ...SHAPE, ...b }))
+    .sort((a, b) => (a.severity === b.severity ? 0 : a.severity === BLOCKING ? -1 : 1))
 }
 
 /**
@@ -133,20 +146,47 @@ function unityClosed(db) {
           .get(p.id).n > 0,
     )
 
-  return expecting.map((p) => ({
-    kind: 'unity_closed',
+  return expecting.map((p) => {
+    /**
+     * Can the machine open it itself?
+     *
+     * The version is not a preference: opening a project with a different editor
+     * upgrades it, silently, across every asset. So we look for the exact one
+     * `ProjectVersion.txt` asks for, and offer the button only if it is there.
+     * An offer that would fail is worse than no offer.
+     */
+    const wanted = (() => {
+      const f = join(p.repo_path, 'ProjectSettings', 'ProjectVersion.txt')
+      if (!existsSync(f)) return null
+      const v = /m_EditorVersion:\s*(\S+)/.exec(readFileSync(f, 'utf8'))?.[1]
+      if (!v) return null
+      return { version: v, installed: existsSync(`/Applications/Unity/Hub/Editor/${v}/Unity.app`) }
+    })()
+
+    return {
+      kind: 'unity_closed',
       group: 'The Unity editor is closed',
-    severity: BLOCKING,
-    project: p.slug,
-    objective: null,
-    stops: stopped(db, p.id),
-    title: `No Unity editor running — ${p.name} needs one`,
-    detail:
-      `Every mission on this project targets the \`${p.instance}\` instance. No editor process exists, ` +
-      'so a pass would spend money only to report that it could not act.',
-    action: `Open ${p.name} in Unity and start its MCP session. A pass will refuse to start until then.`,
-    since: null,
-  }))
+      severity: BLOCKING,
+      project: p.slug,
+      objective: null,
+      stops: stopped(db, p.id),
+      title: `No Unity editor running — ${p.name} needs one`,
+      detail:
+        `Every mission on this project targets the \`${p.instance}\` instance. No editor process exists, ` +
+        'so a pass would spend money only to report that it could not act.',
+      action: wanted?.installed
+        ? `Open it from here — the worker in the repository starts Unity ${wanted.version}, and the ` +
+          'MCP bridge comes up with the editor. It answers once it has finished importing.'
+        : wanted
+          ? `This project wants Unity ${wanted.version}, which is not installed on this machine. ` +
+            'Install that exact version — another one would upgrade the project.'
+          : `Open ${p.name} in Unity. A pass will refuse to start until then.`,
+      // The screen holds a NAME, never a command: what it does lives on the
+      // machine that has the repository.
+      chore: wanted?.installed ? { kind: 'open_unity', label: `Open Unity ${wanted.version}` } : null,
+      since: null,
+    }
+  })
 }
 
 /**
