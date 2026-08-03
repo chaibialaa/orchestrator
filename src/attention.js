@@ -1,5 +1,5 @@
 import { base } from './db/index.js'
-import { evaluateGate, HUMAN_HALTS } from './gate.js'
+import { evaluateGate, canStart, HUMAN_HALTS } from './gate.js'
 import { blockers } from './blockers.js'
 
 /**
@@ -216,4 +216,121 @@ export function attention() {
 /** The same list, narrowed to one project. */
 export function attentionFor(slug) {
   return slug ? attention().filter((a) => a.project === slug || a.project == null) : attention()
+}
+
+/**
+ * The next step — one sentence, one button.
+ *
+ * A project screen answered four questions well and the first one badly: what
+ * do I do now. What is in the way, what waits on you, how far each chapter is,
+ * where the money went — all true, all on the same page, and none of them
+ * saying which to act on first. The reader had to rank them, every time, and
+ * ranking them is exactly the judgement the tool already makes.
+ *
+ * The order is not a preference. A blocking condition beats a decision because
+ * no decision survives a pass that cannot run; a decision beats new work
+ * because starting more while something waits on you is how four projects end
+ * up half-done; a chapter with no criterion beats the queue because no agent
+ * can take it, however high its priority.
+ *
+ * `orchestrator next` had a version of this and it read the objectives table
+ * alone — first by priority, blockers and gates ignored. It would have sent you
+ * at a chapter whose editor was closed.
+ */
+export function nextStep(slug) {
+  const db = base()
+  const p = db.prepare('SELECT id, slug, name FROM projects WHERE slug = ?').get(slug)
+  if (!p) return null
+
+  const waiting = attention().filter((a) => a.project === slug || a.project == null)
+
+  const blocking = waiting.find((a) => a.severity === 'fix')
+  if (blocking) {
+    return {
+      kind: 'unblock',
+      headline: blocking.title,
+      why: `Nothing on this project can run until this is cleared. ${blocking.why}`,
+      action: blocking.action,
+      href: blocking.href,
+      // Carried so the page can tell that the list below is repeating this one.
+      objective: blocking.objective ?? null,
+    }
+  }
+
+  const decision = waiting.find((a) => a.severity === 'decide')
+  if (decision) {
+    return {
+      kind: decision.kind,
+      headline: decision.title,
+      why: decision.why,
+      action: decision.action,
+      href: decision.href,
+      objective: decision.objective ?? null,
+    }
+  }
+
+  // A criterion is what lets an agent take the work at all, so a chapter
+  // without one is not "low priority", it is unreachable.
+  const mute = db
+    .prepare(
+      `SELECT id, title FROM objectives
+       WHERE project_id = ? AND status NOT IN ('proven','abandoned')
+         AND (proof_spec IS NULL OR TRIM(proof_spec) = '')
+       ORDER BY priority, id LIMIT 1`,
+    )
+    .get(p.id)
+  if (mute) {
+    return {
+      kind: 'no_criterion',
+      objective: mute.id,
+      headline: mute.title,
+      why: 'It does not say how it would be proven, so no agent can pick it up whatever its priority.',
+      action: 'Write what would prove it finished, on the Plan tab.',
+      href: `/p/${slug}/plan`,
+    }
+  }
+
+  const candidates = db
+    .prepare(
+      `SELECT id, title FROM objectives
+       WHERE project_id = ? AND status IN ('ready','in_progress') ORDER BY priority, id`,
+    )
+    .all(p.id)
+
+  for (const o of candidates) {
+    const start = canStart(o.id)
+    if (start.ok) {
+      return {
+        kind: 'run',
+        headline: o.title,
+        why: 'Nothing is in the way and nothing waits on you. This is the next one an agent can take.',
+        action: 'Start it — the instruction you give it is the whole of what it will try to do.',
+        href: `/o/${o.id}`,
+        objective: o.id,
+      }
+    }
+  }
+
+  // Saying "nothing" is an answer, as long as it says which nothing.
+  const left = db
+    .prepare(
+      `SELECT COUNT(*) n FROM objectives WHERE project_id = ? AND status NOT IN ('proven','abandoned')`,
+    )
+    .get(p.id).n
+
+  return left
+    ? {
+        kind: 'stuck',
+        headline: 'Nothing here can be started right now',
+        why: `${left} objective(s) are still open and none of them can begin — each is halted, or its criterion refuses a fresh attempt.`,
+        action: 'Open the track below: the reason is on the one that stopped.',
+        href: `/p/${slug}`,
+      }
+    : {
+        kind: 'done',
+        headline: 'Everything asked for is proven',
+        why: 'No objective is open on this project.',
+        action: 'Break down what comes next, or leave it here.',
+        href: `/p/${slug}/plan`,
+      }
 }

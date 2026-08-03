@@ -155,7 +155,11 @@ function ago(iso: string | null) {
 
 <template>
   <!-- Nothing to show is itself the message: no empty state, no reassurance box. -->
-  <section v-if="list.length" class="card p-5">
+  <section
+    v-if="list.length"
+    class="card"
+    :class="groups.some((x) => x.severity === 'blocking' || showWatch) ? 'p-5' : 'px-5 py-3'"
+  >
     <header class="flex items-baseline gap-3">
       <h2 class="text-ink-100 text-[14px]">
         {{ objective ? 'Why this is not moving' : "What's in the way" }}
@@ -179,7 +183,13 @@ function ago(iso: string | null) {
       >.
     </p>
 
-    <ul class="mt-4 space-y-2.5" :class="columns > 1 ? 'lg:columns-2 lg:space-y-0 gap-2.5' : ''">
+    <!-- Nothing to draw when every condition is folded away: the header already
+         says how many there are, and an empty box under it reads as broken. -->
+    <ul
+      v-if="groups.some((x) => x.severity === 'blocking' || showWatch)"
+      class="mt-4 space-y-2.5"
+      :class="columns > 1 ? 'lg:columns-2 lg:space-y-0 gap-2.5' : ''"
+    >
       <li
         v-for="g in groups.filter((x) => x.severity === 'blocking' || showWatch)"
         :key="g.key"

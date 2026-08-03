@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch, computed } from 'vue'
-import { api, type Attention, type Objective, type Stats, type TreeNode, type Project } from '../api'
+import { api, type Attention, type NextStep as Step, type Objective, type Stats, type TreeNode, type Project } from '../api'
 import Chips from '../components/Chips.vue'
 import ProjectTree from '../components/ProjectTree.vue'
 import AddObjective from '../components/AddObjective.vue'
@@ -8,6 +8,7 @@ import RunQueue from '../components/RunQueue.vue'
 import ActivityFeed from '../components/ActivityFeed.vue'
 import Blockers from '../components/Blockers.vue'
 import Charts from '../components/Charts.vue'
+import NextStep from '../components/NextStep.vue'
 import { formatTokens } from '../labels'
 
 const props = defineProps<{ slug: string }>()
@@ -62,15 +63,17 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    const [o, s, t, ps, bl, at] = await Promise.all([
+    const [o, s, t, ps, bl, at, ns] = await Promise.all([
       api.objectives(props.slug),
       api.stats(props.slug),
       api.tree(props.slug),
       api.projects(),
       api.blockers({ project: props.slug }).catch(() => []),
       api.attention(props.slug).catch(() => []),
+      api.nextStep(props.slug).catch(() => null),
     ])
     waiting.value = at
+    step.value = ns
     objectives.value = o
     stats.value = s
     tree.value = t.objectives
@@ -109,7 +112,20 @@ const NEEDS_HUMAN = ['blast_radius', 'no_provable_criterion', 'invariant_regress
  * that judgement now lives in one place for every screen.
  */
 const waiting = ref<Attention[]>([])
-const decisions = computed(() => waiting.value.filter((a) => a.severity === 'decide'))
+const step = ref<Step | null>(null)
+
+/**
+ * What waits on you BESIDES the one already stated at the top.
+ *
+ * The band and this list printed the same sentence twice, one under the other —
+ * the guidance and the evidence for it, indistinguishable. The band keeps the
+ * first; this keeps the rest, and disappears when there is no rest.
+ */
+const decisions = computed(() =>
+  waiting.value.filter(
+    (a) => a.severity === 'decide' && !(step.value && a.kind === step.value.kind && a.objective === step.value.objective),
+  ),
+)
 
 const autoResumed = computed(() =>
   objectives.value.filter((o) => o.status === 'blocked' && !NEEDS_HUMAN.includes(o.halt_reason ?? '')),
@@ -258,6 +274,10 @@ const done = computed(() => objectives.value.filter((o) => o.status === 'proven'
       </div>
     </section>
 
+    <!-- The first thing read, because it is the first thing asked. Everything
+         below is the evidence behind it. -->
+    <NextStep :step="step" />
+
     <!-- What is stopping THIS project, before anything it could do about it.
          This panel existed only on the overview: a person opening the project
          because nothing had moved found four chapters, no attempt running, and
@@ -266,7 +286,7 @@ const done = computed(() => objectives.value.filter((o) => o.status === 'proven'
 
     <!-- What genuinely needs a person. -->
     <section v-if="decisions.length">
-      <h2 class="label text-halt mb-3">Waiting for you — {{ decisions.length }}</h2>
+      <h2 class="label text-halt mb-3">Also waiting for you — {{ decisions.length }}</h2>
       <div class="space-y-2.5">
         <RouterLink
           v-for="a in decisions"

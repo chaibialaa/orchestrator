@@ -263,6 +263,16 @@ export interface Chore {
   ended_at: string | null
 }
 
+/** The one thing to do next on a project, ranked by the tool rather than by the reader. */
+export interface NextStep {
+  kind: 'unblock' | 'conclude' | 'verdict' | 'halt' | 'run_stopped' | 'invariant_breached' | 'no_criterion' | 'run' | 'stuck' | 'done'
+  headline: string
+  why: string
+  action: string
+  href: string
+  objective?: number
+}
+
 /** The series behind the charts — counted from the same rows as everything else. */
 export interface Charts {
   tools: { name: string; n: number; other?: boolean }[]
@@ -685,6 +695,7 @@ export const api = {
   chores: (slug: string) => http.get<Chore[]>(`/projects/${slug}/chores`).then((r) => r.data),
   askChore: (slug: string, kind: string) =>
     http.post<Chore>(`/projects/${slug}/chores`, { kind }).then((r) => r.data),
+  nextStep: (slug: string) => http.get<NextStep>(`/projects/${slug}/next`).then((r) => r.data),
   charts: (project?: string) =>
     http.get<Charts>('/charts', { params: { project } }).then((r) => r.data),
   attention: (project?: string) =>

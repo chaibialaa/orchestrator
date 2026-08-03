@@ -10,7 +10,7 @@ import { evaluateGate, canStart, HUMAN_HALTS } from './gate.js'
 import { encrypt, decrypt, keyHint } from './crypto.js'
 import { upload, checkStorage, createDriveFolder } from './storage.js'
 import { blockersFor } from './blockers.js'
-import { attention, attentionFor } from './attention.js'
+import { attention, attentionFor, nextStep } from './attention.js'
 import { charts } from './charts.js'
 
 /**
@@ -1774,6 +1774,19 @@ export function createServer() {
       .prepare('UPDATE chores SET status=?, detail=?, ended_at=? WHERE id=?')
       .run(status, req.body?.detail ?? c.detail, status === c.status ? c.ended_at : nowStamp(), c.id)
     res.json(db().prepare('SELECT * FROM chores WHERE id = ?').get(c.id))
+  })
+
+  /**
+   * One thing to do next, on this project.
+   *
+   * The page answered four questions and none of them said which to act on
+   * first — so the reader ranked them by hand, every time, when the ranking is
+   * a judgement the tool already makes.
+   */
+  api.get('/projects/:slug/next', (req, res) => {
+    const step = nextStep(req.params.slug)
+    if (!step) throw new Rejected('This project does not exist.', 404)
+    res.json(step)
   })
 
   /** The series behind the charts. Same rows as the rest, counted differently. */
