@@ -2071,7 +2071,12 @@ const commands = {
         '  lower a threshold to make it pass: an objective softened until it succeeds has',
         '  proved nothing, and the work already paid for was measured against the old one;',
         '- if it is simply too big for one session, split it into steps that each carry a',
-        '  criterion something can check.',
+        '  criterion something can check;',
+        '- and if the thing complained about is real but NOTHING listed below can measure it,',
+        '  say `instrument_missing` and name the measurement that would be needed. Do not fall',
+        '  back on the nearest measure that exists: a criterion built on an axis already',
+        '  satisfied closes the objective and leaves the complaint standing. Naming the missing',
+        '  instrument is the useful answer — somebody can then go and build it.',
         '',
         'Rules for anything you write:',
         '- a criterion is a CONDITION, never an intention. A command that returns a status, a',
@@ -2241,7 +2246,8 @@ const commands = {
   /**
    * What a rendering measurably contains, and how far it is from a reference.
    *
-   * usage: orchestrator visual <image.png> [--ref target.png] [--min-colours 1500] [--min-hues 7] [--min-saturation 0.5]
+   * usage: orchestrator visual <image.png> [--ref target.png] [--min-colours 1500]
+   *          [--min-hues 7] [--min-saturation 0.5] [--min-contrast 0.6] [--min-shadow 0.08]
    *
    * Exits 1 when a floor is not met, so it can be declared as a proof in
    * .orchestrator.json and produce a real pass/fail — rather than a score the
@@ -2251,13 +2257,26 @@ const commands = {
   async visual(...argv) {
     const opts = parseFlags(argv)
     const file = argv.find((a) => !a.startsWith('--') && argv[argv.indexOf(a) - 1]?.startsWith('--') !== true)
-    if (!file) fail('usage: orchestrator visual <image.png> [--ref target.png] [--min-colours N] [--min-hues N] [--min-saturation X]')
+    if (!file)
+      fail(
+        'usage: orchestrator visual <image.png> [--ref target.png] [--min-colours N] ' +
+          '[--min-hues N] [--min-saturation X] [--min-contrast X] [--min-shadow X]',
+      )
 
     const { measureImage, compareToReference } = await import('../visual.js')
 
     const m = measureImage(file)
     console.log(`\n  ${basename(file)}`)
-    console.log(`    saturation ${m.saturation} · ${m.hues} hues · ${m.distinctColours} distinct colours · green ${(m.greenShare * 100).toFixed(1)}%`)
+    console.log(
+      `    saturation ${m.saturation} · ${m.hues} hues · ${m.distinctColours} distinct colours · ` +
+        `green ${(m.greenShare * 100).toFixed(1)}%`,
+    )
+    // The value range, on its own line: it answers a different question from the
+    // palette, and printing it inline invited reading them as one verdict.
+    console.log(
+      `    contrast ${m.contrast} (p95−p5) · shadow ${(m.shadowShare * 100).toFixed(1)}% · ` +
+        `highlight ${(m.highlightShare * 100).toFixed(1)}%`,
+    )
 
     if (opts.ref) {
       const c = compareToReference(file, opts.ref)
@@ -2272,6 +2291,12 @@ const commands = {
     const failures = []
     if (opts['min-colours'] && m.distinctColours < Number(opts['min-colours'])) {
       failures.push(`distinct colours ${m.distinctColours} < ${opts['min-colours']}`)
+    }
+    if (opts['min-contrast'] && m.contrast < Number(opts['min-contrast'])) {
+      failures.push(`contrast ${m.contrast} < ${opts['min-contrast']}`)
+    }
+    if (opts['min-shadow'] && m.shadowShare < Number(opts['min-shadow'])) {
+      failures.push(`shadow share ${m.shadowShare} < ${opts['min-shadow']}`)
     }
     if (opts['min-saturation'] && m.saturation < Number(opts['min-saturation'])) {
       failures.push(`saturation ${m.saturation} < ${opts['min-saturation']}`)

@@ -112,6 +112,10 @@ function sortirAgent(a) {
 
 const sortirBrief = (b) => b && { ...b, proposal: json.read(b.proposal) }
 
+/** How many attempts an objective has behind it. */
+const passagesCount = (id) =>
+  db().prepare('SELECT COUNT(*) n FROM passages WHERE objective_id = ?').get(id).n
+
 /** Where the proofs stood at the moment of a halt: the "nothing new" watermark. */
 const evidenceWatermark = (objectifId) =>
   db().prepare('SELECT COALESCE(MAX(id),0) m FROM evidences WHERE objective_id = ?').get(objectifId).m
@@ -2625,7 +2629,7 @@ export function createServer() {
     res.json(b ? { ...sortirBrief(b), actionable: b.status !== 'applied' } : null)
   })
 
-  api.post('/objectives/:id/recalibrate', (req, res) => {
+  api.post('/objectives/:id/recalibrate', async (req, res) => {
     const o = db()
       .prepare(
         `SELECT o.*, p.slug, p.name project_name FROM objectives o
@@ -2661,6 +2665,54 @@ export function createServer() {
       .prepare("SELECT title, status FROM objectives WHERE parent_id = ? AND status != 'abandoned' ORDER BY priority")
       .all(o.id)
 
+    /**
+     * A draft has no history, and asking about it produced an empty page.
+     *
+     * The brief was composed of attempts, failures and halts — which a draft has
+     * none of. Worse, the reply could only ever propose criteria the instrument
+     * already knows how to check, so on a project whose complaint is "the
+     * atmosphere lacks tension" it would have written a criterion about
+     * saturation: an axis already satisfied, passing while the complaint stood.
+     *
+     * So the request now carries what this project can MEASURE, and the current
+     * readings. A model cannot look at a picture through this pipe; it can
+     * reason about numbers, and refuse them when they do not answer the question.
+     */
+    const measured = []
+    if (o.status === 'draft' || !passagesCount(o.id)) {
+      try {
+        const { measureImage } = await import('./visual.js')
+        const { readdirSync, statSync } = await import('node:fs')
+        const root = join(db().prepare('SELECT repo_path FROM projects WHERE id = ?').get(o.project_id).repo_path, 'Captures')
+        if (existsSync(root)) {
+          const shots = readdirSync(root)
+            .flatMap((d) => {
+              const dir = join(root, d)
+              if (!statSync(dir).isDirectory()) return []
+              return readdirSync(dir)
+                .filter((f) => f.endsWith('.png'))
+                .map((f) => ({ path: join(dir, f), name: `${d}/${f}`, at: statSync(join(dir, f)).mtimeMs }))
+            })
+            .sort((a, b) => b.at - a.at)
+            .slice(0, 8)
+          for (const shot of shots) {
+            try {
+              const m = measureImage(shot.path)
+              measured.push(
+                `- ${shot.name}: saturation ${m.saturation}, ${m.hues} hues, ${m.distinctColours} distinct colours, ` +
+                  `contrast ${m.contrast} (p95−p5), shadow ${(m.shadowShare * 100).toFixed(1)}%, ` +
+                  `highlight ${(m.highlightShare * 100).toFixed(1)}%`,
+              )
+            } catch {
+              /* an unreadable capture is not a reason to answer nothing */
+            }
+          }
+        }
+      } catch {
+        /* no visual measurement available on this install */
+      }
+    }
+
     const L = []
     L.push(`Objective #${o.id} — ${o.title}`)
     if (o.intent) L.push(`Intent: ${o.intent}`)
@@ -2692,6 +2744,21 @@ export function createServer() {
       L.push('Its steps today:')
       for (const c of children) L.push(`- ${c.title} (${c.status})`)
     }
+    if (measured.length) {
+      L.push('')
+      L.push('What this project can measure, and what it reads TODAY:')
+      L.push('`orchestrator visual <image.png>` reports saturation, hues, distinct colours, contrast')
+      L.push('(p95−p5 of value), shadow share (< 0.15) and highlight share (> 0.85). It can gate on')
+      L.push('--min-saturation, --min-hues, --min-colours, --min-contrast, --min-shadow.')
+      L.push('')
+      L.push(...measured)
+      L.push('')
+      L.push(
+        'Use these numbers. A threshold already met by the current readings proves nothing — it ' +
+          'would close the objective while the complaint that opened it still stands.',
+      )
+    }
+
     L.push('')
     L.push(
       'Say whether this can be proven as written, and if not, rewrite what would prove it — ' +

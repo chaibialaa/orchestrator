@@ -87,6 +87,7 @@ export function blockers() {
   out.push(...undecidedRefusals(db))
   out.push(...storages(db))
   out.push(...unpricedHarness(db))
+  out.push(...noWorker(db))
 
   /**
    * One shape, whichever condition fired.
@@ -461,6 +462,59 @@ function undecidedRefusals(db) {
       action: 'Decide it in Permissions — a pending decision reads as a refusal to every pass.',
       link: { to: `/p/${r.slug}/permissions`, label: 'Open Permissions' },
       since: r.last_requested_at,
+    }))
+}
+
+/**
+ * A queue nobody is emptying.
+ *
+ * The server records what is asked for; a worker sitting in the repository
+ * claims it. With no worker, every button on every screen succeeds and nothing
+ * whatsoever happens — a brief stays `pending`, a run stays queued, and the page
+ * says "queued" for ever without a word about why. Asked for a breakdown on
+ * Atlas, the request sat in the table while the only worker on this machine was
+ * in another repository.
+ *
+ * Measured, not declared: a worker claims work by name, so its absence is read
+ * from the queue itself — something waiting, and nothing having taken anything
+ * for a while.
+ */
+function noWorker(db) {
+  const WAITING_MIN = 3
+
+  return db
+    .prepare(
+      `SELECT p.slug, p.name, p.repo_path,
+              (SELECT COUNT(*) FROM runs r WHERE r.project_id = p.id AND r.status = 'pending') runs,
+              (SELECT COUNT(*) FROM briefs b WHERE b.project_id = p.id AND b.status = 'pending') briefs,
+              (SELECT MIN(requested_at) FROM runs r WHERE r.project_id = p.id AND r.status = 'pending') since_run,
+              (SELECT MIN(created_at) FROM briefs b WHERE b.project_id = p.id AND b.status = 'pending') since_brief
+       FROM projects p`,
+    )
+    .all()
+    .filter((p) => p.runs + p.briefs > 0)
+    .map((p) => {
+      const since = [p.since_run, p.since_brief].filter(Boolean).sort()[0]
+      const waited = since ? (Date.now() - Date.parse(since.replace(' ', 'T') + 'Z')) / 60000 : 0
+      return { ...p, waited }
+    })
+    .filter((p) => p.waited >= WAITING_MIN)
+    .map((p) => ({
+      kind: 'no_worker',
+      group: 'Something is queued and nothing is taking it',
+      severity: BLOCKING,
+      project: p.slug,
+      stops: stopped(db, db.prepare('SELECT id FROM projects WHERE slug = ?').get(p.slug).id),
+      title:
+        `${p.name}: ${p.runs + p.briefs} thing(s) queued, waiting ${Math.round(p.waited)} min — ` +
+        'no worker has claimed them',
+      detail:
+        'A worker runs inside the repository and claims what the server records. Without one, every ' +
+        'button on every screen succeeds and nothing happens: the queue simply grows, and the page ' +
+        'says "queued" without saying why nobody came.',
+      action: `Start one: cd ${p.repo_path} && orchestrator work --every 5 — or install it for good with orchestrator service --repo ${p.repo_path}`,
+      link: { to: `/p/${p.slug}`, label: 'See the queue' },
+      since,
     }))
 }
 

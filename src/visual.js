@@ -133,10 +133,36 @@ export function measureImage(file, side = 96) {
 
   const green = pixels.filter(([r, g, b]) => g > r + 12 && g > b + 12).length / pixels.length
 
+  /**
+   * The value range — the axis that carries "tension", and the one nothing here
+   * could measure.
+   *
+   * A session complained that an atmosphere lacked tension, and every measure
+   * this file had was about colour: an image can be saturated, varied, eleven
+   * hues, and still read flat, because tension in a picture is contrast of VALUE
+   * — deep shadow against light, not more colours. Written on a criterion, the
+   * palette measures would have passed while the complaint stood.
+   *
+   * Three numbers rather than one, on purpose, and none of them a score:
+   * `contrast` is the spread between the dark and light ends (p95 − p5, immune to
+   * a single blown pixel), `shadowShare` and `highlightShare` say where the
+   * pixels actually sit. A flat scene has a narrow spread and almost nothing at
+   * either end; a tense one puts weight in the dark and keeps a light edge.
+   */
+  const values = hsv.map(([, , v]) => v).sort((a, b) => a - b)
+  const at = (q) => values[Math.min(values.length - 1, Math.floor(q * values.length))] ?? 0
+  const contrast = at(0.95) - at(0.05)
+  const shadowShare = values.filter((v) => v < 0.15).length / values.length
+  const highlightShare = values.filter((v) => v > 0.85).length / values.length
+
   return {
     pixels: pixels.length,
     saturation: Number(saturation.toFixed(3)),
     brightness: Number(brightness.toFixed(3)),
+    /** p95 − p5 of value: how far the image travels between its dark and light ends. */
+    contrast: Number(contrast.toFixed(3)),
+    shadowShare: Number(shadowShare.toFixed(3)),
+    highlightShare: Number(highlightShare.toFixed(3)),
     hues,
     distinctColours,
     greenShare: Number(green.toFixed(3)),
