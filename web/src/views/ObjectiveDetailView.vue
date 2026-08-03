@@ -4,6 +4,7 @@ import { api, type Objective, type Passage, type Evidence } from '../api'
 import Chips from '../components/Chips.vue'
 import RunControl from '../components/RunControl.vue'
 import Blockers from '../components/Blockers.vue'
+import AskWhatToDo from '../components/AskWhatToDo.vue'
 import {
 
 
@@ -392,6 +393,10 @@ const criterionItems = computed(() => {
             {{ dropping ? 'yes — stop counting it' : 'set it aside' }}
           </button>
         </div>
+
+        <!-- When the answer is not "run it again", ask what it should be. The
+             request writes itself from the record; the reply proposes. -->
+        <AskWhatToDo class="mt-3" :objective-id="objective.id" @applied="load" />
 
         <!--
           Three attempts in, "run it again" stops being neutral advice.

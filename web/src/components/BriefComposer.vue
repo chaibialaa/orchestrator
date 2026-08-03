@@ -1,9 +1,16 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue'
-import { api, type Brief, type BlastRadius, type ProposedStep } from '../api'
+import { api, type Brief, type Breakdown, type BlastRadius, type ProposedStep } from '../api'
 import { blastLabel } from '../labels'
 
 const props = defineProps<{ slug: string }>()
+
+/**
+ * This screen reads breakdowns. A brief can now also carry a recalibration —
+ * a judgement on one objective — which has a verdict where this has chapters.
+ * The list above drops those; this states, in the type, which shape is expected.
+ */
+const plan = (b: Brief) => b.proposal as Breakdown | null
 const emit = defineEmits<{ applied: [] }>()
 
 const text = ref('')
@@ -17,7 +24,9 @@ const draft = ref<Record<number, { chapter: string; intent: string; steps: Propo
 
 async function load() {
   try {
-    briefs.value = await api.briefs(props.slug)
+    // A brief attached to an objective is a judgement on that objective, shown
+    // where the objective is. It has no chapters, and this screen is about chapters.
+    briefs.value = (await api.briefs(props.slug)).filter((b) => !b.objective_id)
     for (const b of briefs.value) {
       if (b.status === 'proposed' && b.proposal && !draft.value[b.id]) {
         draft.value = {
@@ -27,9 +36,9 @@ async function load() {
             // rest is applied whole. Reading `.chapter` on a `{chapters:[…]}`
             // proposal gave `undefined` and an empty step list — the shape that
             // has cost this project seven defects today.
-            chapter: b.proposal.chapter ?? b.proposal.chapters?.[0]?.chapter ?? '',
-            intent: b.proposal.intent ?? b.proposal.chapters?.[0]?.intent ?? '',
-            steps: (b.proposal.steps ?? b.proposal.chapters?.[0]?.steps ?? []).map((e) => ({ ...e })),
+            chapter: plan(b)!.chapter ?? plan(b)!.chapters?.[0]?.chapter ?? '',
+            intent: plan(b)!.intent ?? plan(b)!.chapters?.[0]?.intent ?? '',
+            steps: (plan(b)!.steps ?? plan(b)!.chapters?.[0]?.steps ?? []).map((e) => ({ ...e })),
           },
         }
       }
@@ -166,11 +175,11 @@ const busyOn = (b: Brief) => b.status === 'pending' || b.status === 'running'
              and guessing where it misunderstood, you disagree with one line. A
              wrong assumption here costs a sentence; the same one discovered
              three chapters in costs the chapters. -->
-        <section v-if="b.proposal?.assumptions?.length" class="mt-3">
+        <section v-if="plan(b)?.assumptions?.length" class="mt-3">
           <span class="label">What it assumed</span>
           <ul class="mt-1.5 space-y-1">
             <li
-              v-for="(a, i) in b.proposal.assumptions"
+              v-for="(a, i) in plan(b)!.assumptions"
               :key="i"
               class="text-ink-300 text-[12px] flex items-baseline gap-2 max-w-[68ch]"
             >
@@ -186,11 +195,11 @@ const busyOn = (b: Brief) => b.status === 'pending' || b.status === 'running'
 
         <!-- What it could not settle. Naming a gap beats filling it with a guess
              that reads like a decision. -->
-        <section v-if="b.proposal?.unknowns?.length" class="mt-3">
+        <section v-if="plan(b)?.unknowns?.length" class="mt-3">
           <span class="label text-halt">What it could not settle</span>
           <ul class="mt-1.5 space-y-1">
             <li
-              v-for="(u, i) in b.proposal.unknowns"
+              v-for="(u, i) in plan(b)!.unknowns"
               :key="i"
               class="text-halt text-[12px] flex items-baseline gap-2 max-w-[68ch]"
             >

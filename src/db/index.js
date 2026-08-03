@@ -135,6 +135,8 @@ function addMissingColumns(db) {
     // machine rented by the hour, an image service and a 3D generator are not
     // interchangeable, and a mission that treats them alike wastes one of them.
     ['agents', 'kind', 'TEXT'],
+    // A brief that is about one objective rather than about new work.
+    ['briefs', 'objective_id', 'INTEGER'],
   ]
 
   for (const [table, column, type] of additions) {

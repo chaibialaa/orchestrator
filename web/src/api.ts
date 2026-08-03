@@ -149,24 +149,42 @@ export interface ProposedStep {
   blast_radius?: BlastRadius | null
 }
 
+/** What a breakdown proposes: work that does not exist yet. */
+export interface Breakdown {
+  chapter?: string
+  intent?: string | null
+  steps?: ProposedStep[]
+  /** Several chapters when the request was already a plan. */
+  chapters?: { chapter: string; intent?: string | null; steps: ProposedStep[] }[]
+  /** What it had to decide that the request did not say — each contradictable in a few words. */
+  assumptions?: string[]
+  /** What it could not settle, and what would settle it. */
+  unknowns?: string[]
+}
+
+/**
+ * What a recalibration proposes: a judgement on work that already exists.
+ *
+ * A different question deserves a different shape — and keeping them apart is
+ * what stops a screen written for one from reading fields the other never sends.
+ */
+export interface Recalibration {
+  verdict: 'provable' | 'unmeasurable' | 'over_constrained' | 'too_big'
+  why: string
+  criterion?: string | null
+  contradiction?: string[]
+  decision_needed?: string | null
+  steps?: ProposedStep[]
+}
+
 export interface Brief {
   id: number
   project_id: number
+  /** Set when the brief judges one existing objective instead of proposing new work. */
+  objective_id?: number | null
   body: string
   status: 'pending' | 'running' | 'proposed' | 'applied' | 'failed'
-  proposal:
-    | {
-        chapter?: string
-        intent?: string | null
-        steps?: ProposedStep[]
-        /** Several chapters when the request was already a plan. */
-        chapters?: { chapter: string; intent?: string | null; steps: ProposedStep[] }[]
-        /** What it had to decide that the request did not say — each contradictable in a few words. */
-        assumptions?: string[]
-        /** What it could not settle, and what would settle it. */
-        unknowns?: string[]
-      }
-    | null
+  proposal: Breakdown | Recalibration | null
   error: string | null
   harness: string | null
   created_at: string
@@ -781,6 +799,14 @@ export const api = {
   reorderAgents: (ordre: { id: number; priority: number }[]) =>
     http.patch('/agents/reorder', { ordre }).then((r) => r.data),
 
+  recalibration: (objectiveId: number) =>
+    http.get<Brief | null>(`/objectives/${objectiveId}/recalibration`).then((r) => r.data),
+  recalibrate: (objectiveId: number) =>
+    http.post<Brief>(`/objectives/${objectiveId}/recalibrate`).then((r) => r.data),
+  applyRecalibration: (
+    briefId: number,
+    payload: { criterion?: string; steps?: { title: string; proof_spec?: string | null }[] },
+  ) => http.post(`/briefs/${briefId}/apply`, payload).then((r) => r.data),
   briefs: (slug: string) => http.get<Brief[]>(`/projects/${slug}/briefs`).then((r) => r.data),
   createBrief: (slug: string, body: string) =>
     http.post<Brief>(`/projects/${slug}/briefs`, { body }).then((r) => r.data),

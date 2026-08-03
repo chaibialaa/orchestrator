@@ -208,6 +208,11 @@ CREATE TABLE IF NOT EXISTS workflows (
 CREATE TABLE IF NOT EXISTS briefs (
   id         INTEGER PRIMARY KEY,
   project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  -- Set when the request is about ONE existing objective rather than about new
+  -- work: "this has run ten times and proved nothing — is the criterion wrong?"
+  -- The breakdown then rewrites what would prove it instead of inventing a
+  -- chapter beside it.
+  objective_id INTEGER REFERENCES objectives(id) ON DELETE CASCADE,
   body       TEXT NOT NULL,
   status     TEXT NOT NULL DEFAULT 'pending'
              CHECK (status IN ('pending','running','proposed','applied','failed')),

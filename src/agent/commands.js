@@ -1965,7 +1965,54 @@ const commands = {
           (a.last_detail ? ` — ${String(a.last_detail).slice(0, 120)}` : ''))
         .join('\n')
 
-      const memoryInstruction = [
+      /**
+       * Recalibrating is not breaking down.
+       *
+       * The same engine, a different question. A breakdown invents work beside
+       * what exists; this one judges what exists — and is allowed to answer that
+       * the objective cannot be proven as written, which is the answer that was
+       * true on Blockrise chapter 3 from its first pass and that nothing ever
+       * asked for.
+       */
+      const recalibration = Boolean(brief.objective_id)
+
+      const memoryInstruction = recalibration ? [
+        'An objective below has been attempted and has not concluded. Judge it.',
+        '',
+        'What you must decide, in this order:',
+        '- can it be proven AS WRITTEN? If yes, say so and return the criterion unchanged;',
+        '- if not, is that because the criterion is unmeasurable — an intention, a score, a',
+        '  word like "credible" — or because it is over-constrained, meaning two of its',
+        '  requirements cannot both hold? These are different failures and only one of them',
+        '  is fixed by rewriting;',
+        '- over-constrained is a DECISION, not a rewrite. Name the two requirements that',
+        '  contradict each other, and say which one would have to be given up. Do not quietly',
+        '  lower a threshold to make it pass: an objective softened until it succeeds has',
+        '  proved nothing, and the work already paid for was measured against the old one;',
+        '- if it is simply too big for one session, split it into steps that each carry a',
+        '  criterion something can check.',
+        '',
+        'Rules for anything you write:',
+        '- a criterion is a CONDITION, never an intention. A command that returns a status, a',
+        '  number crossing a named threshold, a capture showing something you name. Never',
+        '  "it is better" or "it reads well";',
+        '- prefer a criterion this project can already run:',
+        proofs ? proofs : '  (this project declares no proof commands)',
+        constraints ? `\nConstraints already settled — do not contradict them:\n${constraints}` : '',
+        '',
+        '--- THE OBJECTIVE AND ITS HISTORY ---',
+        brief.body,
+        '--- END ---',
+        '',
+        'Reply ONLY with a JSON object, no text around it and no code fence:',
+        '{"verdict":"provable|unmeasurable|over_constrained|too_big",',
+        ' "why":"one paragraph, addressed to the person who has to decide",',
+        ' "criterion":"the rewritten criterion, or the unchanged one",',
+        ' "contradiction":["the two requirements that cannot both hold"],',
+        ' "decision_needed":"what only a person can settle, or null",',
+        ' "steps":[{"title":"…","proof_spec":"…","blast_radius":"feature"}]}',
+        'Leave `steps` empty unless splitting is genuinely the answer.',
+      ].filter(Boolean).join('\n') : [
         'Break the request below into chapters and their execution steps.',
         '',
         'Rules for the breakdown:',
@@ -2018,7 +2065,11 @@ const commands = {
         // Breaking a brief down needs no tools: we refuse all repository access so
         // the pass stays short, cheap and side-effect free.
         raw = execFileSync(
-          'claude',
+          // Never the bare name. A worker started by launchd or systemd inherits a
+          // minimal PATH, so `claude` resolves on a terminal and is ENOENT in the
+          // service — the breakdown then fails for a reason that has nothing to do
+          // with the request, and says so in a way nobody would connect to PATH.
+          harnessBin('claude'),
           ['-p', memoryInstruction, '--disallowed-tools', 'Bash', 'Write', 'Edit', 'NotebookEdit'],
           {
             cwd: process.cwd(),
@@ -2038,6 +2089,24 @@ const commands = {
       }
 
       const proposal = extraireJson(raw)
+
+      // A recalibration answers a different question, so it is checked against a
+      // different shape: a verdict and a criterion, not chapters.
+      if (recalibration) {
+        if (!proposal?.verdict || !proposal?.why) {
+          console.error('    unusable reply: no verdict')
+          await call(
+            'PATCH',
+            `/briefs/${brief.id}/propose`,
+            { error: 'the reply carried no verdict on the objective' },
+            { soft: true },
+          )
+          continue
+        }
+        console.log(`    ${proposal.verdict}`)
+        await call('PATCH', `/briefs/${brief.id}/propose`, { proposal }, { soft: true })
+        continue
+      }
 
       // Either shape is accepted and normalised here, so nothing downstream has to
       // know which one came back.
@@ -2312,7 +2381,7 @@ const commands = {
         let raw
         try {
           raw = execFileSync(
-            'claude',
+            harnessBin('claude'),
             ['-p', memoryInstruction(project, body), '--disallowed-tools', 'Bash', 'Write', 'Edit'],
             { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, env: { ...process.env, ORCHESTRATOR_MANAGED: '1' } },
           )
@@ -3690,7 +3759,30 @@ async function resolveHalts(objectiveId) {
  *   "binaries": { "codex": "/path/to/codex" }
  */
 function harnessBin(harness) {
-  return process.env[`ORCHESTRATOR_${harness.toUpperCase()}_BIN`] ?? config.binaries?.[harness] ?? harness
+  const declared = process.env[`ORCHESTRATOR_${harness.toUpperCase()}_BIN`] ?? config.binaries?.[harness]
+  if (declared) return declared
+
+  // Then LOOK, rather than hand the bare name to exec and hope.
+  //
+  // A worker started by launchd or systemd inherits a minimal PATH — no
+  // ~/.local/bin, no Homebrew — so a harness that runs perfectly in a terminal is
+  // ENOENT in the service. It fails with a message about a missing file, which
+  // nobody connects to the PATH, and only when a pass is already under way.
+  try {
+    const found = execFileSync('/bin/sh', ['-c', `command -v ${harness} 2>/dev/null`], {
+      encoding: 'utf8',
+      timeout: 3000,
+    }).trim()
+    if (found) return found
+  } catch {
+    /* not on this PATH — look where these things are usually installed */
+  }
+
+  for (const dir of [join(homedir(), '.local/bin'), '/opt/homebrew/bin', '/usr/local/bin', join(homedir(), '.bun/bin')]) {
+    const p = join(dir, harness)
+    if (existsSync(p)) return p
+  }
+  return harness
 }
 
 const CODEX_SESSIONS = resolve(homedir(), '.codex/sessions')

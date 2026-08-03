@@ -2549,6 +2549,140 @@ export function createServer() {
     res.status(201).json(sortirBrief(db().prepare('SELECT * FROM briefs WHERE id = ?').get(r.lastInsertRowid)))
   })
 
+  /**
+   * "Ask what to do" — about ONE objective that is not converging.
+   *
+   * The request writes itself. Asking a person to describe what went wrong is
+   * asking them to summarise ten sessions they did not read; the tool already
+   * holds every fact that matters — how many attempts, what came back failing,
+   * what halted it, how the last run ended — and a summary written from the
+   * record cannot flatter the work the way a remembered one does.
+   *
+   * It produces a brief, and a brief PROPOSES. Nothing here rewrites a criterion
+   * on its own: an objective silently re-aimed by a machine is exactly the thing
+   * this tool exists to make impossible.
+   */
+  /**
+   * The answer already paid for, on the objective it is about.
+   *
+   * The panel only knew the brief it had just created, so pressing "ask what to
+   * do", closing the tab and coming back showed the button again — with a
+   * verdict sitting in the database, bought and unread. A page that forgets what
+   * it asked for is a page that asks twice.
+   */
+  api.get('/objectives/:id/recalibration', (req, res) => {
+    const b = db()
+      .prepare(
+        `SELECT * FROM briefs WHERE objective_id = ? AND status != 'applied'
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(req.params.id)
+    res.json(b ? sortirBrief(b) : null)
+  })
+
+  api.post('/objectives/:id/recalibrate', (req, res) => {
+    const o = db()
+      .prepare(
+        `SELECT o.*, p.slug, p.name project_name FROM objectives o
+         JOIN projects p ON p.id = o.project_id WHERE o.id = ?`,
+      )
+      .get(req.params.id)
+    if (!o) throw new Rejected('This objective does not exist.', 404)
+
+    const already = db()
+      .prepare("SELECT * FROM briefs WHERE objective_id = ? AND status IN ('pending','running','proposed')")
+      .get(o.id)
+    if (already) return res.json(sortirBrief(already))
+
+    const passages = db()
+      .prepare('SELECT COUNT(*) n, COALESCE(SUM(cost_usd),0) spent FROM passages WHERE objective_id = ?')
+      .get(o.id)
+    const tally = db()
+      .prepare(
+        `SELECT verdict, COUNT(*) n FROM evidences WHERE objective_id = ?
+         GROUP BY verdict`,
+      )
+      .all(o.id)
+    const failing = db()
+      .prepare("SELECT label FROM evidences WHERE objective_id = ? AND verdict = 'fail' ORDER BY id DESC LIMIT 6")
+      .all(o.id)
+    const halts = db()
+      .prepare('SELECT reason, detail FROM halts WHERE objective_id = ? ORDER BY id DESC LIMIT 6')
+      .all(o.id)
+    const run = db()
+      .prepare('SELECT outcome, reason FROM runs WHERE objective_id = ? ORDER BY id DESC LIMIT 1')
+      .get(o.id)
+    const children = db()
+      .prepare("SELECT title, status FROM objectives WHERE parent_id = ? AND status != 'abandoned' ORDER BY priority")
+      .all(o.id)
+
+    const L = []
+    L.push(`Objective #${o.id} — ${o.title}`)
+    if (o.intent) L.push(`Intent: ${o.intent}`)
+    L.push('')
+    L.push('What it currently says would prove it:')
+    L.push(o.proof_spec ? o.proof_spec : '(nothing — it has no criterion at all)')
+    L.push('')
+    L.push(
+      `History: ${passages.n} attempt(s), $${Number(passages.spent).toFixed(0)} spent, ` +
+        tally.map((t) => `${t.n} ${t.verdict ?? 'unrecorded'}`).join(', ') + '.',
+    )
+    if (failing.length) {
+      L.push('')
+      L.push('What came back failing:')
+      for (const f of failing) L.push(`- ${f.label}`)
+    }
+    if (halts.length) {
+      L.push('')
+      L.push('Where it stopped:')
+      for (const h of halts) L.push(`- ${h.reason}: ${(h.detail ?? '').replace(/\s+/g, ' ').slice(0, 300)}`)
+    }
+    if (run?.outcome) {
+      L.push('')
+      L.push(`The last run ended on “${run.outcome}”.`)
+      if (run.reason) L.push(`It had been told: ${String(run.reason).replace(/\s+/g, ' ').slice(0, 600)}`)
+    }
+    if (children.length) {
+      L.push('')
+      L.push('Its steps today:')
+      for (const c of children) L.push(`- ${c.title} (${c.status})`)
+    }
+    L.push('')
+    L.push(
+      'Say whether this can be proven as written, and if not, rewrite what would prove it — ' +
+        'or split it into steps that each can be. Do not soften the target to make it pass: if the ' +
+        'objective is over-constrained, say which constraints contradict each other and what ' +
+        'decision would settle it.',
+    )
+
+    const made = db().transaction(() => {
+      const r = db()
+        .prepare("INSERT INTO briefs (project_id,objective_id,body,status) VALUES (?,?,?,'pending')")
+        .run(o.project_id, o.id, L.join('\n'))
+
+      /**
+       * And something to carry it out.
+       *
+       * A brief is claimed by a `plan` run, not by the worker's ordinary loop —
+       * so a brief created on its own sits pending for ever and the button looks
+       * broken while being, technically, a success. Queuing the run here is what
+       * makes the two ends meet, and it also means the short session it costs is
+       * recorded and billed like every other.
+       */
+      db()
+        .prepare(
+          `INSERT INTO runs (project_id, objective_id, mode, max_turns, budget,
+                             budget_without_progress, post, hold_between_turns, jump, reason, alongside)
+           VALUES (?,?,'plan',1,NULL,120,1,0,1,?,1)`,
+        )
+        .run(o.project_id, o.id, `Recalibrate #${o.id} — ${o.title}`)
+
+      return r.lastInsertRowid
+    })()
+
+    res.status(201).json(sortirBrief(db().prepare('SELECT * FROM briefs WHERE id = ?').get(made)))
+  })
+
   /** Claimed in one write: two agents never pay for the same breakdown. */
   api.post('/projects/:slug/briefs/claim', (req, res) => {
     const p = projectBy(req.params.slug)
@@ -2570,13 +2704,29 @@ export function createServer() {
     if (!b) throw new Rejected('This brief does not exist.', 404)
     const prop = req.body?.proposal
     if (prop) {
-      // One chapter or several. The breakdown learned to return `chapters` this
-      // morning and this guard was not told, so a plan of eighteen chapters would
-      // have been refused here — after being paid for.
-      const chapters = Array.isArray(prop.chapters) && prop.chapters.length ? prop.chapters : [prop]
-      const usable = chapters.every((c) => c?.chapter && Array.isArray(c.steps) && c.steps.length)
-      if (!usable) {
-        throw new Rejected('Unusable breakdown: every chapter needs a title and at least one step.')
+      /**
+       * Two questions, two shapes, and this guard only knew one.
+       *
+       * A recalibration answers with a verdict on an existing objective, not with
+       * chapters — so it was refused here as an "unusable breakdown" AFTER the
+       * session had been paid for, and the call that reported it was `soft`, so
+       * the refusal was swallowed. The worker's log said `over_constrained`; the
+       * database said the brief was still running. The same guard that catches a
+       * bad reply hid a good one, silently, for the exact reason it exists.
+       */
+      if (b.objective_id) {
+        if (!prop.verdict || !prop.why) {
+          throw new Rejected('Unusable recalibration: it carries no verdict on the objective.')
+        }
+      } else {
+        // One chapter or several. The breakdown learned to return `chapters` this
+        // morning and this guard was not told, so a plan of eighteen chapters would
+        // have been refused here — after being paid for.
+        const chapters = Array.isArray(prop.chapters) && prop.chapters.length ? prop.chapters : [prop]
+        const usable = chapters.every((c) => c?.chapter && Array.isArray(c.steps) && c.steps.length)
+        if (!usable) {
+          throw new Rejected('Unusable breakdown: every chapter needs a title and at least one step.')
+        }
       }
     }
     db()
@@ -2586,10 +2736,77 @@ export function createServer() {
   })
 
   /** C'est SEULEMENT here que des objectifs naissent, et sur le texte relu par l'humain. */
+  /**
+   * One brief, by id.
+   *
+   * The front has had a method for this route since briefs existed and the route
+   * did not: nothing called it until a screen started polling one, and then it
+   * polled a 404 for ever while showing "thinking".
+   */
+  api.get('/briefs/:id', (req, res) => {
+    const b = db().prepare('SELECT * FROM briefs WHERE id = ?').get(req.params.id)
+    if (!b) throw new Rejected('This brief does not exist.', 404)
+    res.json(sortirBrief(b))
+  })
+
   api.post('/briefs/:id/apply', (req, res) => {
     const b = db().prepare('SELECT * FROM briefs WHERE id = ?').get(req.params.id)
     if (!b) throw new Rejected('This brief does not exist.', 404)
     const d = req.body ?? {}
+
+    /**
+     * A recalibration lands ON an objective rather than beside it.
+     *
+     * Applying is deliberately narrow: the criterion, and steps if splitting was
+     * the answer. The verdict and its reasoning are not stored as a decision —
+     * an opinion produced by a machine that was asked to judge its own family of
+     * work is a thing to read, not a thing to file as settled.
+     */
+    if (b.objective_id) {
+      const o = db().prepare('SELECT * FROM objectives WHERE id = ?').get(b.objective_id)
+      if (!o) throw new Rejected('The objective this was about no longer exists.', 404)
+
+      const criterion = String(d.criterion ?? '').trim()
+      const steps = Array.isArray(d.steps) ? d.steps.filter((e) => e?.title?.trim()) : []
+      if (!criterion && !steps.length) throw new Rejected('Nothing to apply: no criterion and no steps.')
+
+      db().transaction(() => {
+        if (criterion && criterion !== o.proof_spec) {
+          // `proof_spec_changed_at` is not bookkeeping: the stalling guard counts
+          // attempts SINCE it, so a criterion rewritten without stamping it would
+          // leave ten failures counting against a question that no longer exists
+          // — and the objective refusing to start for a reason its rewrite had
+          // already answered.
+          db()
+            .prepare(
+              'UPDATE objectives SET proof_spec = ?, proof_spec_changed_at = ?, updated_at = ? WHERE id = ?',
+            )
+            .run(criterion, nowStamp(), nowStamp(), o.id)
+        }
+        let prio = db()
+          .prepare('SELECT COALESCE(MAX(priority),0) m FROM objectives WHERE parent_id = ?')
+          .get(o.id).m
+        for (const e of steps) {
+          prio += 10
+          db()
+            .prepare(
+              `INSERT INTO objectives (project_id,parent_id,title,proof_spec,blast_radius,priority,status)
+               VALUES (?,?,?,?,?,?,?)`,
+            )
+            .run(
+              o.project_id, o.id, e.title, e.proof_spec ?? null,
+              e.blast_radius ?? 'feature', prio,
+              e.proof_spec ? 'ready' : 'draft',
+            )
+        }
+        db().prepare("UPDATE briefs SET status = 'applied' WHERE id = ?").run(b.id)
+      })()
+
+      return res.json({
+        objective: db().prepare('SELECT * FROM objectives WHERE id = ?').get(o.id),
+        steps: steps.length,
+      })
+    }
 
     // One chapter or several — a request is one piece of work, a plan already has
     // its own chapters, and flattening eighteen of them into one loses the plan.
