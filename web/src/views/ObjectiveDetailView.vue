@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref, watch, computed } from 'vue'
-import { api, type Objective, type Passage, type Evidence } from '../api'
+import { api, type Objective, type ObjectiveStep, type Passage, type Evidence } from '../api'
 import Chips from '../components/Chips.vue'
 import RunControl from '../components/RunControl.vue'
 import Blockers from '../components/Blockers.vue'
@@ -31,9 +31,19 @@ async function setAside() {
 const expanded = ref<Set<number>>(new Set())
 const preview = ref<{ url: string; name: string; text?: string; id: number } | null>(null)
 
+/**
+ * What to do, before what it is.
+ *
+ * The page opened on "In progress" and "Not ready to conclude" — two states, no
+ * instruction. Someone who did not build this cannot tell from those whether
+ * they are waiting on a machine, on a decision of their own, or on nothing.
+ */
+const step = ref<ObjectiveStep | null>(null)
+
 async function load() {
   loading.value = true
   objective.value = await api.objective(props.id)
+  step.value = await api.objectiveNext(Number(props.id)).catch(() => null)
   loading.value = false
 }
 
@@ -284,9 +294,45 @@ const criterionItems = computed(() => {
       </div>
     </header>
 
-    <!-- WHY IT IS NOT MOVING — above the decision, because half the time there is
-         no decision to take: the editor is closed, or the harness has no tool it
-         may use, and no verdict on this page would change that. -->
+    <!-- THE INSTRUCTION, first. Everything under it is the evidence for it. -->
+    <section
+      v-if="step"
+      class="border rounded p-5"
+      :class="{
+        'border-fail/40 bg-fail/[0.04]': step.tone === 'blocked',
+        'border-halt/40 bg-halt/[0.04]': step.tone === 'decide',
+        'border-run/40 bg-run/[0.04]': step.tone === 'work',
+        'border-proof/40 bg-proof/[0.04]': step.tone === 'done',
+      }"
+    >
+      <div class="flex items-baseline gap-3 flex-wrap">
+        <span
+          class="label"
+          :class="{
+            'text-fail': step.tone === 'blocked',
+            'text-halt': step.tone === 'decide',
+            'text-run': step.tone === 'work',
+            'text-proof': step.tone === 'done',
+          }"
+        >
+          {{
+            step.tone === 'blocked'
+              ? 'Nothing can run'
+              : step.tone === 'decide'
+                ? 'Waiting on you'
+                : step.tone === 'work'
+                  ? 'What to do next'
+                  : 'Finished'
+          }}
+        </span>
+        <span class="text-ink-100 text-[15px]">{{ step.headline }}</span>
+      </div>
+      <p v-if="step.why" class="text-ink-400 mt-2 leading-relaxed max-w-[80ch]">{{ step.why }}</p>
+      <p v-if="step.action" class="text-ink-100 mt-2 leading-relaxed max-w-[80ch]">→ {{ step.action }}</p>
+    </section>
+
+    <!-- WHY IT IS NOT MOVING — the conditions of the machine, when there are any.
+         The instruction above already leads with them; this is the detail. -->
     <Blockers :objective="Number(objective.id)" compact />
 
     <!-- THE DECISION -->
@@ -304,10 +350,16 @@ const criterionItems = computed(() => {
           <div v-if="objective.gate?.ready" class="text-proof text-[15px]">
             Your verdict: is the criterion met?
           </div>
+          <!-- It used to be the page's headline, which made a rule that refuses
+               read as the answer to "what do I do". It is a caption now: the
+               instruction is at the top. -->
           <div v-else class="text-ink-200 text-[15px]">
-            Not ready to conclude — but you can still stop it
+            The gate refuses to conclude it — you can still refuse it yourself
           </div>
-          <p class="text-ink-300 mt-1.5 leading-relaxed">{{ objective.gate?.detail }}</p>
+          <!-- The band at the top already carries this sentence; printing it twice
+               makes the instruction and its justification indistinguishable. It
+               stays only when there is no band to have said it. -->
+          <p v-if="!step" class="text-ink-300 mt-1.5 leading-relaxed">{{ objective.gate?.detail }}</p>
 
           <!-- What to check, restated where the decision is taken. Asking for a
                verdict without saying what to look at is asking for a guess: the

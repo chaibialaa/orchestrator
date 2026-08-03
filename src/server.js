@@ -10,7 +10,7 @@ import { evaluateGate, canStart, HUMAN_HALTS } from './gate.js'
 import { encrypt, decrypt, keyHint } from './crypto.js'
 import { upload, checkStorage, createDriveFolder } from './storage.js'
 import { blockersFor } from './blockers.js'
-import { attention, attentionFor, nextStep } from './attention.js'
+import { attention, attentionFor, nextStep, nextStepForObjective } from './attention.js'
 import { charts } from './charts.js'
 
 /**
@@ -2570,6 +2570,13 @@ export function createServer() {
    * verdict sitting in the database, bought and unread. A page that forgets what
    * it asked for is a page that asks twice.
    */
+  /** What to do about this one objective, in the words of somebody who has to act. */
+  api.get('/objectives/:id/next', (req, res) => {
+    const step = nextStepForObjective(Number(req.params.id))
+    if (!step) throw new Rejected('This objective does not exist.', 404)
+    res.json(step)
+  })
+
   api.get('/objectives/:id/recalibration', (req, res) => {
     /**
      * The LAST one, whatever became of it — and nothing at all once it is applied.

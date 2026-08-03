@@ -334,3 +334,109 @@ export function nextStep(slug) {
         href: `/p/${slug}/plan`,
       }
 }
+
+/**
+ * The next step for ONE objective, in the words of somebody who has to act.
+ *
+ * Its page announced two states — "in progress", "not ready to conclude" — and
+ * no action. Both are true and neither is an instruction: a reader who did not
+ * build this cannot tell whether they are waiting on a machine, on a decision,
+ * or on nothing at all. The project page got this band and the objective page,
+ * where the work is actually done, did not.
+ *
+ * It says the same thing every time in the same order: what state this is in,
+ * why, and the ONE thing to do about it.
+ */
+export function nextStepForObjective(id) {
+  const db = base()
+  const o = db
+    .prepare(
+      `SELECT o.*, p.slug, p.gate_judge FROM objectives o JOIN projects p ON p.id = o.project_id
+       WHERE o.id = ?`,
+    )
+    .get(id)
+  if (!o) return null
+
+  if (o.status === 'proven') {
+    return { tone: 'done', headline: 'Accepted', why: 'The criterion was met and a verdict closed it.', action: null }
+  }
+  if (o.status === 'abandoned') {
+    return {
+      tone: 'done',
+      headline: 'Set aside',
+      why: 'It is no longer counted, and nothing runs on it. What it proved is kept.',
+      action: null,
+    }
+  }
+
+  // A condition of the machine beats everything: no instruction survives a pass
+  // that cannot start.
+  const blocking = blockers().find(
+    (b) => b.severity === 'blocking' && (b.project === o.slug || b.project == null),
+  )
+  if (blocking) {
+    return {
+      tone: 'blocked',
+      headline: blocking.group ?? blocking.title,
+      why: blocking.detail,
+      action: blocking.action,
+    }
+  }
+
+  const gate = evaluateGate(id)
+
+  if (gate.ok) {
+    return {
+      tone: 'decide',
+      headline: 'It is ready to be concluded — that is your call',
+      why: 'Everything the criterion asks for has been produced and accepted. Nothing will close it on its own.',
+      action: 'Read what came out, then press “The criterion is met”. Or refuse it, which is just as useful.',
+    }
+  }
+
+  /**
+   * Why it refuses, said as a thing to do rather than as a rule that failed.
+   *
+   * The gate's own sentence explains itself correctly and to the wrong person:
+   * "no proof with a pass verdict is attached" is a fact about the database.
+   */
+  const INSTRUCTION = {
+    no_provable_criterion: {
+      headline: 'It does not say how it would be proven',
+      action: 'Write what would prove it finished — until then no agent can pick it up.',
+    },
+    children_open: {
+      headline: 'Its steps are not all finished',
+      action: 'Open the steps below: a chapter closes when they do.',
+    },
+    no_new_proof: {
+      headline: 'Nothing new has been produced to judge',
+      action:
+        'Run it again to produce something new, or change what would prove it. A verdict now would rest on nothing.',
+    },
+    blast_radius: {
+      headline: 'What it touches asks for proof from the real world',
+      action: 'Run it again and let it produce a test, a run through the screen, or a measurement.',
+    },
+    awaiting_verdict: {
+      headline: 'Everything is here — only the verdict is missing',
+      action:
+        o.gate_judge === 'gpt'
+          ? 'The driving conversation rules on this one. Start a pass and it will be asked.'
+          : 'Read what came out and say whether the criterion is met.',
+    },
+    human_request: {
+      headline: 'A halt is open and nothing goes round it',
+      action: 'Answer what it asks, below, and clear it.',
+    },
+  }
+
+  const known = INSTRUCTION[gate.reason]
+  return {
+    tone: gate.ready ? 'decide' : 'work',
+    headline: known?.headline ?? 'It cannot be concluded yet',
+    // The gate's explanation stays: it is the evidence for the instruction.
+    why: gate.detail ?? '',
+    action: known?.action ?? 'Look at what it has produced, then run it again or change what would prove it.',
+  }
+}
