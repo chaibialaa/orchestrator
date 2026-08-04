@@ -649,6 +649,8 @@ export interface Dashboard {
 }
 
 export interface ResourceItem {
+  /** The file behind this row is actually on disk. Not one of them was. */
+  file_exists?: boolean
   id: number
   objective_id: number | null
   name: string
@@ -911,7 +913,9 @@ export const api = {
     `${http.defaults.baseURL}/evidences/${id}/file?n=${n}${w ? `&w=${w}` : ''}`,
 
   resources: (slug: string) =>
-    http.get<ResourceItem[]>(`/projects/${slug}/resources`).then((r) => r.data),
+    http
+      .get<{ reaches_agents: boolean; items: ResourceItem[] }>(`/projects/${slug}/resources`)
+      .then((r) => r.data),
   uploadResource: (slug: string, file: File, summary: string) => {
     const form = new FormData()
     form.append('file', file)

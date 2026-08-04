@@ -7,6 +7,8 @@ const props = defineProps<{ slug: string }>()
 
 const decisions = ref<Decision[]>([])
 const resources = ref<ResourceItem[]>([])
+/** Whether anything actually hands these to an agent. Today: nothing does. */
+const reachesAgents = ref(true)
 const filter = ref('')
 const loading = ref(true)
 const uploading = ref(false)
@@ -17,7 +19,8 @@ async function load() {
   loading.value = true
   const [d, r] = await Promise.all([api.decisions(props.slug), api.resources(props.slug)])
   decisions.value = d
-  resources.value = r
+  resources.value = r.items
+  reachesAgents.value = r.reaches_agents
   loading.value = false
 }
 
@@ -116,15 +119,27 @@ const includedCount = computed(() => resources.value.filter((r) => r.included).l
     <section>
       <div class="flex items-baseline gap-3 mb-1">
         <h2 class="text-ink-100 text-[14px]">Documents — {{ resources.length }}</h2>
-        <span class="text-ink-400 text-[12px]">{{ includedCount }} included in the context</span>
+        <span v-if="reachesAgents" class="text-ink-400 text-[12px]">
+          {{ includedCount }} included in the context
+        </span>
+        <span v-else class="text-halt text-[12px]">{{ includedCount }} marked to include</span>
         <button class="btn ml-auto" :disabled="uploading" @click="fileInput?.click()">
           {{ uploading ? 'uploading…' : 'add a file' }}
         </button>
         <input ref="fileInput" type="file" multiple class="hidden" @change="onFiles" />
       </div>
-      <p class="text-ink-400 mb-3 max-w-3xl">
+      <p v-if="reachesAgents" class="text-ink-400 mb-3 max-w-3xl">
         Images, notes, exports — up to 5 MB per file. Untick a document to keep it on file without
         sending it to agents.
+      </p>
+
+      <!-- The page promised these came back into every session. Nothing in the
+           codebase reads this table to build what an agent is handed: it is read
+           here, and by a counter. A switch that decides nothing, labelled as
+           deciding what agents see, is worse than no switch. -->
+      <p v-else class="mb-3 max-w-[80ch] text-halt text-[12px] leading-relaxed border-l-2 border-halt/50 pl-3">
+        Nothing hands these to an agent yet — no pass has ever received one of these documents,
+        and the include switch decides nothing. They are recorded here and nowhere else.
       </p>
 
       <div v-if="uploadError" class="card p-3 border-fail/40 text-fail mb-3">{{ uploadError }}</div>
@@ -136,7 +151,7 @@ const includedCount = computed(() => resources.value.filter((r) => r.included).l
           v-for="r in filteredResources"
           :key="r.id"
           class="card overflow-hidden transition-opacity"
-          :class="r.included ? '' : 'opacity-45'"
+          :class="[r.included ? '' : 'opacity-45', r.file_exists === false ? 'border-fail/40' : '']"
         >
           <a
             v-if="r.kind === 'image'"
@@ -174,11 +189,18 @@ const includedCount = computed(() => resources.value.filter((r) => r.included).l
               <button
                 class="chip shrink-0"
                 :class="r.included ? 'border-proof/50 text-proof' : 'border-ink-600 text-ink-400'"
-                :title="r.included ? 'Sent to agents' : 'Kept on file only'"
+                :title="reachesAgents ? (r.included ? 'Sent to agents' : 'Kept on file only') : 'Nothing reads this switch yet'"
                 @click="toggle(r)"
               >
                 {{ r.included ? 'included' : 'excluded' }}
               </button>
+              <span
+                v-if="r.file_exists === false"
+                class="chip border-fail/60 text-fail shrink-0"
+                title="The row is here; the file it points at is not on disk."
+              >
+                file missing
+              </span>
             </div>
 
             <div class="text-ink-600 text-[11px] mt-1">

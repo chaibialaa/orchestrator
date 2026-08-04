@@ -4,6 +4,7 @@ const { X_OK } = constants
 import { existsSync, statSync, createReadStream, accessSync, constants, mkdirSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { resolve as path, join, extname, basename, dirname } from 'node:path'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { base, json, nowStamp, dbPath as dbPathOf } from './db/index.js'
 import { evaluateGate, canStart, HUMAN_HALTS, WAIVABLE, requiresVisual } from './gate.js'
@@ -3392,9 +3393,32 @@ export function createServer() {
     res.json({ ...db().prepare('SELECT * FROM invariants WHERE id = ?').get(i.id), holds, halt })
   })
 
+  /**
+   * The documents, with the two facts the page was asserting without checking.
+   *
+   * `file_exists`: every row here pointed at a path, and not one of the files was
+   * on disk — the page listed four documents with their sizes and dates, three of
+   * them "included in the context", over nothing at all.
+   *
+   * `reaches_agents`: nowhere in this codebase does anything read `resources` to
+   * build what an agent is handed. The table is read exactly twice — here, and by
+   * a counter. So `included` decides nothing, and the page said it decided what
+   * agents receive.
+   */
   api.get('/projects/:slug/resources', (req, res) => {
     const p = projectBy(req.params.slug)
-    res.json(db().prepare('SELECT * FROM resources WHERE project_id = ?').all(p.id).map((r) => ({ ...r, included: Boolean(r.included) })))
+    const root = join(homedir(), '.orchestrator')
+    res.json({
+      reaches_agents: false,
+      items: db()
+        .prepare('SELECT * FROM resources WHERE project_id = ?')
+        .all(p.id)
+        .map((r) => ({
+          ...r,
+          included: Boolean(r.included),
+          file_exists: Boolean(r.path && existsSync(join(root, r.path))),
+        })),
+    })
   })
 
   /**
