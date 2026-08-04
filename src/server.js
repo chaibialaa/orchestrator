@@ -19,8 +19,8 @@ import { live } from './live.js'
  * server holds a NAME, and what that name does lives on the machine that has the
  * repository — which is the only place it could be decided anyway.
  */
-const KNOWN_CHORES = ['open_unity']
-import { signedIn } from './agent/relay.js'
+const KNOWN_CHORES = ['open_unity', 'open_judge_browser']
+import { signedIn, judgeHealth, startJudgeBrowser } from './agent/relay.js'
 import { mcpServers } from './mcp.js'
 import {
   consentUrl,
@@ -1359,7 +1359,7 @@ export function createServer() {
     })
   })
 
-  api.get('/dashboard', (_req, res) => {
+  api.get('/dashboard', async (_req, res) => {
     const projects = db().prepare('SELECT * FROM projects ORDER BY name').all()
     // Computed once for the whole page rather than per project: every entry
     // re-evaluates gates, and four projects would mean four full passes.
@@ -1422,6 +1422,22 @@ export function createServer() {
 
     res.json({
       projects: rollup,
+
+      /**
+       * The judging browser, measured on every load.
+       *
+       * This was already probed — in `/api/setup`, the walkthrough everybody
+       * skips — and nowhere a person looks. Run 59 spent two hours reloading a
+       * page inside a Chrome that was not running while every screen showed a
+       * healthy `running`; the fact was one HTTP call away the whole time.
+       *
+       * Only true when the server shares a machine with the worker: port 9222
+       * binds to 127.0.0.1, so a remote server cannot see another machine's
+       * browser and must not pretend to. Hence `same_machine`, stated rather
+       * than assumed.
+       */
+      judge: await judgeHealth().catch(() => null),
+
       totals: {
         projects: rollup.length,
         objectives: rollup.reduce((n, p) => n + p.total_objectives, 0),

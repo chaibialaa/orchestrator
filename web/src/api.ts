@@ -588,6 +588,14 @@ export interface ProjectRollup {
 
 export interface Dashboard {
   projects: ProjectRollup[]
+  /** The browser the loop drives, probed on every load. Null if it could not be asked. */
+  judge?: {
+    reachable: boolean
+    tabs: number
+    conversation: boolean
+    signed_in: boolean | null
+    port: number
+  } | null
   /** The day, beside the running total: a figure that only grows says nothing
    *  about whether anything moved last night. */
   today: { passages: number; cost_usd: number; tokens: number; proven: number; measured: number }

@@ -16,7 +16,7 @@ import { editorRunning, editorFor } from '../unity.js'
 import { recentSessions, readSince, encodeCwd } from './watch.js'
 import { generateImage, ADAPTERS } from './images.js'
 import { inventoryMemories, assembleContext, memoryInstruction, memoryFingerprint } from './memories.js'
-import { attach, openTab, parseDirective, parseVerdict, parseDone, jsPost, attachFiles, waitForStable, confirmPosted, conversationSize, JS_LAST_ASSISTANT, JS_IS_STREAMING } from './relay.js'
+import { attach, openTab, startJudgeBrowser, parseDirective, parseVerdict, parseDone, jsPost, attachFiles, waitForStable, confirmPosted, conversationSize, JS_LAST_ASSISTANT, JS_IS_STREAMING } from './relay.js'
 
 /**
  * Claude pricing in $/million tokens: [input, output].
@@ -2750,7 +2750,13 @@ const commands = {
         outcome =
           chore.kind === 'open_unity'
             ? openUnity()
-            : { ok: false, detail: `this worker does not know how to “${chore.kind}”` }
+            : // The browser the loop drives lives on the machine that holds the
+              // repository, next to this worker — never on the server, which may
+              // be somewhere else entirely and can only see 127.0.0.1 of its own
+              // host. Signing in stays the person's: this opens a window.
+              chore.kind === 'open_judge_browser'
+              ? await startJudgeBrowser()
+              : { ok: false, detail: `this worker does not know how to “${chore.kind}”` }
       } catch (e) {
         outcome = { ok: false, detail: e?.message ?? 'it failed without saying why' }
       }

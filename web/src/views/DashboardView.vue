@@ -66,6 +66,36 @@ const breachedInvariants = computed(
  */
 const waiting = ref<Attention[]>([])
 const needsYou = computed(() => waiting.value.filter((a) => a.severity === 'decide').length)
+
+/**
+ * Opening the browser is asked of a WORKER, never done by the server.
+ *
+ * Port 9222 binds to 127.0.0.1, so the browser the loop drives lives on the
+ * machine that holds the repository — the server may be somewhere else and can
+ * only ever see its own host. Any project on that machine will do; the errand is
+ * about the machine, not about the project.
+ */
+const projectsWithRepo = computed(() => (data.value?.projects ?? []).map((p) => p.slug))
+const startingJudge = ref<string | null>(null)
+const judgeAsked = ref(false)
+const judgeError = ref<string | null>(null)
+
+async function startJudge(slug: string) {
+  startingJudge.value = slug
+  judgeError.value = null
+  try {
+    await api.askChore(slug, 'open_judge_browser')
+    judgeAsked.value = true
+  } catch (e: any) {
+    // A refusal that explains itself, shown. The first version of this button
+    // swallowed it: the server answered "nothing here knows how to
+    // open_judge_browser" and the screen went on offering the button as if it
+    // had never been pressed.
+    judgeError.value = e?.response?.data?.message ?? e?.message ?? 'it was refused'
+  } finally {
+    startingJudge.value = null
+  }
+}
 /** Errands — a closed editor, an empty allow list. Detailed by the panel below. */
 const errands = computed(() => waiting.value.filter((a) => a.severity === 'fix').length)
 const runsStopped = computed(() => waiting.value.filter((a) => a.kind === 'run_stopped'))
@@ -445,7 +475,57 @@ const segColor: Record<string, string> = {
 
       <!-- Alone, it gets the width instead of a 900px card holding 68 characters
            of text: two caps fighting each other left a third of every card empty. -->
+      <div class="space-y-8">
+      <!-- The judging browser, where a person looks.
+           It was already probed, in the walkthrough everybody skips. Run 59 spent
+           two hours reloading a page inside a Chrome that was not running, while
+           every screen showed a healthy `running` — the fact was one HTTP call
+           away the whole time, and no screen made it. -->
+      <section
+        v-if="data?.judge && !(data.judge.reachable && data.judge.conversation && data.judge.signed_in !== false)"
+        class="border border-fail/40 bg-fail/[0.06] rounded p-4"
+      >
+        <h2 class="text-fail text-[14px]">
+          {{
+            !data.judge.reachable
+              ? 'The judging browser is not running'
+              : !data.judge.conversation
+                ? 'The judging browser is open on no conversation'
+                : 'The judging browser is signed out'
+          }}
+        </h2>
+        <p class="text-ink-300 text-[12px] mt-1.5 leading-relaxed max-w-[80ch]">
+          {{
+            !data.judge.reachable
+              ? `Nothing answers on port ${data.judge.port}. Every pass that asks it for a verdict will
+                 reload a page that is not there — for hours, without saying so.`
+              : !data.judge.conversation
+                ? `Chrome is listening on port ${data.judge.port} with ${data.judge.tabs} tab(s), and none
+                   of them holds the conversation the loop reads.`
+                : 'The tab is there and the session is not. A signed-out page answers, so the loop keeps asking it.'
+          }}
+        </p>
+        <div class="mt-3 flex items-baseline gap-3 flex-wrap">
+          <button
+            v-if="!data.judge.reachable && projectsWithRepo.length"
+            class="chip border-fail/60 text-fail hover:bg-fail/10"
+            :disabled="Boolean(startingJudge)"
+            @click="startJudge(projectsWithRepo[0])"
+          >
+            {{ startingJudge ? 'asking the worker…' : 'Open it' }}
+          </button>
+          <span v-if="judgeAsked" class="text-[12px] text-ink-400">
+            asked — the worker on that machine opens it within seconds. Signing in stays yours.
+          </span>
+          <span v-if="judgeError" class="text-[12px] text-fail">{{ judgeError }}</span>
+          <span v-else class="text-[12px] text-ink-600">
+            or open it yourself, on the machine that holds the repository
+          </span>
+        </div>
+      </section>
+
       <Blockers :columns="needsYou ? 1 : 2" :class="needsYou ? 'xl:sticky xl:top-16' : ''" />
+      </div>
     </div>
 
     <!-- The totals in the header say how much. These say where. -->

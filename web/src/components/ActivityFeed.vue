@@ -87,7 +87,7 @@ const lines = computed(() => (props.compact ? feed.value.slice(0, 6) : feed.valu
   <!-- Capped rather than stretched. At 1456px the title's `flex-1` pushed the
        project and the cost to the far edge, and a row you have to read across the
        whole screen is a row you stop reading. -->
-  <section class="max-w-5xl">
+  <section>
     <h2 class="text-ink-300 text-[14px] mb-1">
       What is happening
       <span v-if="busyOn.length" class="text-run">— {{ busyOn.length }} running</span>

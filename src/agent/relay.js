@@ -127,6 +127,52 @@ async function startBrowser(port) {
  * Renewing the driving conversation must not take over the tab someone is
  * reading. The new tab is the orchestrator's; the old one stays where it was.
  */
+/**
+ * Is the judging browser there, and does it hold the conversation?
+ *
+ * The most fragile dependency of the whole tool had no presence anywhere: run 59
+ * spent two hours reloading a page inside a Chrome that was not running, while
+ * every screen showed a healthy `running`. It was found with a curl on 9222.
+ *
+ * Three separate facts, never merged into one boolean: a browser that is absent,
+ * one that is open on nothing, and one that is signed out send a person to fix
+ * three different things.
+ */
+export async function judgeHealth(port = CDP_PORT) {
+  const res = await fetch(`http://127.0.0.1:${port}/json/list`, {
+    signal: AbortSignal.timeout(4000),
+  }).catch(() => null)
+
+  if (!res?.ok) {
+    return { reachable: false, tabs: 0, conversation: false, signed_in: null, port }
+  }
+
+  const tabs = await res.json().catch(() => [])
+  const conversation = tabs.some((t) => /chatgpt\.com/.test(t.url ?? ''))
+
+  return {
+    reachable: true,
+    tabs: tabs.length,
+    conversation,
+    // Asking a browser with no conversation whether it is signed in would answer
+    // "no" about a question that was never put to it.
+    signed_in: conversation ? await signedIn(port) : null,
+    port,
+  }
+}
+
+/** Start the browser the loop drives. Never signs in — that is the person's. */
+export async function startJudgeBrowser(port = CDP_PORT) {
+  const already = await judgeHealth(port)
+  if (already.reachable) return { ok: true, detail: 'it was already listening', health: already }
+
+  // `startBrowser` already waits for the port to answer, up to thirty seconds.
+  if (!(await startBrowser(port))) {
+    return { ok: false, detail: `no Chrome answered on port ${port} — is one installed?` }
+  }
+  return { ok: true, detail: 'it is listening', health: await judgeHealth(port) }
+}
+
 export async function openTab(url, port = CDP_PORT) {
   const res = await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, {
     method: 'PUT',

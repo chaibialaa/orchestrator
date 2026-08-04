@@ -70,7 +70,13 @@ const proof = computed(() => {
   <section v-if="data" class="space-y-6">
     <h2 class="label">Where the effort goes</h2>
 
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+    <!-- Colonnes, pas grille.
+         Une grille à deux colonnes place ses enfants dans l'ordre : un nombre
+         IMPAIR de cartes — et il l'est dès qu'un chapitre manque — laisse la
+         dernière seule à gauche et un vide de la hauteur d'une carte à droite.
+         Le flux en colonnes empile les blocs et ne laisse pas de trou, quel que
+         soit leur nombre. -->
+    <div class="columns-1 lg:columns-2 gap-6 [&>*]:break-inside-avoid [&>*]:mb-6">
       <!-- WHICH TOOLS -->
       <div class="card p-5">
         <div class="flex items-baseline gap-3">
