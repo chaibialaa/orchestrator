@@ -66,6 +66,8 @@ export interface Passage {
   git_before: string | null
   git_after: string | null
   cost_usd: string | null
+  /** 0 when nothing priced this run — a cost of zero that means "unknown". */
+  cost_known?: number
   tokens: number | null
   requests: number
   said: string | null
@@ -101,6 +103,8 @@ export interface Objective {
   waivers?: { waives: string; body: string; decided_at: string }[]
   /** The next open step of the same chapter — where to go once this one closes. */
   next_in_chapter?: { id: number; title: string; status: string } | null
+  /** A run asked for or under way, before the worker has written the status. */
+  live_run?: { id: number; status: string; turn: number } | null
   blast_radius: BlastRadius
   status: ObjectiveStatus
   priority: number

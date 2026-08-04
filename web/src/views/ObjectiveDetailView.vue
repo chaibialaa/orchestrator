@@ -188,8 +188,22 @@ function missionSize(m: string) {
   return `${lines} line${lines > 1 ? 's' : ''}`
 }
 
-const useful = computed(() => passages.value.filter((p) => p.verdict === 'advanced' || !p.ended_at))
-const noise = computed(() => passages.value.filter((p) => p.verdict !== 'advanced' && p.ended_at))
+/**
+ * An attempt is useful when it LEFT something, not when it exited well.
+ *
+ * Passage 133 wrote a twenty-kilobyte specification, seven deliverables and a
+ * proof that passes fourteen checks — and the page called it "0 useful
+ * attempts, 1 with no effect", because the session ended on `failed`. How a
+ * session exits and what it produced are two different facts, and only the
+ * second is what somebody reading this page is trying to weigh.
+ */
+const left = (p: Passage) => (p.evidences?.length ?? 0) > 0
+const useful = computed(() =>
+  passages.value.filter((p) => p.verdict === 'advanced' || !p.ended_at || left(p)),
+)
+const noise = computed(() =>
+  passages.value.filter((p) => p.verdict !== 'advanced' && p.ended_at && !left(p)),
+)
 
 const proofs = computed(() => {
   const o = objective.value
@@ -260,10 +274,18 @@ const shown = computed(() => ({
   documents: proofs.value.filter((e) => !isImage(e.files![0])),
 }))
 
-/** Has anything ever been attempted here? Half this page is about a history. */
-const everRan = computed(() => {
+/**
+ * Is there anything to judge yet?
+ *
+ * Not "has it ever run": a pass that started thirty seconds ago has a passage
+ * and has produced nothing, and counting the passage brought the judging panel
+ * back — "the gate refuses to conclude it", over a tally of zero, while the
+ * thing was still working. Judging needs something judged.
+ */
+const anythingToJudge = computed(() => {
   const o = objective.value
-  return Boolean(o && ((o.passages?.length ?? 0) > 0 || (o.evidences?.length ?? 0) > 0))
+  const all = [...(o?.evidences ?? []), ...(o?.passages ?? []).flatMap((p) => p.evidences ?? [])]
+  return all.length > 0
 })
 
 const openHalts = computed(() => objective.value?.halts?.filter((h) => !h.resolved_at) ?? [])
@@ -286,6 +308,14 @@ const totals = computed(() => {
   return {
     tokens: p.reduce((s, x) => s + (x.tokens ?? 0), 0),
     cost: p.reduce((s, x) => s + Number(x.cost_usd ?? 0), 0),
+    /**
+     * Whether that figure means anything.
+     *
+     * "$0.00 spent · 4.49 M tokens" is not a cheap session, it is an unpriced
+     * one — nobody spends four and a half million tokens for nothing. The zero
+     * was the absence of a price printed as a price.
+     */
+    priced: p.some((x) => x.cost_known !== 0) || !p.length,
     // "advanced" counts as delivered even if the attempt was cut short: the
     // work is there. The rest is cost with nothing to show.
     wasted: p
@@ -348,7 +378,16 @@ const criterionItems = computed(() => {
       <div class="flex items-start gap-4 flex-wrap">
         <h1 class="text-[20px] text-ink-100 flex-1 min-w-0">{{ objective.title }}</h1>
         <div class="flex gap-1.5 shrink-0">
-          <Chips kind="status" :value="objective.status" />
+          <!-- A run already asked for outranks the stored status: the worker
+               writes that status when it claims the run, five seconds later, and
+               those five seconds are exactly when somebody is looking. -->
+          <span
+            v-if="objective.live_run && objective.status !== 'proven'"
+            class="chip border-run/60 text-run bg-run/10"
+          >
+            {{ objective.live_run.status === 'pending' ? 'starting' : 'running' }}
+          </span>
+          <Chips v-else kind="status" :value="objective.status" />
           <Chips kind="blast" :value="objective.blast_radius" />
         </div>
       </div>
@@ -681,7 +720,7 @@ const criterionItems = computed(() => {
          exist, over a tally of zero, under a heading about a gate refusing —
          when the only true thing to say is that it has not started. -->
     <section
-      v-if="objective.status !== 'proven' && objective.status !== 'abandoned' && everRan"
+      v-if="objective.status !== 'proven' && objective.status !== 'abandoned' && anythingToJudge"
       class="border rounded p-5"
       :class="objective.gate?.ready ? 'border-proof/40 bg-proof/[0.05]' : 'border-ink-700 bg-ink-900/40'"
     >
@@ -964,10 +1003,13 @@ const criterionItems = computed(() => {
 
     <!-- WHAT IT COST -->
     <section v-if="totals.tokens" class="flex items-baseline gap-6 text-[13px] border-t border-ink-800 pt-4">
-      <span class="text-ink-400">
+      <span v-if="totals.priced" class="text-ink-400">
         <span class="text-ink-100 text-[15px]">${{ totals.cost.toFixed(2) }}</span> spent
       </span>
-      <span v-if="totals.wasted > 0.5" class="text-ink-500">
+      <span v-else class="text-ink-400" title="No price table matched the model this ran on.">
+        <span class="text-ink-100 text-[15px]">unpriced</span> — nothing costed this run
+      </span>
+      <span v-if="totals.priced && totals.wasted > 0.5" class="text-ink-500">
         ${{ totals.wasted.toFixed(2) }} of it with nothing to show
       </span>
       <span class="text-ink-500">{{ formatTokens(totals.tokens) }} tokens</span>

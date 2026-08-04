@@ -500,18 +500,42 @@ export function nextStepForObjective(id, withChoices = true) {
     .get(id)
   const queued = db
     .prepare(
-      `SELECT id, status FROM runs WHERE objective_id = ? AND status IN ('pending','running')
+      `SELECT id, status, turn, taken_at FROM runs WHERE objective_id = ? AND status IN ('pending','running')
        ORDER BY id DESC LIMIT 1`,
     )
     .get(id)
 
+  /**
+   * Three states, not two.
+   *
+   * A live run with no open passage was called "queued and about to start —
+   * the worker takes it within seconds". On run 59 that sentence sat above a
+   * line reading `turn 2 — claude on #50 · 2 h`: the run had been claimed two
+   * hours earlier, its turn had ended, and it was waiting on the judging
+   * conversation. "About to start" is what you say before anything happened,
+   * and the page said it after everything had.
+   */
+  const between = queued?.taken_at && !live && (queued.turn ?? 0) > 0
+  const lastTurnEnded = between
+    ? db
+        .prepare('SELECT MAX(ended_at) at FROM passages WHERE objective_id = ?')
+        .get(id).at
+    : null
+
   if ((live || queued) && o.status !== 'proven') {
     return {
       tone: 'work',
-      headline: live ? 'A pass is working on it right now' : 'A pass is queued and about to start',
+      headline: live
+        ? 'A pass is working on it right now'
+        : between
+          ? 'A pass is between turns, waiting on the conversation that judges'
+          : 'A pass is queued and about to start',
       why: live
         ? `${live.harness} has been on it since ${live.started_at?.slice(11, 16) ?? 'a moment ago'}.`
-        : 'The worker on the machine that holds the repository takes it within seconds.',
+        : between
+          ? `Turn ${queued.turn} ended at ${lastTurnEnded?.slice(11, 16) ?? 'an unknown time'}. ` +
+            'It runs again once an answer comes back; nothing is being spent while it waits.'
+          : 'The worker on the machine that holds the repository takes it within seconds.',
       action: 'Nothing to do but let it work — or stop it, which finishes the turn it is in.',
       from: 'running',
     }

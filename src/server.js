@@ -854,6 +854,23 @@ export function createServer() {
         .prepare('SELECT waives, body, decided_at FROM decisions WHERE objective_id = ? AND waives IS NOT NULL ORDER BY decided_at DESC')
         .all(o.id),
       /**
+       * A run asked for but not yet picked up.
+       *
+       * The status is written by the worker when it claims the run, and the
+       * worker polls every five seconds. In between, the header said "Ready to
+       * start" about something already starting — the one moment a person is
+       * watching the page, because they just pressed the button.
+       */
+      live_run:
+        db()
+          .prepare(
+            `SELECT id, status, turn FROM runs
+             WHERE objective_id = ? AND mode != 'judge' AND status IN ('pending','running')
+             ORDER BY id DESC LIMIT 1`,
+          )
+          .get(o.id) ?? null,
+
+      /**
        * What comes after this one, in its own chapter.
        *
        * Concluding an objective ended the page: a green "Accepted", and nothing
