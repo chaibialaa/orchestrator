@@ -2874,6 +2874,9 @@ const commands = {
     let blindTurns = 0
     let blindTokens = 0
 
+    /** Whether we have already told the conversation which chapter this run is on. */
+    let briefPosted = false
+
     // The declared workflow beats these defaults: it is what says where to stop,
     // what to absorb, and how far to go. Command-line options still win — they are
     // explicit.
@@ -3756,6 +3759,37 @@ const commands = {
         // is a problem it knows how to handle.
         console.log(`    (problem absorbed: ${outcome.stopReason})`)
         await resolveHalts(outcome.objectiveId)
+
+        /**
+         * The conversation is still on the previous objective — say which one we
+         * are on, once, instead of refusing until the turns run out.
+         *
+         * This happened on every single launch today: #45 → #26, #46 → #48,
+         * #48 → #49. The guard is right to refuse and it costs nothing ($0.00
+         * each time), but nobody was performing the one act that clears it —
+         * telling the conversation what we moved to. Two runs died `out_of_turns`
+         * having done nothing but say no three times.
+         *
+         * Posted ONCE per run: if the state is on the table and the reply still
+         * names something else, that is a disagreement, and repeating ourselves
+         * would only fill a thread that has a message cap.
+         */
+        if (!briefPosted && willPost && /neither that chapter nor one of its steps/.test(outcome.stopReason ?? '')) {
+          briefPosted = true
+          console.log('    ↑ posting the state of this chapter — the conversation was on another one')
+          try {
+            const capture = []
+            const real = console.log
+            console.log = (...a) => capture.push(a.join(' '))
+            await commands.brief('--objective', String(chapterId))
+            console.log = real
+            await postToJudgeWrapped(page)
+              .evaluate(jsPost(capture.join('\n')))
+              .catch(() => {})
+          } catch (e) {
+            console.error(`    ! could not post the state: ${e?.message ?? e}`)
+          }
+        }
       }
 
       await shareNewProofs()
