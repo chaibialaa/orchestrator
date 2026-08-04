@@ -61,12 +61,34 @@ test('sans preuve pass, il manque une preuve — pas un verdict', () => {
 
 test('a visual criterion refuses to conclude without an image', () => {
   const o = objectif({ proof_spec: 'une capture par format montre le plan A' })
+  // A proof of work FIRST, so the only thing missing is the image. Without it
+  // this objective has two defects at once and the gate refuses on the deeper
+  // one — that the verdict is the only passing proof — which is correct and is
+  // not what this test is about.
+  preuve(o, { type: 'test' })
   verdict(o)
   const g = evaluateGate(o)
   assert.equal(g.ok, false)
   assert.match(g.detail, /no image is attached/)
 
   preuve(o, { type: 'render' })
+  assert.equal(evaluateGate(o).ok, true)
+})
+
+test('a verdict is not a proof of itself', () => {
+  const o = objectif()
+  // The judge says yes, and nothing else exists. That single row used to satisfy
+  // BOTH conditions this gate believes it checks apart: that a passing proof
+  // exists, and that the judge has ruled. Sixteen of eighteen proven objectives
+  // on the real install rested on exactly this.
+  verdict(o)
+  const g = evaluateGate(o)
+  assert.equal(g.ok, false)
+  assert.equal(g.reason, 'no_new_proof')
+  assert.match(g.detail, /IS the verdict/)
+
+  // Something the pass produced, and the same verdict now closes it.
+  preuve(o, { type: 'test' })
   assert.equal(evaluateGate(o).ok, true)
 })
 

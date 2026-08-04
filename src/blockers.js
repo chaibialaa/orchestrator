@@ -88,6 +88,7 @@ export function blockers() {
   out.push(...storages(db))
   out.push(...unpricedHarness(db))
   out.push(...noWorker(db))
+  out.push(...closedOnAVerdictAlone(db))
 
   /**
    * One shape, whichever condition fired.
@@ -463,6 +464,58 @@ function undecidedRefusals(db) {
       link: { to: `/p/${r.slug}/permissions`, label: 'Open Permissions' },
       since: r.last_requested_at,
     }))
+}
+
+/**
+ * Objectives closed before a verdict had to rest on anything.
+ *
+ * Until the 4th of August the gate checked two conditions it believed
+ * independent — a passing proof exists, and the judge has ruled — and one row
+ * satisfied both: the verdict is recorded AS a `manual` proof with a `pass`
+ * verdict. Saying "it is good" created the object that proved it was good.
+ * Sixteen of eighteen closures here rested on nothing else.
+ *
+ * The rule is fixed; the statuses are NOT rewritten. Re-opening fourteen
+ * objectives on a rule they were never judged under would be the tool doing
+ * exactly what it forbids everywhere else — re-aiming work without asking. So
+ * the debt is stated and left to a person: some of these are certainly fine and
+ * their measurement simply lives outside the record.
+ */
+function closedOnAVerdictAlone(db) {
+  const rows = db
+    .prepare(
+      `SELECT p.slug, p.name, COUNT(*) n,
+              GROUP_CONCAT(o.id) ids
+       FROM objectives o
+       JOIN projects p ON p.id = o.project_id
+       WHERE o.status = 'proven'
+         AND NOT EXISTS (
+           SELECT 1 FROM evidences e
+            WHERE e.objective_id = o.id AND e.verdict = 'pass'
+              AND (e.payload IS NULL OR e.payload NOT LIKE '%judged_by%')
+         )
+       GROUP BY p.slug, p.name`,
+    )
+    .all()
+
+  return rows.map((r) => ({
+    kind: 'closed_on_a_verdict',
+    group: 'Closed on a verdict, with nothing else attached',
+    severity: WARNING,
+    project: r.slug,
+    title: `${r.name}: ${r.n} objective(s) proven with no proof but the verdict itself`,
+    detail:
+      `Objectives ${r.ids.split(',').map((i) => '#' + i).join(', ')}. Until the 4th of August the ` +
+      'gate accepted the judge’s own "yes" as the proof it was supposed to rest on — one row ' +
+      'answering both of its questions. Nothing here says the work was bad; it says the record ' +
+      'cannot tell you it was good.',
+    action:
+      'Attach what actually settled each one — a command, a measurement, a rendering — or reopen ' +
+      'it. Nothing is reopened for you: they were judged under the old rule, and re-aiming work ' +
+      'without asking is what this tool exists to prevent.',
+    link: { to: `/p/${r.slug}`, label: 'See the project' },
+    since: null,
+  }))
 }
 
 /**

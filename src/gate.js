@@ -80,8 +80,31 @@ export function evaluateGate(objectiveId) {
     .prepare("SELECT * FROM evidences WHERE objective_id = ? AND verdict = 'pass'")
     .all(o.id)
 
-  if (!passing.length) {
-    return refuse('no_new_proof', 'No proof with a `pass` verdict is attached to this objective.')
+  /**
+   * A verdict is not a proof of itself.
+   *
+   * Saying "the criterion is satisfied" writes a `manual` evidence with a `pass`
+   * verdict, which then satisfied BOTH of the two conditions this gate believes
+   * it checks independently: that a passing proof exists, and that the judge has
+   * ruled. One row counted twice. Sixteen of eighteen proven objectives here
+   * rested on nothing else — the judge's own word, recorded as the evidence for
+   * itself.
+   *
+   * So the two are separated: `work` is what the pass produced, `verdicts` are
+   * opinions about it. An opinion can close an objective; it cannot BE the thing
+   * it closes on.
+   */
+  const work = passing.filter((e) => judgedBy(e) === null)
+  const verdicts = passing.filter((e) => judgedBy(e) !== null)
+
+  if (!work.length) {
+    return refuse(
+      'no_new_proof',
+      verdicts.length
+        ? 'The only passing proof here IS the verdict. A judgement is not evidence of itself: ' +
+          'something the pass produced — a command, a measurement, a rendering — has to be attached.'
+        : 'No proof with a `pass` verdict is attached to this objective.',
+    )
   }
 
   // A criterion that requires SEEING does not conclude on text. The judge only
