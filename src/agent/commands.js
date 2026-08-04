@@ -719,18 +719,33 @@ const commands = {
       fail(`Proof “${key}” is not declared in .orchestrator.json — refusing to run an undeclared command.`)
     }
 
+    /**
+     * What it printed is kept, not just whether it exited zero.
+     *
+     * The screen asking "is the criterion met?" showed the criterion, the files
+     * produced, and a green word — never a single measured value. Deciding meant
+     * opening a file the page had no reason to hide, because the numbers had been
+     * printed and thrown away. A proof's own account of itself is the cheapest
+     * evidence there is, and it was going to the terminal of a background worker
+     * nobody reads.
+     */
     let verdict = 'pass'
+    let output = ''
     try {
-      execFileSync('/bin/sh', ['-c', command], { stdio: 'inherit' })
-    } catch {
+      output = execFileSync('/bin/sh', ['-c', command], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (e) {
       verdict = 'fail'
+      output = `${e.stdout ?? ''}${e.stderr ?? ''}`
     }
+    process.stdout.write(output)
 
     await call('POST', `/passages/${passageId}/evidences`, {
       type: key === 'e2e' ? 'e2e' : 'test',
       verdict,
       label: key,
       ref: command,
+      // Bounded: a proof that prints a megabyte is a proof nobody reads either.
+      payload: { output: output.slice(-4000) },
     })
     console.log(`proof “${key}” → ${verdict}`)
     if (verdict === 'fail') process.exit(1)

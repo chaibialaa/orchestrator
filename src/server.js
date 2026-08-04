@@ -77,8 +77,11 @@ function sortirPassage(p) {
 }
 
 function sortirPreuve(e) {
+  // `csv` and `log` were missing, so the central deliverable of a measuring
+  // chapter — its table of numbers — was not counted as a file at all, and sat
+  // in the findings list looking like an unjudged remark.
   const chemins = [
-    ...String(e.ref ?? '').matchAll(/[\w./-]+\.(?:png|jpe?g|webp|md|json|txt|unity)/g),
+    ...String(e.ref ?? '').matchAll(/[\w./-]+\.(?:png|jpe?g|webp|md|json|txt|csv|log|unity)/g),
   ].map((m) => m[0])
   return { ...e, payload: json.read(e.payload), files: chemins }
 }
@@ -1521,7 +1524,8 @@ export function createServer() {
 
     const mime =
       { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
-        '.md': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.json': 'application/json' }[
+        '.md': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.json': 'application/json',
+        '.csv': 'text/plain; charset=utf-8', '.log': 'text/plain; charset=utf-8' }[
         extname(absolute).toLowerCase()
       ] ?? 'application/octet-stream'
 

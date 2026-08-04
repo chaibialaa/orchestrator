@@ -123,7 +123,7 @@ async function waiveVisual() {
 async function openFile(evidenceId: number, path: string, n: number) {
   const url = api.evidenceFileUrl(evidenceId, n)
   const name = path.split('/').pop() ?? path
-  if (/\.(md|json|txt)$/i.test(path)) {
+  if (/\.(md|json|txt|csv|log)$/i.test(path)) {
     const text = await fetch(url).then((r) => r.text()).catch(() => 'could not read it')
     preview.value = { url, name, text, id: evidenceId }
   } else {
@@ -197,7 +197,11 @@ const proofs = computed(() => {
   const all = [...(o.evidences ?? []), ...(o.passages ?? []).flatMap((p) => p.evidences ?? [])]
   const seen = new Set<number>()
   return all.filter((e) => {
-    if (!e.files?.length || seen.has(e.id)) return false
+    // A verdict is not something that came out. Its `ref` holds the criterion,
+    // and the criterion names the files the chapter was asked to produce — so
+    // the judge's opinion was drawing a card of its own, captioned with the
+    // first filename it happened to mention.
+    if (e.payload?.judged_by || !e.files?.length || seen.has(e.id)) return false
     seen.add(e.id)
     return true
   })
@@ -214,6 +218,33 @@ const findings = computed(() => {
     seen.add(e.id)
     return true
   })
+})
+
+/**
+ * What the checks SAID, not which files exist.
+ *
+ * The box asking "is the criterion met?" reprinted the criterion — the same
+ * eighteen hundred characters already set out at the top of the page, in one
+ * unreadable block — and never showed a single measured value. Answering it
+ * meant opening a file. The numbers were there all along: a declared proof
+ * prints them every time it runs.
+ */
+const measured = computed(() => {
+  const o = objective.value
+  if (!o) return [] as { label: string; verdict: string; lines: string[] }[]
+  const all = [...(o.evidences ?? []), ...(o.passages ?? []).flatMap((p) => p.evidences ?? [])]
+  const seen = new Set<number>()
+  return all
+    .filter((e) => {
+      if (seen.has(e.id) || !e.payload?.output) return false
+      seen.add(e.id)
+      return true
+    })
+    .map((e) => ({
+      label: e.label,
+      verdict: e.verdict,
+      lines: String(e.payload?.output ?? '').trimEnd().split('\n').slice(-24),
+    }))
 })
 
 const openHalts = computed(() => objective.value?.halts?.filter((h) => !h.resolved_at) ?? [])
@@ -647,12 +678,26 @@ const criterionItems = computed(() => {
                stays only when there is no band to have said it. -->
           <p v-if="!step" class="text-ink-300 mt-1.5 leading-relaxed">{{ objective.gate?.detail }}</p>
 
-          <!-- What to check, restated where the decision is taken. Asking for a
-               verdict without saying what to look at is asking for a guess: the
-               criterion sits further up the page, and the tally of what actually
-               passed sat nowhere at all. -->
-          <p v-if="objective.proof_spec" class="mt-3 text-ink-200 border-l-2 border-proof/40 pl-3 leading-relaxed">
-            {{ objective.proof_spec }}
+          <!-- What the checks returned, where the decision is taken.
+               This used to reprint `proof_spec` in full — a second copy of what
+               the top of the page already lists, numbered and readable. Two
+               copies of the question, no answer. What a person needs here is
+               what the proof measured. -->
+          <div v-for="m in measured" :key="m.label" class="mt-3 border-l-2 pl-3" :class="m.verdict === 'pass' ? 'border-proof/40' : 'border-fail/60'">
+            <div class="flex items-baseline gap-2">
+              <span class="text-ink-300 text-[12px]">{{ m.label }}</span>
+              <span class="num text-[11px]" :class="m.verdict === 'pass' ? 'text-proof' : 'text-fail'">
+                {{ m.verdict }}
+              </span>
+            </div>
+            <pre class="mt-1 text-[11.5px] leading-relaxed text-ink-200 whitespace-pre-wrap font-mono">{{ m.lines.join('\n') }}</pre>
+          </div>
+
+          <!-- Nothing printed its findings: say so, rather than leaving the box
+               looking as though there were nothing to check. -->
+          <p v-if="!measured.length && objective.proof_spec" class="mt-3 text-ink-400 text-[12px] leading-relaxed">
+            No proof here printed what it found — the criterion is set out at the top of the page,
+            and answering it means opening what came out.
           </p>
 
           <div class="mt-2.5 flex items-baseline gap-4 flex-wrap text-[12px]">

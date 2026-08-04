@@ -52,6 +52,8 @@ export interface Evidence {
   verdict: 'pass' | 'fail' | 'inconclusive'
   created_at: string
   files?: string[]
+  /** What the check printed when it ran, and who judged it if anyone did. */
+  payload?: { output?: string; judged_by?: string } | null
 }
 
 export interface Passage {
