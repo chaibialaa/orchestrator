@@ -118,7 +118,7 @@ function unityClosed(db) {
   if (editorRunning()) return []
 
   const expecting = db
-    .prepare("SELECT id, slug, name, repo_path FROM projects WHERE repo_path IS NOT NULL")
+    .prepare("SELECT id, slug, name, repo_path FROM projects WHERE repo_path IS NOT NULL AND active = 1")
     .all()
     .map((p) => {
       const f = join(p.repo_path, '.orchestrator.json')
@@ -195,7 +195,7 @@ function emptyPermissions(db) {
       `SELECT p.id, p.slug, p.name,
               (SELECT COUNT(*) FROM permissions WHERE project_id = p.id AND harness = 'claude' AND decision = 'allow') AS allowed,
               (SELECT COUNT(*) FROM objectives WHERE project_id = p.id AND status NOT IN ('proven','abandoned')) AS open_objectives
-       FROM projects p`,
+       FROM projects p WHERE p.active = 1`,
     )
     .all()
     // This read `p.openHaltsOf`, a column no query ever selected: `undefined > 0`
@@ -341,7 +341,7 @@ function projectHasNoContext(db) {
               (SELECT COUNT(*) FROM decisions WHERE project_id = p.id) AS decisions,
               (SELECT COUNT(*) FROM resources WHERE project_id = p.id) AS documents,
               (SELECT COUNT(*) FROM objectives WHERE project_id = p.id AND status NOT IN ('proven','abandoned')) AS open
-       FROM projects p`,
+       FROM projects p WHERE p.active = 1`,
     )
     .all()
     .filter((p) => p.open > 0 && p.decisions === 0 && p.documents === 0)
@@ -601,7 +601,7 @@ function noWorker(db) {
               (SELECT COUNT(*) FROM briefs b WHERE b.project_id = p.id AND b.status = 'pending') briefs,
               (SELECT MIN(requested_at) FROM runs r WHERE r.project_id = p.id AND r.status = 'pending') since_run,
               (SELECT MIN(created_at) FROM briefs b WHERE b.project_id = p.id AND b.status = 'pending') since_brief
-       FROM projects p`,
+       FROM projects p WHERE p.active = 1`,
     )
     .all()
     .filter((p) => p.runs + p.briefs > 0)

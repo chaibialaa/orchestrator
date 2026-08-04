@@ -34,6 +34,11 @@ async function setJudge(value: string) {
 }
 const savingJudge = ref(false)
 
+async function setActive(value: boolean) {
+  if (!project.value) return
+  project.value = await api.updateProject(props.slug, { active: value })
+}
+
 /** Attach the conversation that will judge this project's work. */
 async function attachJudge() {
   const url = judgeUrl.value.trim()
@@ -237,7 +242,25 @@ const done = computed(() => objectives.value.filter((o) => o.status === 'proven'
       <!-- Who closes an objective here. It could only be chosen when the project
            was created, so taking the decision back — or handing it over — meant
            editing the database by hand. -->
-      <label class="ml-auto flex items-center gap-2 text-[11px] text-ink-500">
+      <!-- Set aside, or picked back up.
+           Four projects were registered and two were in hand, so half of what the
+           overview called "waiting on you" was waiting on a decision nobody meant
+           to take this month. Nothing is deleted and nothing is stopped: an
+           inactive project simply stops filling that queue. -->
+      <button
+        class="chip ml-auto"
+        :class="project.active === false ? 'border-ink-700 text-ink-500' : 'border-proof/50 text-proof'"
+        :title="
+          project.active === false
+            ? 'Set aside — it fills nothing on the overview'
+            : 'Being worked on — it can put things in your queue'
+        "
+        @click="setActive(project.active === false)"
+      >
+        {{ project.active === false ? 'set aside' : 'active' }}
+      </button>
+
+      <label class="flex items-center gap-2 text-[11px] text-ink-500">
         who rules
         <select
           :value="project.gate_judge ?? 'gpt'"

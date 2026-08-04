@@ -50,10 +50,19 @@ export function attention() {
 
   const projects = new Map(db.prepare('SELECT id, slug, name, gate_judge FROM projects').all().map((p) => [p.id, p]))
 
+  /**
+   * Only projects being worked on.
+   *
+   * Four were registered and two were in hand, so half of "waiting on you" was
+   * waiting on a decision nobody meant to take this month. A queue holding work
+   * you have set aside stops being a queue: you learn to skim it, and then you
+   * skim the line that mattered.
+   */
   const open = db
     .prepare(
-      `SELECT id, title, project_id, status FROM objectives
-       WHERE status IN ('in_progress','blocked','ready')`,
+      `SELECT o.id, o.title, o.project_id, o.status FROM objectives o
+       JOIN projects p ON p.id = o.project_id
+       WHERE o.status IN ('in_progress','blocked','ready') AND p.active = 1`,
     )
     .all()
 
@@ -121,7 +130,7 @@ export function attention() {
     .prepare(
       `SELECT h.id, h.reason, h.detail, h.created_at, o.id objective, o.title, p.slug project
        FROM halts h JOIN objectives o ON o.id = h.objective_id JOIN projects p ON p.id = o.project_id
-       WHERE h.resolved_at IS NULL AND h.reason IN (${marks})`,
+       WHERE h.resolved_at IS NULL AND p.active = 1 AND h.reason IN (${marks})`,
     )
     .all(...HUMAN_HALTS)) {
     out.push({
@@ -151,6 +160,7 @@ export function attention() {
       `SELECT r.id, r.outcome, r.reason, r.ended_at, o.id objective, o.title, p.slug project
        FROM runs r JOIN objectives o ON o.id = r.objective_id JOIN projects p ON p.id = r.project_id
        WHERE r.outcome IN (${stops})
+         AND p.active = 1
          AND o.status IN ('in_progress','blocked','ready')
          -- only if it is still the last word on that objective
          AND NOT EXISTS (SELECT 1 FROM runs r2 WHERE r2.objective_id = r.objective_id AND r2.id > r.id)`,
@@ -174,7 +184,7 @@ export function attention() {
     .prepare(
       `SELECT i.id, i.name, i.last_status, i.last_checked_at, i.objective_id, p.slug project
        FROM invariants i JOIN projects p ON p.id = i.project_id
-       WHERE i.last_status = 'breached'`,
+       WHERE i.last_status = 'breached' AND p.active = 1`,
     )
     .all()) {
     out.push({

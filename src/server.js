@@ -209,6 +209,9 @@ export function createServer() {
       if (k in b) fields[k] = b[k]?.toString().trim() || null
     }
     if ('judge_message_cap' in b) fields.judge_message_cap = Number(b.judge_message_cap) || 40
+    // Set aside, or picked back up. Nothing is deleted and nothing stops running:
+    // an inactive project simply stops filling the queue of what waits on a person.
+    if ('active' in b) fields.active = b.active ? 1 : 0
     // Reported by a loop that just looked at the page. Never typed by anyone.
     if ('judge_messages_seen' in b) {
       fields.judge_messages_seen = Number(b.judge_messages_seen) || 0
@@ -1430,6 +1433,7 @@ export function createServer() {
       return {
         slug: p.slug,
         name: p.name,
+        active: Boolean(p.active),
         // Whether a judging conversation is recorded — the errand that opens one
         // needs a project that has one, and the dashboard is where it is chosen.
         has_judge: Boolean(p.judge_url),

@@ -33,6 +33,7 @@ export interface Project {
   slug: string
   name: string
   repo_path: string | null
+  active?: boolean
   gate_judge?: string
   judge_agent?: string | null
   judge_url?: string | null
@@ -571,6 +572,8 @@ export interface Stats {
 }
 
 export interface ProjectRollup {
+  /** Being worked on. An inactive project stops filling the queue of what waits on you. */
+  active?: boolean
   /** A judging conversation is recorded for this project. */
   has_judge?: boolean
   slug: string

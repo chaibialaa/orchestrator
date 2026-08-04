@@ -146,6 +146,17 @@ function addMissingColumns(db) {
     // Which gate rule this decision lifts, on its objective alone. NULL for the
     // ordinary decisions, which lift nothing.
     ['decisions', 'waives', 'TEXT'],
+    /**
+     * Is this project being worked on right now?
+     *
+     * Four projects were registered and two were being worked on, so half of
+     * what the dashboard called "waiting on you" was waiting on a decision
+     * nobody intended to take this month. A queue that includes work you have
+     * set aside stops being a queue: you learn to skim it, and then you skim the
+     * line that mattered. Existing projects default to active — nothing is
+     * hidden by an upgrade.
+     */
+    ['projects', 'active', 'INTEGER NOT NULL DEFAULT 1'],
   ]
 
   for (const [table, column, type] of additions) {

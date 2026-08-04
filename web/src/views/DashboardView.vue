@@ -256,9 +256,13 @@ const segColor: Record<string, string> = {
           :key="p.slug"
           :to="`/p/${p.slug}`"
           class="card p-4 block hover:border-ink-600 transition-colors"
+          :class="p.active === false ? 'opacity-45' : ''"
         >
           <div class="flex items-baseline gap-3 flex-wrap">
             <span class="text-ink-100 text-[14px]">{{ p.name }}</span>
+            <!-- Set aside: still here, still countable, simply not filling the
+                 queue of what waits on a person. -->
+            <span v-if="p.active === false" class="chip border-ink-700 text-ink-500">set aside</span>
             <span class="num text-ink-400 text-[12px]">
               <span class="text-proof">{{ p.proven }}</span
               >/{{ p.total_objectives }}
