@@ -2264,6 +2264,11 @@ const commands = {
    * usage: orchestrator visual <image.png> [--ref target.png] [--min-colours 1500]
    *          [--min-hues 7] [--min-saturation 0.5] [--min-contrast 0.6] [--min-shadow 0.08]
    *          [--min-highlight 0.01] [--json]
+   *          [--tension-ref same-camera.png]
+   *          [--min-tile-dark-std X] [--max-tile-dark-std X]
+   *          [--min-brightest-tile-ratio X] [--max-brightest-tile-ratio X]
+   *          [--min-delta-tile-dark-std X] [--max-delta-tile-dark-std X]
+   *          [--min-delta-brightest-tile-ratio X] [--max-delta-brightest-tile-ratio X]
    *
    * The last line of stdout is always the measurement as JSON, so a criterion
    * can be settled by comparing a value rather than by reading a sentence.
@@ -2283,12 +2288,57 @@ const commands = {
     if (!file)
       fail(
         'usage: orchestrator visual <image.png> [--ref target.png] [--min-colours N] ' +
-          '[--min-hues N] [--min-saturation X] [--min-contrast X] [--min-shadow X] [--min-highlight X]',
+          '[--min-hues N] [--min-saturation X] [--min-contrast X] [--min-shadow X] [--min-highlight X] ' +
+          '[--tension-ref same-camera.png] [--min|--max-tile-dark-std X] ' +
+          '[--min|--max-brightest-tile-ratio X] [--min|--max-delta-tile-dark-std X] ' +
+          '[--min|--max-delta-brightest-tile-ratio X]',
       )
 
-    const { measureImage, compareToReference } = await import('../visual.js')
+    const { measureImage, compareToReference, tensionDelta } = await import('../visual.js')
 
     const m = measureImage(file)
+
+    /**
+     * The A/B side of the tension measures, on a reference that has to be named.
+     *
+     * `--ref` is NOT reused: it already means "the target I am trying to look
+     * like", and its ratios read as a distance to an aspiration. This one means
+     * "the same camera, earlier", which is a different question — and mixing the
+     * two would make an existing criterion mean something new.
+     *
+     * Nothing here checks that the two frames come from one camera: pixels
+     * cannot establish it, no heuristic is attempted, and the responsibility
+     * stays with the caller.
+     */
+    let tensionRef = null
+    let delta = null
+    if (opts['tension-ref'] !== undefined) {
+      if (opts['tension-ref'] === true) fail('usage: --tension-ref <same-camera-reference.png>')
+      try {
+        tensionRef = measureImage(String(opts['tension-ref']))
+      } catch (e) {
+        // A usage message, not a stack: an unreadable reference is a mistake in
+        // the command, and the caller needs to read which file failed.
+        fail(`--tension-ref ${opts['tension-ref']}: ${e.message}`)
+      }
+      delta = tensionDelta(m, tensionRef)
+    }
+
+    // A delta threshold without a reference has nothing to compare. Silently
+    // ignoring it would let a criterion declare a floor that could never fail.
+    const DELTA_FLAGS = [
+      'min-delta-tile-dark-std',
+      'max-delta-tile-dark-std',
+      'min-delta-brightest-tile-ratio',
+      'max-delta-brightest-tile-ratio',
+    ]
+    const orphaned = DELTA_FLAGS.filter((f) => opts[f] !== undefined)
+    if (orphaned.length && !delta) {
+      fail(
+        `${orphaned.map((f) => `--${f}`).join(', ')} needs --tension-ref <same-camera-reference.png>: ` +
+          'a delta has no meaning without a reference.',
+      )
+    }
     // `--json` prints the object alone, for a caller that needs stdout to BE
     // JSON rather than to contain it.
     const say = jsonOnly ? () => {} : (line) => console.log(line)
@@ -2303,6 +2353,20 @@ const commands = {
       `    contrast ${m.contrast} (p95−p5) · shadow ${(m.shadowShare * 100).toFixed(1)}% · ` +
         `highlight ${(m.highlightShare * 100).toFixed(1)}%`,
     )
+    // Where the dark sits rather than how much of it there is — the question the
+    // three lines above cannot answer whatever their values.
+    say(
+      `    tile dark std ${m.tileDarkStd} (8×8) · brightest tile / frame ` +
+        `${m.brightestTileMedianRatio === null ? '— (frame median 0)' : m.brightestTileMedianRatio}`,
+    )
+    if (delta) {
+      const signed = (v) => (v === null ? '—' : `${v > 0 ? '+' : ''}${v}`)
+      say(`\n  against ${basename(String(opts['tension-ref']))} — same camera, asserted by the caller`)
+      say(
+        `    Δ tile dark std ${signed(delta.deltaTileDarkStd)} · ` +
+          `Δ brightest tile / frame ${signed(delta.deltaBrightestTileMedianRatio)}`,
+      )
+    }
 
     if (opts.ref) {
       const c = compareToReference(file, opts.ref)
@@ -2329,11 +2393,71 @@ const commands = {
       contrast: m.contrast,
       shadowShare: m.shadowShare,
       highlightShare: m.highlightShare,
+      // Appended, never inserted: the six above keep their names, their values
+      // and their place, so a reader written against the old line still works.
+      tileDarkShares: m.tileDarkShares,
+      tileDarkStd: m.tileDarkStd,
+      frameMedianLuma: m.frameMedianLuma,
+      brightestTileMedianLuma: m.brightestTileMedianLuma,
+      brightestTileMedianRatio: m.brightestTileMedianRatio,
+      ...(delta
+        ? {
+            tensionRef: {
+              file: basename(String(opts['tension-ref'])),
+              tileDarkShares: tensionRef.tileDarkShares,
+              tileDarkStd: tensionRef.tileDarkStd,
+              frameMedianLuma: tensionRef.frameMedianLuma,
+              brightestTileMedianLuma: tensionRef.brightestTileMedianLuma,
+              brightestTileMedianRatio: tensionRef.brightestTileMedianRatio,
+            },
+            ...delta,
+          }
+        : {}),
     })
 
     // Floors only where one was asked for: a threshold nobody set is not a
     // threshold that failed.
     const failures = []
+
+    /**
+     * The new thresholds, read on presence rather than on truthiness.
+     *
+     * The six above test `opts[flag] &&`, which quietly drops a floor of 0. That
+     * is harmless on a colour count and wrong on a signed delta, where 0 is the
+     * most meaningful threshold there is — "the tension must not have gone
+     * down". The six are left exactly as they are; the new ones do it properly.
+     */
+    const numeric = (flag) => {
+      const raw = opts[flag]
+      if (raw === undefined) return null
+      const n = Number(raw)
+      if (raw === true || !Number.isFinite(n)) fail(`--${flag} needs a number`)
+      return n
+    }
+    // A value of `null` is not measured, so it cannot be missed: a black frame
+    // has no brightest-tile ratio, and a threshold nothing can fail is not a
+    // threshold. `frameMedianLuma` is published separately for that case.
+    const floor = (flag, label, value) => {
+      const want = numeric(flag)
+      if (want === null || value === null) return
+      if (value < want) failures.push(`${label} ${value} < ${want}`)
+    }
+    const ceiling = (flag, label, value) => {
+      const want = numeric(flag)
+      if (want === null || value === null) return
+      if (value > want) failures.push(`${label} ${value} > ${want}`)
+    }
+
+    floor('min-tile-dark-std', 'tile dark std', m.tileDarkStd)
+    ceiling('max-tile-dark-std', 'tile dark std', m.tileDarkStd)
+    floor('min-brightest-tile-ratio', 'brightest tile ratio', m.brightestTileMedianRatio)
+    ceiling('max-brightest-tile-ratio', 'brightest tile ratio', m.brightestTileMedianRatio)
+    if (delta) {
+      floor('min-delta-tile-dark-std', 'Δ tile dark std', delta.deltaTileDarkStd)
+      ceiling('max-delta-tile-dark-std', 'Δ tile dark std', delta.deltaTileDarkStd)
+      floor('min-delta-brightest-tile-ratio', 'Δ brightest tile ratio', delta.deltaBrightestTileMedianRatio)
+      ceiling('max-delta-brightest-tile-ratio', 'Δ brightest tile ratio', delta.deltaBrightestTileMedianRatio)
+    }
     if (opts['min-colours'] && m.distinctColours < Number(opts['min-colours'])) {
       failures.push(`distinct colours ${m.distinctColours} < ${opts['min-colours']}`)
     }
@@ -2371,7 +2495,32 @@ const commands = {
       process.exitCode = 1
       return
     }
-    if (opts['min-colours'] || opts['min-saturation'] || opts['min-hues']) say('\n  floors met\n')
+    /**
+     * The confirmation line, extended to the new flags and to them only.
+     *
+     * It is already incomplete: a criterion setting only `--min-contrast`,
+     * `--min-shadow` or `--min-highlight` passes without it ever printing.
+     * Adding those three here would change what an existing command prints, so
+     * the gap stays where it is and is named instead of quietly widened.
+     *
+     * The wording stays "floors met" for the same reason: that exact string is
+     * part of the accepted proof of an earlier objective, and a ceiling is close
+     * enough to a floor to leave a settled sentence alone.
+     */
+    const TENSION_FLAGS = [
+      'min-tile-dark-std',
+      'max-tile-dark-std',
+      'min-brightest-tile-ratio',
+      'max-brightest-tile-ratio',
+      ...DELTA_FLAGS,
+    ]
+    if (
+      opts['min-colours'] ||
+      opts['min-saturation'] ||
+      opts['min-hues'] ||
+      TENSION_FLAGS.some((f) => opts[f] !== undefined)
+    )
+      say('\n  floors met\n')
     else say('')
     console.log(measurement)
   },

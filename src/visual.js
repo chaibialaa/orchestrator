@@ -22,6 +22,16 @@ import { inflateSync } from 'node:zlib'
  * floor and not a verdict.
  */
 
+/**
+ * The one threshold below which a pixel is dark.
+ *
+ * Named rather than written twice. `shadowShare` and the per-tile dark shares
+ * answer the same question at two scales — how much of this is in the dark —
+ * and a second literal would let them drift apart on a later edit. Extracting it
+ * changes no value: it is the 0.15 `shadowShare` has always compared against.
+ */
+const DARK = 0.15
+
 /** Decode a PNG into pixels. No dependency: the format is small enough to read. */
 function decodePng(file) {
   const data = readFileSync(file)
@@ -75,7 +85,10 @@ function decodePng(file) {
     for (let x = 0; x < stride; x += channels) pixels.push([line[x], line[x + 1], line[x + 2]])
     prev = line
   }
-  return pixels
+  // The dimensions travel with the pixels. A flat list was enough while every
+  // measure was a global scalar; a measure that says WHERE cannot be computed
+  // from a list that has forgotten how wide it is.
+  return { pixels, width, height }
 }
 
 /** Downscale first: we are measuring composition, not compression artefacts. */
@@ -87,6 +100,136 @@ function sample(file, side = 96) {
     timeout: 20000,
   })
   return decodePng(out)
+}
+
+/**
+ * WHERE the dark and the light sit, which no global scalar can say.
+ *
+ * `shadowShare` = 0.104 does not tell a wall left in the dark against a lit
+ * façade from a grey veil laid evenly over the whole frame. The two images carry
+ * the same number and only one of them has any tension in it. What follows keeps
+ * the same axis of value and the same dark threshold as the six frozen measures,
+ * and only stops throwing the position away.
+ *
+ * The grid is 8 × 8 and is NOT reachable from the command line. A grid figure a
+ * caller could vary at the moment of proving is a lever for choosing the result
+ * afterwards.
+ */
+export const TENSION_GRID = 8
+
+/** The value axis of `toHsv`, on its own: v = max(R, G, B) / 255. */
+const lumaOf = (r, g, b) => Math.max(r, g, b) / 255
+
+const round3 = (x) => Number(x.toFixed(3))
+
+/**
+ * Ascending median, mean of the two central values on an even count.
+ *
+ * Not the rank convention of `at(q)` used by `contrast`: the ratio below divides
+ * two medians, and picking a rank makes the quotient jump by a whole
+ * quantisation step the moment one pixel crosses the middle. `at()` is neither
+ * called nor touched here.
+ */
+function median(values) {
+  if (!values.length) return null
+  const v = Float64Array.from(values).sort()
+  const n = v.length
+  return n % 2 ? v[(n - 1) / 2] : (v[n / 2 - 1] + v[n / 2]) / 2
+}
+
+/**
+ * The spatial measures, on an already-decoded frame.
+ *
+ * Separated from `measureImage` so the numbers can be tested against arithmetic
+ * a person can do by hand, on frames built pixel by pixel, rather than only
+ * against renderings whose expected values nobody can derive.
+ */
+export function tensionMetrics(pixels, width, height) {
+  const G = TENSION_GRID
+  // Floor-partition: the upper bound of one tile is the lower bound of the next,
+  // and ⌊8·W/8⌋ = W. Every pixel lands in exactly one tile whether or not the
+  // side divides by 8; tiles then differ in size by at most one pixel, and each
+  // dark share is divided by its OWN tile's count.
+  const edge = (i, n) => Math.floor((i * n) / G)
+
+  const lumas = new Float64Array(pixels.length)
+  for (let i = 0; i < pixels.length; i++) {
+    const p = pixels[i]
+    lumas[i] = lumaOf(p[0], p[1], p[2])
+  }
+
+  const shares = new Float64Array(G * G)
+  let brightest = null
+
+  for (let row = 0; row < G; row++) {
+    const y0 = edge(row, height)
+    const y1 = edge(row + 1, height)
+    for (let col = 0; col < G; col++) {
+      const x0 = edge(col, width)
+      const x1 = edge(col + 1, width)
+      const tile = []
+      let dark = 0
+      for (let y = y0; y < y1; y++) {
+        const base = y * width
+        for (let x = x0; x < x1; x++) {
+          const v = lumas[base + x]
+          tile.push(v)
+          if (v < DARK) dark++
+        }
+      }
+      // An empty tile — only reachable below 8 pixels a side — keeps its slot in
+      // the array of 64 at a share of 0, and stands for no median at all.
+      shares[row * G + col] = tile.length ? dark / tile.length : 0
+      const m = median(tile)
+      if (m !== null && (brightest === null || m > brightest)) brightest = m
+    }
+  }
+
+  // Population, not sample: the 64 tiles are not drawn from a wider population
+  // whose spread we would be estimating. They ARE the population.
+  let mean = 0
+  for (const s of shares) mean += s
+  mean /= shares.length
+  let variance = 0
+  for (const s of shares) variance += (s - mean) ** 2
+  variance /= shares.length
+
+  const frame = median(lumas)
+  // `null` and not 0 on a frame crushed to black: this is the convention the
+  // ratios of `compareToReference` already follow, and 0 would make "the frame
+  // is black" indistinguishable from "the brightest tile is as dark as the
+  // frame", which are opposite images.
+  const ratio = frame && brightest !== null ? brightest / frame : null
+
+  return {
+    tileDarkShares: Array.from(shares, round3),
+    tileDarkStd: round3(Math.sqrt(variance)),
+    frameMedianLuma: frame === null ? null : round3(frame),
+    brightestTileMedianLuma: brightest === null ? null : round3(brightest),
+    brightestTileMedianRatio: ratio === null ? null : round3(ratio),
+  }
+}
+
+/**
+ * How the tension moved between two renderings of the SAME camera.
+ *
+ * Signed, and deliberately not absolute: tension that rises and tension that
+ * falls are not the same fact, and a floor on an absolute value would accept a
+ * regression it was written to refuse.
+ *
+ * Computed on the PUBLISHED values of each image — already at the thousandth —
+ * so the delta is exactly the subtraction of the two numbers a reader can see in
+ * the archived JSON, rather than a third number only the code can reproduce.
+ *
+ * Nothing here checks that the two frames come from one camera. Pixels cannot
+ * establish that, and guessing it is worse than leaving it to the caller.
+ */
+export function tensionDelta(current, reference) {
+  const d = (a, b) => (a === null || a === undefined || b === null || b === undefined ? null : round3(a - b))
+  return {
+    deltaTileDarkStd: d(current.tileDarkStd, reference.tileDarkStd),
+    deltaBrightestTileMedianRatio: d(current.brightestTileMedianRatio, reference.brightestTileMedianRatio),
+  }
 }
 
 const toHsv = (r, g, b) => {
@@ -113,7 +256,7 @@ const toHsv = (r, g, b) => {
  * within it, which is what detail, materials and lighting produce.
  */
 export function measureImage(file, side = 96) {
-  const pixels = sample(file, side)
+  const { pixels, width, height } = sample(file, side)
   const hsv = pixels.map(([r, g, b]) => toHsv(r, g, b))
 
   const saturation = hsv.reduce((n, [, s]) => n + s, 0) / hsv.length
@@ -152,7 +295,7 @@ export function measureImage(file, side = 96) {
   const values = hsv.map(([, , v]) => v).sort((a, b) => a - b)
   const at = (q) => values[Math.min(values.length - 1, Math.floor(q * values.length))] ?? 0
   const contrast = at(0.95) - at(0.05)
-  const shadowShare = values.filter((v) => v < 0.15).length / values.length
+  const shadowShare = values.filter((v) => v < DARK).length / values.length
   const highlightShare = values.filter((v) => v > 0.85).length / values.length
 
   return {
@@ -166,6 +309,11 @@ export function measureImage(file, side = 96) {
     hues,
     distinctColours,
     greenShare: Number(green.toFixed(3)),
+    // Added beside the six, never inside them: the frozen numbers above are
+    // computed by exactly the loops that produced them before, on the same
+    // sample, and a replay of the baseline has to give them back to the
+    // thousandth on every line of the corpus.
+    ...tensionMetrics(pixels, width, height),
   }
 }
 

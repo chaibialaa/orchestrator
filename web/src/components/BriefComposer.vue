@@ -170,6 +170,14 @@ const busyOn = (b: Brief) => b.status === 'pending' || b.status === 'running'
           {{ b.body.slice(0, 160) }}{{ b.body.length > 160 ? '…' : '' }}
         </p>
 
+        <!-- Applied: this is history, and the screen was not saying so. It kept
+             the shape of something to review — a status chip and a discard
+             button — over work that had already become the plan below. -->
+        <p v-if="b.status === 'applied'" class="text-ink-500 text-[12px] mt-2 leading-relaxed">
+          Its steps are in the plan below. Nothing is expected here — unless one of the
+          assumptions is wrong, in which case say so in a new brief.
+        </p>
+
         <!-- What it had to decide that you did not say.
              This is what replaces the back-and-forth: instead of reading a plan
              and guessing where it misunderstood, you disagree with one line. A
@@ -177,7 +185,10 @@ const busyOn = (b: Brief) => b.status === 'pending' || b.status === 'running'
              three chapters in costs the chapters. -->
         <section v-if="plan(b)?.assumptions?.length" class="mt-3">
           <span class="label">What it assumed</span>
-          <ul class="mt-1.5 space-y-1">
+          <!-- Deux colonnes dès qu'il y a la place : chaque ligne reste sous sa
+               mesure de lecture, et la liste cesse de laisser la moitié droite
+               vide sur toute sa hauteur. -->
+          <ul class="mt-1.5 space-y-1 lg:columns-2 lg:gap-8 [&>li]:break-inside-avoid">
             <li
               v-for="(a, i) in plan(b)!.assumptions"
               :key="i"
@@ -197,7 +208,7 @@ const busyOn = (b: Brief) => b.status === 'pending' || b.status === 'running'
              that reads like a decision. -->
         <section v-if="plan(b)?.unknowns?.length" class="mt-3">
           <span class="label text-halt">What it could not settle</span>
-          <ul class="mt-1.5 space-y-1">
+          <ul class="mt-1.5 space-y-1 lg:columns-2 lg:gap-8 [&>li]:break-inside-avoid">
             <li
               v-for="(u, i) in plan(b)!.unknowns"
               :key="i"

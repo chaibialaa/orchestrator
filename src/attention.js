@@ -86,9 +86,20 @@ export function attention() {
       continue
     }
 
-    // Waiting on a verdict that only a person can give. When the judge is the
-    // driving conversation, the loop asks it every turn — that is not yours.
-    if (gate.ready && gate.reason === 'awaiting_verdict' && judge !== 'gpt' && judge !== 'self') {
+    /**
+     * Waiting on a verdict — including one the conversation was meant to give.
+     *
+     * "The loop asks it every turn, that is not yours" holds only while a loop is
+     * running. With nothing running, a gpt-judged objective waits on nobody and
+     * was counted by nobody, while `/review` listed it with accept and refuse
+     * buttons underneath: the counter said one, the list showed two. And a
+     * person's verdict concludes it — that was settled earlier today.
+     */
+    const liveRun = db
+      .prepare("SELECT 1 FROM runs WHERE objective_id = ? AND status IN ('pending','running') LIMIT 1")
+      .get(o.id)
+
+    if (gate.ready && gate.reason === 'awaiting_verdict' && judge !== 'self' && (judge !== 'gpt' || !liveRun)) {
       out.push({
         kind: 'verdict',
         severity: 'decide',
