@@ -75,7 +75,10 @@ const needsYou = computed(() => waiting.value.filter((a) => a.severity === 'deci
  * only ever see its own host. Any project on that machine will do; the errand is
  * about the machine, not about the project.
  */
-const projectsWithRepo = computed(() => (data.value?.projects ?? []).map((p) => p.slug))
+/** A project that actually has a conversation recorded — the errand needs one. */
+const judgeProject = computed(
+  () => (data.value?.projects ?? []).find((p) => p.has_judge)?.slug ?? null,
+)
 const startingJudge = ref<string | null>(null)
 const judgeAsked = ref(false)
 const judgeError = ref<string | null>(null)
@@ -506,20 +509,33 @@ const segColor: Record<string, string> = {
           }}
         </p>
         <div class="mt-3 flex items-baseline gap-3 flex-wrap">
+          <!-- Offered while the browser is up but empty too: starting Chrome and
+               stopping there left this panel saying "open on no conversation"
+               with nothing to press. Navigating a tab is not signing in. -->
           <button
-            v-if="!data.judge.reachable && projectsWithRepo.length"
+            v-if="data.judge.signed_in !== false && judgeProject"
             class="chip border-fail/60 text-fail hover:bg-fail/10"
             :disabled="Boolean(startingJudge)"
-            @click="startJudge(projectsWithRepo[0])"
+            @click="startJudge(judgeProject!)"
           >
-            {{ startingJudge ? 'asking the worker…' : 'Open it' }}
+            {{
+              startingJudge
+                ? 'asking the worker…'
+                : data.judge.reachable
+                  ? 'Open the conversation'
+                  : 'Open it'
+            }}
           </button>
           <span v-if="judgeAsked" class="text-[12px] text-ink-400">
             asked — the worker on that machine opens it within seconds. Signing in stays yours.
           </span>
           <span v-if="judgeError" class="text-[12px] text-fail">{{ judgeError }}</span>
           <span v-else class="text-[12px] text-ink-600">
-            or open it yourself, on the machine that holds the repository
+            {{
+              data.judge.signed_in === false
+                ? 'signing in is yours — this tool never types a password'
+                : 'or do it yourself, in that Chrome window, on the machine that holds the repository'
+            }}
           </span>
         </div>
       </section>

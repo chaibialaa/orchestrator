@@ -468,3 +468,51 @@ test('un run qui n’avance plus est remonté comme blocage', async () => {
   db.prepare('UPDATE runs SET cancel_asked = 1 WHERE id = 99').run()
   assert.equal(blockers().filter(nom).length, 0, 'tu as déjà demandé son arrêt')
 })
+
+/**
+ * Un run enregistré sous une AUTRE identité de la même machine.
+ *
+ * L'ouvrier s'appelait par son nom d'hôte ; il s'appelle maintenant
+ * `hôte-xxxxxx`, pour garder un nom en changeant de réseau. Comparer l'identité
+ * à l'identique orpheline pour toujours tout run enregistré avant : personne ne
+ * le réclame, personne ne le libère, il reste `running` avec un processus mort
+ * depuis longtemps. Le run 59 était dans cet état, occupant une place d'ouvrier,
+ * et aucun écran ne pouvait l'expliquer.
+ */
+test('un run porté par cette machine sous un ancien nom est bien récupéré', async () => {
+  db.prepare(
+    `INSERT INTO objectives (id,project_id,title,proof_spec,blast_radius,status)
+     VALUES (13,2,'orphelin','le test passe','feature','in_progress')`,
+  ).run()
+  // 999999 : un pid qui n'existe pas — c'est ce que constate l'ouvrier.
+  db.prepare(
+    `INSERT INTO runs (id,project_id,objective_id,mode,status,turn,machine,pid,taken_at)
+     VALUES (98,2,13,'chapter','running',1,'poste-de-travail',999999,datetime('now','-2 hours'))`,
+  ).run()
+
+  const carried = async (q) => (await (await fetch(`${API}/runs/carried?${q}`)).json()).runs.map((r) => r.id)
+
+  // L'identité seule suffit : elle PORTE le nom que la machine avait quand elle
+  // a été forgée. C'est le seul lien durable — le nom d'hôte, lui, change avec le
+  // réseau, et il a changé deux fois dans la même journée ici.
+  assert.deepEqual(
+    await carried('machine=poste-de-travail-a1b2c3'),
+    [98],
+    'l’identité porte son nom d’origine, même si l’hôte s’appelle autrement aujourd’hui',
+  )
+  assert.deepEqual(
+    await carried('machine=poste-de-travail-a1b2c3&host=un-tout-autre-nom'),
+    [98],
+    'et un nom d’hôte devenu différent ne le lui fait pas perdre',
+  )
+  // Une AUTRE machine ne récupère pas ce qui n'est pas à elle.
+  assert.deepEqual(await carried('machine=autre-poste-z9y8x7&host=autre-poste'), [])
+
+  const freed = await fetch(`${API}/runs/release`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ machine: 'poste-de-travail-a1b2c3', host: 'poste-de-travail', ids: [98] }),
+  }).then((r) => r.json())
+  assert.deepEqual(freed.released, [98])
+  assert.equal(db.prepare('SELECT status FROM runs WHERE id = 98').get().status, 'failed')
+})

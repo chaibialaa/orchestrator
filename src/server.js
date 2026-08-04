@@ -556,13 +556,46 @@ export function createServer() {
    * Only the machine itself can tell whether those processes are still alive, so
    * that judgement is made there and reported back.
    */
+  /**
+   * Runs this HOST is carrying — not this identity.
+   *
+   * A worker used to be known by its hostname, and is now known by
+   * `hostname-xxxxxx` so that a laptop keeps one name across networks. Matching
+   * the identity exactly means every run recorded under the previous scheme is
+   * orphaned for good: no worker ever claims it, no worker ever releases it, and
+   * it reads `running` forever while its process is long dead. Run 59 sat like
+   * that, holding a worker slot, with nothing on any screen able to explain it.
+   *
+   * The host is the thing that can answer "is that pid alive", so the host is
+   * what this asks about.
+   */
   api.get('/runs/carried', (req, res) => {
     const machine = req.query.machine
     if (!machine) throw new Rejected('Which machine?')
+    const host = String(req.query.host ?? machine).trim()
+
+    /**
+     * The name this machine had when its identity was minted.
+     *
+     * The hostname changes — a laptop on a different network answers to
+     * something else entirely, which is why identities were made stable in the
+     * first place. So the current hostname is no help in recognising runs
+     * recorded months ago: this host answered to `M1-Pro---Alaa-Chaibi.local`
+     * this morning and to `MacBookPro` this evening. The stable id carries that
+     * old name inside it — `hostname-xxxxxx` — so it is the one durable link
+     * back to whatever this machine used to be called.
+     */
+    const born = String(machine).replace(/-[a-z0-9]{6}$/, '')
+
     res.json({
       runs: db()
-        .prepare("SELECT id, pid, objective_id FROM runs WHERE status = 'running' AND machine = ?")
-        .all(machine),
+        .prepare(
+          `SELECT id, pid, objective_id FROM runs
+           WHERE status = 'running'
+             AND (machine = @machine OR machine = @host OR machine = @born
+                  OR machine LIKE @host || '-%' OR machine LIKE @born || '-%')`,
+        )
+        .all({ machine, host, born }),
     })
   })
 
@@ -576,22 +609,28 @@ export function createServer() {
    */
   api.post('/runs/release', (req, res) => {
     const machine = req.body?.machine
+    const host = String(req.body?.host ?? machine ?? '').trim()
     const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Boolean) : null
     if (!machine) throw new Rejected('Which machine is releasing its runs?')
     if (!ids?.length) return res.json({ released: [] })
 
-    const marks = ids.map(() => '?').join(',')
-    const orphans = db()
-      .prepare(
-        `SELECT id FROM runs WHERE status='running' AND machine=? AND id IN (${marks})`,
-      )
-      .all(machine, ...ids)
+    // Same rule as `/runs/carried`: the host, not the identity. Releasing on a
+    // narrower rule than the one that listed them would hand a worker a list it
+    // is then refused permission to act on. Ids are already numbers, so they go
+    // in the text — better-sqlite3 refuses named and positional in one statement.
+    const inIds = ids.join(',')
+    const born = String(machine).replace(/-[a-z0-9]{6}$/, '')
+    const mine = `status='running' AND id IN (${inIds})
+                  AND (machine=@machine OR machine=@host OR machine=@born
+                       OR machine LIKE @host || '-%' OR machine LIKE @born || '-%')`
+
+    const orphans = db().prepare(`SELECT id FROM runs WHERE ${mine}`).all({ machine, host, born })
     db()
       .prepare(
-        `UPDATE runs SET status='failed', error='the process carrying it is gone', ended_at=?
-         WHERE status='running' AND machine=? AND id IN (${marks})`,
+        `UPDATE runs SET status='failed', error='the process carrying it is gone', ended_at=@at
+         WHERE ${mine}`,
       )
-      .run(nowStamp(), machine, ...ids)
+      .run({ machine, host, born, at: nowStamp() })
     res.json({ released: orphans.map((o) => o.id) })
   })
 
@@ -1390,6 +1429,9 @@ export function createServer() {
       return {
         slug: p.slug,
         name: p.name,
+        // Whether a judging conversation is recorded — the errand that opens one
+        // needs a project that has one, and the dashboard is where it is chosen.
+        has_judge: Boolean(p.judge_url),
         repo_path: p.repo_path,
         total_objectives: s.total,
         proven: s.proven ?? 0,

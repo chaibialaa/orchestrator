@@ -571,6 +571,8 @@ export interface Stats {
 }
 
 export interface ProjectRollup {
+  /** A judging conversation is recorded for this project. */
+  has_judge?: boolean
   slug: string
   name: string
   repo_path: string | null

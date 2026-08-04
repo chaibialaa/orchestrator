@@ -2691,10 +2691,41 @@ const commands = {
      * reporting work that had stopped. Asking the operating system costs nothing
      * and is the only answer that cannot go stale.
      */
+    /**
+     * Open the browser, then the conversation in it.
+     *
+     * Starting Chrome and stopping there left the panel saying "open on no
+     * conversation" with nothing to press: the browser was up and the loop still
+     * could not read a thing. Navigating a tab is not signing in — the session is
+     * the person's and stays theirs; this only points the window at the page.
+     */
+    const openJudge = async () => {
+      const started = await startJudgeBrowser()
+      if (!started.ok) return started
+
+      const project = await call('GET', `/projects/${config.project}`, null, { soft: true }).catch(() => null)
+      const url = project?.judge_url
+      if (!url) {
+        return { ok: true, detail: `${started.detail} — this project has no judging conversation recorded` }
+      }
+      if (started.health?.conversation) {
+        return { ok: true, detail: `${started.detail}, and a conversation tab is already open` }
+      }
+      await openTab(url)
+      return { ok: true, detail: `${started.detail}, and the conversation was opened` }
+    }
+
     const sweepDeadRuns = async () => {
-      const carried = await call('GET', `/runs/carried?machine=${encodeURIComponent(machineId())}`, null, {
-        soft: true,
-      }).catch(() => null)
+      // The HOST as well as the identity: this worker was called by its bare
+      // hostname before identities were made stable, and runs recorded then are
+      // otherwise orphaned for good — `running` forever, holding a slot, their
+      // process long dead.
+      const carried = await call(
+        'GET',
+        `/runs/carried?machine=${encodeURIComponent(machineId())}&host=${encodeURIComponent(hostname())}`,
+        null,
+        { soft: true },
+      ).catch(() => null)
       const dead = (carried?.runs ?? [])
         .filter((r) => {
           if (!r.pid) return true
@@ -2707,7 +2738,7 @@ const commands = {
         })
         .map((r) => r.id)
       if (!dead.length) return
-      const freed = await call('POST', '/runs/release', { machine: machineId(), ids: dead }, { soft: true }).catch(
+      const freed = await call('POST', '/runs/release', { machine: machineId(), host: hostname(), ids: dead }, { soft: true }).catch(
         () => null,
       )
       if (freed?.released?.length) {
@@ -2755,7 +2786,7 @@ const commands = {
               // be somewhere else entirely and can only see 127.0.0.1 of its own
               // host. Signing in stays the person's: this opens a window.
               chore.kind === 'open_judge_browser'
-              ? await startJudgeBrowser()
+              ? await openJudge()
               : { ok: false, detail: `this worker does not know how to “${chore.kind}”` }
       } catch (e) {
         outcome = { ok: false, detail: e?.message ?? 'it failed without saying why' }
@@ -2775,7 +2806,12 @@ const commands = {
       const claimed = await call(
         'POST',
         `/projects/${config.project}/runs/claim`,
-        { machine: hostname(), pid: process.pid },
+        // `machineId()`, not `hostname()`. A run was CLAIMED under the bare
+        // hostname and swept under `hostname-xxxxxx`: two identities for one
+        // worker, in the same file, so nothing it carried could ever be released
+        // by the process carrying it. Run 59 read `running` for hours with its
+        // process long dead, holding the only worker slot on the project.
+        { machine: machineId(), pid: process.pid },
         { soft: true },
       ).catch(() => null)
 
