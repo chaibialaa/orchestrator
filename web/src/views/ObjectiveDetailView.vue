@@ -90,6 +90,36 @@ async function castVerdict(decision: 'accept' | 'reject') {
   }
 }
 
+const waiveWhy = ref('')
+const waiveError = ref<string | null>(null)
+
+/**
+ * Lift the "it has to be seen" rule, here and nowhere else.
+ *
+ * The reason is required rather than optional: a waiver with no stated ground
+ * reads later exactly like a rule that was never there.
+ */
+async function waiveVisual() {
+  if (!objective.value?.project) return
+  busyOn.value = true
+  waiveError.value = null
+  try {
+    await api.createDecision(objective.value.project, {
+      title: 'This criterion does not require seeing',
+      body: waiveWhy.value.trim(),
+      objective_id: Number(props.id),
+      waives: 'visual_proof',
+    })
+    waiveWhy.value = ''
+    doing.value = null
+    await load()
+  } catch (e: any) {
+    waiveError.value = e?.response?.data?.message ?? e?.message ?? 'it was refused'
+  } finally {
+    busyOn.value = false
+  }
+}
+
 async function openFile(evidenceId: number, path: string, n: number) {
   const url = api.evidenceFileUrl(evidenceId, n)
   const name = path.split('/').pop() ?? path
@@ -321,6 +351,17 @@ const criterionItems = computed(() => {
         <p v-if="objective.proof_spec && !criterionItems.length" class="text-halt/80 text-[11px] mt-2">
           One single item — a failure here cannot say which part of it failed.
         </p>
+
+        <!-- A rule was lifted here. It reads next to the criterion it applies to,
+             where anyone weighing what was proven will meet it. -->
+        <p
+          v-for="w in objective.waivers ?? []"
+          :key="w.decided_at"
+          class="text-halt/90 text-[11px] mt-2 border-l-2 border-halt/40 pl-2.5 leading-relaxed"
+        >
+          <span class="label text-ink-600">waived {{ w.decided_at?.slice(0, 10) }}</span>
+          {{ w.waives === 'visual_proof' ? 'settling this does not require seeing it' : w.waives }} — {{ w.body }}
+        </p>
       </div>
     </header>
 
@@ -480,6 +521,39 @@ const criterionItems = computed(() => {
         <RouterLink v-else-if="doing === 'unblock' && objective.project" :to="`/p/${objective.project}`" class="chip border-fail/60 text-fail">
           See what is in the way ▸
         </RouterLink>
+
+        <!-- No button here on purpose: an image becomes proof by being produced,
+             not by being declared. Saying where it comes from beats a control
+             that would only record that one exists. -->
+        <div v-else-if="doing === 'image'" class="text-[12px] text-ink-400 leading-relaxed">
+          A rendering counts once a pass has produced it and attached it — the pass
+          calls
+          <code class="text-ink-200">orchestrator evidence &lt;passage&gt; render pass &lt;what it shows&gt;</code>.
+          Ask for it in what you tell the next pass to do.
+        </div>
+
+        <div v-else-if="doing === 'waive_visual'">
+          <p class="text-[12px] text-ink-400 leading-relaxed">
+            Say why this criterion settles without anyone looking. It is kept as a dated
+            decision on this objective, and the rule goes on applying everywhere else.
+          </p>
+          <textarea
+            v-model="waiveWhy"
+            rows="3"
+            class="w-full mt-2 bg-ink-900 border border-ink-700 rounded p-2 text-[12px] text-ink-100"
+            placeholder="e.g. it asks for a CSV and counts; it names captures as its subject, and asks nobody to look at one"
+          />
+          <div class="flex items-center gap-3 mt-2">
+            <button
+              class="chip border-halt/60 text-halt hover:bg-halt/10"
+              :disabled="busyOn || !waiveWhy.trim()"
+              @click="waiveVisual"
+            >
+              {{ busyOn ? '…' : 'Record it' }}
+            </button>
+            <span v-if="waiveError" class="text-[12px] text-fail">{{ waiveError }}</span>
+          </div>
+        </div>
       </div>
 
       <!-- The branches, as things to press rather than a paragraph to distil. -->

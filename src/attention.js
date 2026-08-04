@@ -1,5 +1,5 @@
 import { base, json } from './db/index.js'
-import { evaluateGate, canStart, HUMAN_HALTS } from './gate.js'
+import { evaluateGate, canStart, HUMAN_HALTS, needsImage } from './gate.js'
 import { blockers } from './blockers.js'
 
 /**
@@ -406,10 +406,16 @@ export function nextStepForObjective(id, withChoices = true) {
    * Otherwise the screen keeps asking for a judgement that has been made — and
    * the person who made it has no way to tell whether it registered.
    */
+  /**
+   * A waiver is excluded here. It lifts a rule of the gate; it is not an
+   * instruction for the next pass. Counted as one, the page answered a lifted
+   * rule with "you have decided — start a pass", and the loop would have handed
+   * the agent a note about the gate as though it were the work to do.
+   */
   const decided = db
     .prepare(
       `SELECT title, body, decided_at FROM decisions
-       WHERE objective_id = ? ORDER BY id DESC LIMIT 1`,
+       WHERE objective_id = ? AND waives IS NULL ORDER BY id DESC LIMIT 1`,
     )
     .get(id)
 
@@ -581,6 +587,24 @@ export function nextStepForObjective(id, withChoices = true) {
     },
   }
 
+  /**
+   * `no_new_proof` covers two very different walls, and its generic sentence —
+   * "run it again to produce something new" — is a lie on one of them. When the
+   * measurements are in and only a rendering is missing, running it again
+   * produces the same numbers and changes nothing. Name the wall that is
+   * actually there.
+   */
+  if (needsImage(o.id)) {
+    return {
+      tone: 'work',
+      headline: 'It has to be seen, and nothing was attached',
+      why: gate.detail ?? '',
+      action:
+        'Ask the next pass for a rendering — or, if this criterion settles on files and ' +
+        'numbers alone, say so: the option below records it and the rule stops applying here.',
+    }
+  }
+
   const known = INSTRUCTION[gate.reason]
   return {
     tone: gate.ready ? 'decide' : 'work',
@@ -696,6 +720,29 @@ export function choices(objectiveId) {
     })
     out.push(drop)
     return out
+  }
+
+  /**
+   * The gate is holding out for an image. Two ways forward, and they are not the
+   * same act: produce the rendering it wants, or state that this criterion never
+   * asked for one. The second is offered here rather than left to a config file,
+   * because the person who can tell the difference is the one reading this page.
+   */
+  if (needsImage(objectiveId)) {
+    out.push({
+      kind: 'image',
+      label: 'Attach what it should show',
+      price: 'A rendering or a screenshot. Until one is attached, no verdict here judges the work.',
+      href: `/o/${o.id}`,
+    })
+    out.push({
+      kind: 'waive_visual',
+      label: 'This criterion does not require seeing',
+      price:
+        'Recorded as a decision, dated, on this objective alone. The rule keeps applying everywhere ' +
+        'else. If the criterion did ask to be looked at, nothing will catch it after this.',
+      href: `/o/${o.id}`,
+    })
   }
 
   /**

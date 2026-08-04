@@ -143,6 +143,9 @@ function addMissingColumns(db) {
     ['passages', 'tokens_in', 'INTEGER'],
     ['passages', 'tokens_out', 'INTEGER'],
     ['passages', 'tokens_cached', 'INTEGER'],
+    // Which gate rule this decision lifts, on its objective alone. NULL for the
+    // ordinary decisions, which lift nothing.
+    ['decisions', 'waives', 'TEXT'],
   ]
 
   for (const [table, column, type] of additions) {

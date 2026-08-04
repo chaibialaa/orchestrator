@@ -294,3 +294,88 @@ test('every halt reason the schema allows has a label and an explanation', () =>
     'reasons with no explanation',
   )
 })
+
+/**
+ * The whole journey of a waiver, through the API the screen actually calls.
+ *
+ * Recording it revealed a defect nothing else caught: a waiver lands in
+ * `decisions`, and the instruction on the page treats the latest decision as
+ * something the next pass must be handed. So a lifted gate rule answered with
+ * "you have decided — start a pass", and the agent would have been given a note
+ * about the gate as if it were the work. Found by eye on a screenshot; kept
+ * closed here.
+ */
+test('a waiver lifts the rule, and is not mistaken for an instruction', async () => {
+  const post = (path, body) =>
+    fetch(`${API}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+
+  // Its own project: the shared fixture carries a single permission, which trips
+  // the "no allowed tools" blocker, and a project-level blocker outranks the gate
+  // — rightly. Borrowing it would have this test measure that instead.
+  db.prepare(
+    "INSERT INTO projects (id,slug,name,repo_path,gate_judge) VALUES (2,'waived','Waived','/tmp','gpt')",
+  ).run()
+  for (let i = 0; i < 12; i++) {
+    db.prepare(
+      `INSERT INTO permissions (project_id,harness,pattern,label,decision,note)
+       VALUES (2,'claude',?,'Core tools','allow','seeded')`,
+    ).run(`Bash(cmd${i} *)`)
+  }
+
+  // A criterion whose words name captures as its SUBJECT and ask nobody to look.
+  db.prepare(
+    `INSERT INTO objectives (id,project_id,title,proof_spec,blast_radius,status)
+     VALUES (9,2,'baseline','baseline.csv compte les 18 captures du corpus','feature','in_progress')`,
+  ).run()
+  db.prepare(
+    `INSERT INTO evidences (objective_id,type,label,verdict) VALUES (9,'test','verify.py','pass')`,
+  ).run()
+  db.prepare(
+    `INSERT INTO evidences (objective_id,type,label,verdict,payload)
+     VALUES (9,'manual','verdict','pass','{"judged_by":"gpt"}')`,
+  ).run()
+
+  const before = await (await fetch(`${API}/objectives/9/next`)).json()
+  assert.match(before.headline, /seen/, 'the wall that is actually there is the one named')
+  assert.ok(
+    before.choices.some((c) => c.kind === 'waive_visual'),
+    'and the way past it is offered where it blocks',
+  )
+
+  // A rule that does not exist cannot be lifted, and a waiver needs its objective.
+  assert.equal((await post('/projects/waived/decisions', {
+    title: 't', body: 'b', objective_id: 9, waives: 'not_a_rule',
+  })).status, 422)
+  assert.equal((await post('/projects/waived/decisions', {
+    title: 't', body: 'b', waives: 'visual_proof',
+  })).status, 422)
+
+  assert.equal((await post('/projects/waived/decisions', {
+    title: 'This criterion does not require seeing',
+    body: 'it asks for a CSV and counts',
+    objective_id: 9,
+    waives: 'visual_proof',
+  })).status, 201)
+
+  const after = await (await fetch(`${API}/objectives/9/next`)).json()
+  assert.deepEqual(
+    after.choices.map((c) => c.kind),
+    ['accept', 'reject'],
+    'it now settles on what it measured',
+  )
+  assert.doesNotMatch(after.headline, /you have decided/i)
+
+  const detail = await (await fetch(`${API}/objectives/9`)).json()
+  assert.equal(detail.waivers.length, 1, 'and the lifted rule travels with the objective')
+
+  const recall = await (await fetch(`${API}/projects/waived/recall`)).json()
+  assert.equal(
+    recall.decisions.filter((d) => d.waives).length,
+    0,
+    'an agent is never handed "this does not require seeing" as a project constraint',
+  )
+})

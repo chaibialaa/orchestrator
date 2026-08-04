@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto'
 import { resolve as path, join, extname, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { base, json, nowStamp, dbPath as dbPathOf } from './db/index.js'
-import { evaluateGate, canStart, HUMAN_HALTS } from './gate.js'
+import { evaluateGate, canStart, HUMAN_HALTS, WAIVABLE, requiresVisual } from './gate.js'
 import { encrypt, decrypt, keyHint } from './crypto.js'
 import { upload, checkStorage, createDriveFolder } from './storage.js'
 import { blockersFor } from './blockers.js'
@@ -721,15 +721,36 @@ export function createServer() {
 
   api.post('/projects/:slug/decisions', (req, res) => {
     const p = projectBy(req.params.slug)
-    const { title, body, paths, objective_id, decided_at } = req.body ?? {}
+    const { title, body, paths, objective_id, decided_at, waives } = req.body ?? {}
     if (!title?.trim()) throw new Rejected('A decision must have a title.')
     if (!body?.trim()) throw new Rejected('A decision must have a body.')
+
+    // A waiver lifts a gate rule, so it has to name one that exists and to say
+    // which objective it applies to. A typo would otherwise record a decision
+    // that lifts nothing, and read afterwards as though it had.
+    if (waives) {
+      if (!WAIVABLE.includes(waives)) {
+        throw new Rejected(
+          `\`${waives}\` is not a rule this gate can lift. Those are: ${WAIVABLE.join(', ')}.`,
+        )
+      }
+      if (!objective_id) throw new Rejected('A waiver applies to one objective — name it.')
+    }
+
     const r = db()
       .prepare(
-        `INSERT INTO decisions (project_id,objective_id,title,body,paths,decided_at)
-         VALUES (?,?,?,?,?,?)`,
+        `INSERT INTO decisions (project_id,objective_id,title,body,paths,decided_at,waives)
+         VALUES (?,?,?,?,?,?,?)`,
       )
-      .run(p.id, objective_id ?? null, title, body, json.write(paths ?? []), decided_at ?? nowStamp())
+      .run(
+        p.id,
+        objective_id ?? null,
+        title,
+        body,
+        json.write(paths ?? []),
+        decided_at ?? nowStamp(),
+        waives ?? null,
+      )
     res.status(201).json(db().prepare('SELECT * FROM decisions WHERE id = ?').get(r.lastInsertRowid))
   })
 
@@ -738,8 +759,13 @@ export function createServer() {
     const p = projectBy(req.params.slug)
     res.json({
       project: p,
+      // Waivers are left out: they tell the gate what not to require, and an
+      // agent reading "this does not require seeing" as a project constraint
+      // would take it as licence to stop rendering anything.
       decisions: db()
-        .prepare('SELECT * FROM decisions WHERE project_id = ? ORDER BY decided_at DESC LIMIT 30')
+        .prepare(
+          'SELECT * FROM decisions WHERE project_id = ? AND waives IS NULL ORDER BY decided_at DESC LIMIT 30',
+        )
         .all(p.id)
         .map((d) => ({ ...d, paths: json.read(d.paths, []) })),
     })
@@ -819,6 +845,11 @@ export function createServer() {
     res.json({
       ...o,
       gate: evaluateGate(o.id),
+      // A lifted rule that shows nowhere reads, later, like a rule that never
+      // applied. It travels with the objective it was granted on.
+      waivers: db()
+        .prepare('SELECT waives, body, decided_at FROM decisions WHERE objective_id = ? AND waives IS NOT NULL ORDER BY decided_at DESC')
+        .all(o.id),
       children: db().prepare('SELECT * FROM objectives WHERE parent_id = ? ORDER BY priority').all(o.id),
       halts: db().prepare('SELECT * FROM halts WHERE objective_id = ? ORDER BY id DESC').all(o.id),
       evidences: db()

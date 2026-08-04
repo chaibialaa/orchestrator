@@ -51,6 +51,45 @@ export function requiresVisual(spec) {
   )
 }
 
+/**
+ * The rules a person may lift, one objective at a time.
+ *
+ * `requiresVisual` reads words, and words name the subject as often as they name
+ * a demand. A criterion asking for a CSV of measurements over a corpus of
+ * captures mentions "capture", "visual", "image" — and asks nobody to look at
+ * anything. Widening the regex to tell those apart would weaken the rule
+ * everywhere to fix it in one place.
+ *
+ * So the rule stays whole and the exception is named: a person states, on this
+ * objective, that its criterion does not require seeing. It costs a decision
+ * with an author and a date, and it stays legible afterwards — where a quietly
+ * loosened regex would leave no trace of who decided what.
+ */
+export const WAIVABLE = ['visual_proof']
+
+/**
+ * Is the missing image the thing standing in the way, right now? Asked by the
+ * page that has to offer the waiver, so that the option shows up where the rule
+ * bites and nowhere else.
+ */
+export function needsImage(objectiveId) {
+  const db = base()
+  const o = db.prepare('SELECT id, proof_spec FROM objectives WHERE id = ?').get(objectiveId)
+  if (!o || !requiresVisual(o.proof_spec)) return false
+  if (waiver(db, o.id, 'visual_proof')) return false
+  return !db
+    .prepare("SELECT COUNT(*) n FROM evidences WHERE objective_id = ? AND type IN ('render','screenshot')")
+    .get(o.id).n
+}
+
+export function waiver(db, objectiveId, rule) {
+  return (
+    db
+      .prepare('SELECT * FROM decisions WHERE objective_id = ? AND waives = ? ORDER BY decided_at DESC')
+      .get(objectiveId, rule) ?? null
+  )
+}
+
 export function evaluateGate(objectiveId) {
   const db = base()
   const o = db.prepare('SELECT * FROM objectives WHERE id = ?').get(objectiveId)
@@ -111,7 +150,7 @@ export function evaluateGate(objectiveId) {
   // has what we hand over: with no image attached, its "accepted" is about the
   // executor's account, not about its work. That happened twice in a row before
   // this rule existed.
-  if (requiresVisual(o.proof_spec)) {
+  if (requiresVisual(o.proof_spec) && !waiver(db, o.id, 'visual_proof')) {
     const images = db
       .prepare("SELECT COUNT(*) n FROM evidences WHERE objective_id = ? AND type IN ('render','screenshot')")
       .get(o.id).n

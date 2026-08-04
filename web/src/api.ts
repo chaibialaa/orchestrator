@@ -95,6 +95,8 @@ export interface Objective {
   title: string
   intent: string | null
   proof_spec: string | null
+  /** Gate rules lifted on this objective, with the ground given for each. */
+  waivers?: { waives: string; body: string; decided_at: string }[]
   blast_radius: BlastRadius
   status: ObjectiveStatus
   priority: number
@@ -675,7 +677,14 @@ export const api = {
   graph: (slug: string) => http.get<{ mermaid: string }>(`/projects/${slug}/graph`).then((r) => r.data),
   createDecision: (
     slug: string,
-    payload: { title: string; body: string; objective_id?: number; paths?: string[] },
+    payload: {
+      title: string
+      body: string
+      objective_id?: number
+      paths?: string[]
+      /** The gate rule this decision lifts, on that objective alone. */
+      waives?: 'visual_proof'
+    },
   ) => http.post<Decision>(`/projects/${slug}/decisions`, payload).then((r) => r.data),
   decisions: (slug: string) => http.get<Decision[]>(`/projects/${slug}/decisions`).then((r) => r.data),
   createObjective: (slug: string, payload: Partial<Objective>) =>

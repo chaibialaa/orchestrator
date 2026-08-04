@@ -150,6 +150,38 @@ test('visual detection', () => {
   assert.equal(requiresVisual('php artisan test passe au vert'), false)
 })
 
+test('une levée nommée dispense de l’image, sur ce seul objectif', () => {
+  // Le critère parle de captures parce qu'elles sont son SUJET : il demande un
+  // décompte, pas un regard. La règle se déclenche quand même — c'est ce que la
+  // levée corrige, sans toucher à la règle.
+  const spec = 'baseline.csv compte les 18 captures du corpus, une ligne par fichier'
+  const o = objectif({ proof_spec: spec })
+  const autre = objectif({ proof_spec: spec })
+  preuve(o, { type: 'test' })
+  preuve(autre, { type: 'test' })
+  verdict(o)
+  verdict(autre)
+
+  assert.equal(evaluateGate(o).ok, false, 'sans levée, la porte réclame une image')
+  assert.match(evaluateGate(o).detail, /asks to see something/)
+
+  db.prepare(
+    "INSERT INTO decisions (project_id,objective_id,title,body,waives) VALUES (1,?,'t','il ne demande à personne de regarder','visual_proof')",
+  ).run(o)
+
+  assert.equal(evaluateGate(o).ok, true, 'levée : il conclut sur ce qu’il a mesuré')
+  assert.equal(evaluateGate(autre).ok, false, 'et le voisin, au critère identique, reste tenu')
+
+  // Une levée qui ne nomme pas la bonne règle ne lève rien.
+  const tiers = objectif({ proof_spec: spec })
+  preuve(tiers, { type: 'test' })
+  verdict(tiers)
+  db.prepare(
+    "INSERT INTO decisions (project_id,objective_id,title,body,waives) VALUES (1,?,'t','x','blast_radius')",
+  ).run(tiers)
+  assert.equal(evaluateGate(tiers).ok, false)
+})
+
 test('un refus suivi d’une acceptation ne conclut pas sans preuve neuve', () => {
   const o = objectif()
   preuve(o, { type: 'test' })
