@@ -247,6 +247,19 @@ const measured = computed(() => {
     }))
 })
 
+/**
+ * Pictures and documents are not looked at the same way.
+ *
+ * One card per deliverable, four to a row, was written for renders: the point
+ * of the tile IS the image. A markdown file or a table of numbers has no
+ * thumbnail, so it drew a big grey rectangle with its extension in it — the
+ * largest area on the page carrying the least in it. Documents read as a list.
+ */
+const shown = computed(() => ({
+  images: proofs.value.filter((e) => isImage(e.files![0])),
+  documents: proofs.value.filter((e) => !isImage(e.files![0])),
+}))
+
 const openHalts = computed(() => objective.value?.halts?.filter((h) => !h.resolved_at) ?? [])
 
 /** What the checks actually returned, next to the button that acts on them. */
@@ -789,9 +802,38 @@ const criterionItems = computed(() => {
     <!-- WHAT CAME OUT -->
     <section v-if="proofs.length" id="proofs" class="scroll-mt-20">
       <h2 class="label mb-3">What came out — {{ proofs.length }}</h2>
-      <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+
+      <!-- Documents first: on a chapter that measures, they are the work, and
+           the pictures are its subject. -->
+      <div v-if="shown.documents.length" class="mb-4 divide-y divide-ink-800 border-y border-ink-800">
         <button
-          v-for="e in proofs"
+          v-for="e in shown.documents"
+          :key="e.id"
+          class="w-full text-left py-2.5 flex items-baseline gap-3 hover:bg-ink-900/60 transition-colors px-1"
+          :aria-label="`Open ${e.label}`"
+          @click="openFile(e.id, e.files![0], 0)"
+        >
+          <span
+            class="w-1.5 h-1.5 rounded-full shrink-0 self-center"
+            :class="{
+              'bg-proof': e.verdict === 'pass',
+              'bg-fail': e.verdict === 'fail',
+              'bg-ink-600': e.verdict === 'inconclusive',
+            }"
+          />
+          <span class="num text-[10px] uppercase tracking-widest text-ink-600 w-9 shrink-0">
+            {{ e.files![0].split('.').pop() }}
+          </span>
+          <span class="text-[13px] text-ink-200 truncate">{{ e.label }}</span>
+          <span class="text-[11px] text-ink-600 truncate ml-auto pl-3 hidden sm:block">
+            {{ e.files![0] }}
+          </span>
+        </button>
+      </div>
+
+      <div v-if="shown.images.length" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+        <button
+          v-for="e in shown.images"
           :key="e.id"
           class="text-left group"
           :aria-label="`Open ${e.label}`"
