@@ -379,3 +379,42 @@ test('a waiver lifts the rule, and is not mistaken for an instruction', async ()
     'an agent is never handed "this does not require seeing" as a project constraint',
   )
 })
+
+/**
+ * A step nobody has started yet.
+ *
+ * The gate answers "can it conclude?" — and on something never attempted every
+ * true answer it gives is humanly wrong. "Nothing NEW has been produced to
+ * judge", "run it AGAIN", "the attempts already made stop counting", and a panel
+ * offering to refuse work that does not exist over a tally of zero. Four
+ * sentences about a history that never happened, which is how a reader decides
+ * the tool is confused and stops trusting the sentences that are right.
+ */
+test('a step nobody has started is not described as one that failed', async () => {
+  db.prepare(
+    `INSERT INTO objectives (id,project_id,title,proof_spec,blast_radius,status)
+     VALUES (11,2,'spec','un grep des 4 noms de flags retourne 4 occurrences','feature','ready')`,
+  ).run()
+
+  const step = await (await fetch(`${API}/objectives/11/next`)).json()
+  assert.match(step.headline, /not been started/)
+  assert.doesNotMatch(step.action, /again/i, 'nothing to run "again"')
+
+  const kinds = step.choices.map((c) => c.kind)
+  assert.ok(kinds.includes('run'), 'the one thing to do is offered')
+  assert.ok(!kinds.includes('accept') && !kinds.includes('reject'), 'nothing to judge yet')
+
+  const rewrite = step.choices.find((c) => c.kind === 'criterion')
+  assert.doesNotMatch(rewrite.price, /attempts already made/, 'no attempts to invalidate')
+
+  // And once something HAS run, the wording that speaks of a history comes back.
+  db.prepare(
+    "INSERT INTO passages (objective_id,harness,started_at,ended_at) VALUES (11,'claude',datetime('now'),datetime('now'))",
+  ).run()
+  const after = await (await fetch(`${API}/objectives/11/next`)).json()
+  assert.doesNotMatch(after.headline, /not been started/)
+  assert.match(
+    after.choices.find((c) => c.kind === 'criterion').price,
+    /attempts already made/,
+  )
+})

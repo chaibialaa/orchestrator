@@ -260,6 +260,12 @@ const shown = computed(() => ({
   documents: proofs.value.filter((e) => !isImage(e.files![0])),
 }))
 
+/** Has anything ever been attempted here? Half this page is about a history. */
+const everRan = computed(() => {
+  const o = objective.value
+  return Boolean(o && ((o.passages?.length ?? 0) > 0 || (o.evidences?.length ?? 0) > 0))
+})
+
 const openHalts = computed(() => objective.value?.halts?.filter((h) => !h.resolved_at) ?? [])
 
 /** What the checks actually returned, next to the button that acts on them. */
@@ -670,8 +676,12 @@ const criterionItems = computed(() => {
          everything was in place, so an objective the gate refuses offered no way
          to say anything about it — not even "stop, this is going the wrong way",
          which is the one thing worth hearing early. -->
+    <!-- Nothing has been attempted: there is nothing to judge, and a panel about
+         judging it says otherwise. It offered to refuse work that does not
+         exist, over a tally of zero, under a heading about a gate refusing —
+         when the only true thing to say is that it has not started. -->
     <section
-      v-if="objective.status !== 'proven' && objective.status !== 'abandoned'"
+      v-if="objective.status !== 'proven' && objective.status !== 'abandoned' && everRan"
       class="border rounded p-5"
       :class="objective.gate?.ready ? 'border-proof/40 bg-proof/[0.05]' : 'border-ink-700 bg-ink-900/40'"
     >

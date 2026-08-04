@@ -347,6 +347,24 @@ export function nextStep(slug) {
  * It says the same thing every time in the same order: what state this is in,
  * why, and the ONE thing to do about it.
  */
+/** How many times something has actually run here. Zero changes what to say. */
+function attempts(db, id) {
+  return db.prepare('SELECT COUNT(*) n FROM passages WHERE objective_id = ?').get(id).n
+}
+
+/**
+ * Has anything happened here at all?
+ *
+ * Not the same question as "how many passes": evidence can be attached without
+ * one — by hand, or by a check run outside a session. Counting only passages
+ * called an objective untouched while its proofs sat on the page underneath.
+ */
+function everRan(db, id) {
+  return Boolean(
+    attempts(db, id) || db.prepare('SELECT COUNT(*) n FROM evidences WHERE objective_id = ?').get(id).n,
+  )
+}
+
 export function nextStepForObjective(id, withChoices = true) {
   const db = base()
   const o = db
@@ -539,6 +557,25 @@ export function nextStepForObjective(id, withChoices = true) {
     }
   }
 
+  /**
+   * Never attempted: everything the gate says about it is technically true and
+   * humanly wrong.
+   *
+   * "Nothing new has been produced to judge", "run it AGAIN", "the attempts
+   * already made stop counting" — on a step nobody has started, all three
+   * describe a history that does not exist, and the reader reasonably concludes
+   * the tool is confused. The gate is answering "can it conclude?" when the only
+   * question here is "has it begun?".
+   */
+  if (!everRan(db, id)) {
+    return {
+      tone: 'work',
+      headline: 'It has not been started',
+      why: '',
+      action: 'Start a pass. Nothing has run on it yet, so there is nothing else to weigh.',
+    }
+  }
+
   const gate = evaluateGate(id)
 
   if (gate.ok) {
@@ -646,10 +683,18 @@ export function choices(objectiveId) {
 
   // Whatever the state, these two are almost always available and almost always
   // wrong to hide: a criterion can be rewritten, and work can be set aside.
+  /**
+   * The price of rewriting is what it throws away, and on a step nobody has
+   * started it throws nothing away. Quoting attempts that were never made is the
+   * kind of sentence that makes a reader distrust every other one on the page.
+   */
+  const tried = everRan(db, objectiveId)
   const rewrite = {
     kind: 'criterion',
-    label: 'Change what would prove it',
-    price: 'The attempts already made were measured against the old wording; they stop counting.',
+    label: tried ? 'Change what would prove it' : 'Word it differently before starting',
+    price: tried
+      ? 'The attempts already made were measured against the old wording; they stop counting.'
+      : 'Nothing is lost — nothing has run against this wording yet.',
     href: `/p/${o.slug}/plan`,
   }
   const drop = {
@@ -761,7 +806,7 @@ export function choices(objectiveId) {
    * used to be a paragraph of its own further down the page; it belongs to the
    * option it qualifies.
    */
-  const tried = db
+  const history = db
     .prepare(
       `SELECT COUNT(*) n,
               (SELECT COUNT(*) FROM evidences WHERE objective_id = ? AND verdict = 'pass') settled
@@ -775,8 +820,8 @@ export function choices(objectiveId) {
       kind: 'run',
       label: 'Start a pass',
       price:
-        tried.n >= 3
-          ? `A session, billed — and it repeats the ${tried.n} already made (${tried.settled} settled by ` +
+        history.n >= 3
+          ? `A session, billed — and it repeats the ${history.n} already made (${history.settled} settled by ` +
             'a verdict) unless what you ask for changes.'
           : 'A session, billed. What you tell it is the whole of what it will try.',
       href: `/o/${o.id}`,
@@ -785,7 +830,7 @@ export function choices(objectiveId) {
 
   // Asking what to do belongs wherever things are not converging, not only where
   // a criterion is missing: three attempts in, it is often the useful one.
-  if (tried.n >= 3) {
+  if (history.n >= 3) {
     out.push({
       kind: 'ask',
       label: 'Ask what to do about it',
