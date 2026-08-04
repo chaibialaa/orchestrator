@@ -729,10 +729,35 @@ export function choices(objectiveId) {
   }
 
   if (step?.from === 'running') {
-    return [
+    const out = [
       { kind: 'wait', label: 'Let it work', price: 'Nothing to do. It reports when the turn ends.', href: `/o/${o.id}` },
       { kind: 'stop', label: 'Stop it', price: 'It finishes the turn it is in; that turn is paid for either way.', href: `/o/${o.id}` },
     ]
+
+    /**
+     * A pass running does not take the decision away from you.
+     *
+     * These two were the ONLY options while anything was live, and the page
+     * hides the verdict buttons as soon as options exist — so an objective whose
+     * criterion was fully met, waiting on a judging conversation that had been
+     * silent for two hours, offered no way whatsoever to conclude it. The only
+     * advice on screen was to wait for something that was not coming.
+     */
+    if (evaluateGate(objectiveId).ready) {
+      out.push({
+        kind: 'accept',
+        label: 'Conclude it now',
+        price: 'You are accepting what came out, without waiting for the conversation. The pass keeps its turn.',
+        href: `/o/${o.id}`,
+      })
+      out.push({
+        kind: 'reject',
+        label: 'Refuse it',
+        price: 'It goes back to work, and the next pass has to produce something new.',
+        href: `/o/${o.id}`,
+      })
+    }
+    return out
   }
 
   if (step?.from === 'halt') {
