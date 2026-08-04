@@ -84,6 +84,11 @@ async function castVerdict(decision: 'accept' | 'reject') {
   busyOn.value = true
   try {
     await api.verdict(Number(props.id), decision)
+    // The picked option, and its control, belong to a question that has just
+    // been answered. Left standing, "Yes — the criterion is met" sat under a
+    // banner reading "Finished · Accepted": a button offering to conclude
+    // something already concluded.
+    doing.value = null
     await load()
   } finally {
     busyOn.value = false

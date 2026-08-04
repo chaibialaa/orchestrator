@@ -203,3 +203,17 @@ test('un refus suivi d’une acceptation ne conclut pas sans preuve neuve', () =
   preuve(o, { type: 'render' })
   assert.equal(evaluateGate(o).ok, true)
 })
+
+test('le verdict d’une personne conclut, même quand le juge du projet est GPT', () => {
+  // `gate_judge` dit qui juge PAR DÉFAUT, pas qui en a le droit. La page offrait
+  // « conclure sans attendre la conversation », le clic écrivait une preuve
+  // `judged_by: human`, et la porte répondait toujours `awaiting_verdict` : rien
+  // ne se fermait, et l'écran ne disait rien.
+  const o = objectif()
+  preuve(o, { type: 'test' })
+  assert.equal(evaluateGate(o).reason, 'awaiting_verdict', 'sans verdict, elle attend')
+
+  verdict(o, 'human')
+  const g = evaluateGate(o)
+  assert.equal(g.ok, true, 'le verdict humain suffit')
+})

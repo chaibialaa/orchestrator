@@ -214,7 +214,18 @@ export function evaluateGate(objectiveId) {
   const judge = project?.gate_judge ?? 'human'
 
   if (judge === 'gpt') {
-    if (!passing.some((e) => judgedBy(e) === 'gpt')) {
+    /**
+     * A person's verdict counts, whoever the project's judge is.
+     *
+     * `gate_judge` says who judges BY DEFAULT, not who is allowed to. The
+     * distinction was never made, so the page offered "Conclude it now — you are
+     * accepting what came out, without waiting for the conversation", the click
+     * wrote a `judged_by: human` proof, and the gate went on answering
+     * `awaiting_verdict`. The objective stayed open, the screen said nothing at
+     * all, and the one control offered to a person waiting on a conversation
+     * that had been dead for two hours did nothing whatsoever.
+     */
+    if (!passing.some((e) => ['gpt', 'human'].includes(judgedBy(e)))) {
       // An essential distinction: a proof is NOT missing, a verdict is. The
       // objective is ready, it is waiting for its judge.
       return {

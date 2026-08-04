@@ -522,6 +522,24 @@ export function nextStepForObjective(id, withChoices = true) {
         .get(id).at
     : null
 
+  /**
+   * Waiting, or broken?
+   *
+   * The page said "it runs again once an answer comes back" over a run whose
+   * judging page had been dead for two hours — five give-ups in the worker log,
+   * reloading a conversation that never returned. A reply normally comes back in
+   * seconds, so past twenty minutes the sentence is not optimism, it is false.
+   * Twenty is the loop's own silence threshold; the same number, so the screen
+   * and the machine agree on when patience has stopped being reasonable.
+   */
+  const STALLED_MIN = 20
+  const stalledFor = lastTurnEnded
+    ? (() => {
+        const min = Math.round((Date.now() - new Date(lastTurnEnded.replace(' ', 'T') + 'Z').getTime()) / 60000)
+        return min >= STALLED_MIN ? min : null
+      })()
+    : null
+
   if ((live || queued) && o.status !== 'proven') {
     return {
       tone: 'work',
@@ -533,10 +551,25 @@ export function nextStepForObjective(id, withChoices = true) {
       why: live
         ? `${live.harness} has been on it since ${live.started_at?.slice(11, 16) ?? 'a moment ago'}.`
         : between
-          ? `Turn ${queued.turn} ended at ${lastTurnEnded?.slice(11, 16) ?? 'an unknown time'}. ` +
-            'It runs again once an answer comes back; nothing is being spent while it waits.'
+          ? `Turn ${queued.turn} ended at ${lastTurnEnded?.slice(11, 16) ?? 'an unknown time'}` +
+            (stalledFor
+              ? `, ${stalledFor} minutes ago, and no turn has begun since. A reply normally comes back ` +
+                'in seconds: the judging conversation is very likely unreachable, and waiting will not fix it.'
+              : '. It runs again once an answer comes back; nothing is being spent while it waits.')
           : 'The worker on the machine that holds the repository takes it within seconds.',
-      action: 'Nothing to do but let it work — or stop it, which finishes the turn it is in.',
+      /**
+       * The instruction has to match the options underneath it.
+       *
+       * "Nothing to do but let it work — or stop it" sat directly above four
+       * choices, two of which were conclude and refuse. I added the options and
+       * left the sentence that denies them.
+       */
+      action: stalledFor
+        ? 'Conclude it if what came out is enough — nothing is going to arrive on its own. ' +
+          'Or stop the run and look at the judging conversation.'
+        : evaluateGate(id).ready
+          ? 'Let it work, or take the decision yourself now — the criterion is already met.'
+          : 'Nothing to do but let it work — or stop it, which finishes the turn it is in.',
       from: 'running',
     }
   }
