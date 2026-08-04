@@ -210,6 +210,26 @@ export function evaluateGate(objectiveId) {
     }
   }
 
+  /**
+   * A halt outranks the judge, and used to come after it.
+   *
+   * The `awaiting_verdict` branch below returns early, so on a project judged by
+   * the driving conversation this check was never reached: an objective stopped
+   * by an open halt still reported `ready`, the page offered a verdict on it, and
+   * casting one would have written a proof that closed nothing — the gate would
+   * have refused on the halt a step later, without a word.
+   */
+  const openHalt = db
+    .prepare('SELECT reason FROM halts WHERE objective_id = ? AND resolved_at IS NULL LIMIT 1')
+    .get(o.id)
+
+  if (openHalt) {
+    return refuse(
+      'human_request',
+      'A halt is still open on this objective; it has to be cleared before concluding.',
+    )
+  }
+
   const project = db.prepare('SELECT gate_judge FROM projects WHERE id = ?').get(o.project_id)
   const judge = project?.gate_judge ?? 'human'
 
@@ -254,17 +274,6 @@ export function evaluateGate(objectiveId) {
         ready: true,
       }
     }
-  }
-
-  const openHalt = db
-    .prepare('SELECT reason FROM halts WHERE objective_id = ? AND resolved_at IS NULL LIMIT 1')
-    .get(o.id)
-
-  if (openHalt) {
-    return refuse(
-      'human_request',
-      'A halt is still open on this objective; it has to be cleared before concluding.',
-    )
   }
 
   return { ok: true, reason: null, detail: null, ready: true }
