@@ -418,3 +418,53 @@ test('a step nobody has started is not described as one that failed', async () =
     /attempts already made/,
   )
 })
+
+/**
+ * Une passe qui n'avance plus, et qui ne le dit à personne.
+ *
+ * Le run 59 est resté deux heures entre deux tours, sa page de jugement morte —
+ * cinq abandons dans le journal de l'ouvrier. Le garde-fou de silence de la
+ * boucle n'a pas déclenché, la page de l'objectif annonçait « elle repart dès
+ * qu'une réponse arrive », et tous les autres écrans affichaient un `running`
+ * en bonne santé. Personne ne surveillait la seule chose qui compte : est-ce que
+ * ça progresse encore.
+ */
+test('un run qui n’avance plus est remonté comme blocage', async () => {
+  const { blockers } = await import('../src/blockers.js')
+  const nom = (b) => b.kind === 'judge_silent'
+
+  db.prepare(
+    `INSERT INTO objectives (id,project_id,title,proof_spec,blast_radius,status)
+     VALUES (12,2,'bloque','le test passe','feature','in_progress')`,
+  ).run()
+  db.prepare(
+    `INSERT INTO runs (id,project_id,objective_id,mode,status,turn,machine,pid,taken_at)
+     VALUES (99,2,12,'chapter','running',2,'here',1,datetime('now','-3 hours'))`,
+  ).run()
+
+  // Un tour qui vient de finir : elle attend, c'est normal.
+  db.prepare(
+    `INSERT INTO passages (objective_id,harness,started_at,ended_at)
+     VALUES (12,'claude',datetime('now','-1 hours'),datetime('now'))`,
+  ).run()
+  assert.equal(blockers().filter(nom).length, 0, 'un tour qui vient de finir n’est pas une panne')
+
+  // Le même tour, fini il y a une heure : plus rien n'avance.
+  db.prepare("UPDATE passages SET ended_at = datetime('now','-1 hours') WHERE objective_id = 12").run()
+  const b = blockers().filter(nom)
+  assert.equal(b.length, 1)
+  assert.match(b[0].title, /turn 2 ended 6\d min ago/)
+  assert.equal(b[0].objective, 12)
+
+  // Un tour EN COURS n'est pas une panne, quelle que soit sa durée.
+  db.prepare(
+    "INSERT INTO passages (objective_id,harness,started_at) VALUES (12,'claude',datetime('now','-2 hours'))",
+  ).run()
+  assert.equal(blockers().filter(nom).length, 0, 'une passe qui travaille n’est pas un blocage')
+
+  // Et une fois l'arrêt demandé, on cesse de le signaler.
+  db.prepare('UPDATE passages SET ended_at = datetime(\'now\',\'-1 hours\') WHERE ended_at IS NULL AND objective_id = 12').run()
+  assert.equal(blockers().filter(nom).length, 1)
+  db.prepare('UPDATE runs SET cancel_asked = 1 WHERE id = 99').run()
+  assert.equal(blockers().filter(nom).length, 0, 'tu as déjà demandé son arrêt')
+})

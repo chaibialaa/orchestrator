@@ -88,6 +88,7 @@ export function blockers() {
   out.push(...storages(db))
   out.push(...unpricedHarness(db))
   out.push(...noWorker(db))
+  out.push(...judgeSilent(db))
   out.push(...closedOnAVerdictAlone(db))
 
   /**
@@ -532,6 +533,64 @@ function closedOnAVerdictAlone(db) {
  * from the queue itself — something waiting, and nothing having taken anything
  * for a while.
  */
+/**
+ * A run that has stopped advancing, and says nothing about it.
+ *
+ * Run 59 sat two hours between turns while its judging page was dead — five
+ * give-ups in the worker log, reloading a conversation that never came back.
+ * The loop has a twenty-minute silence guard and it did not fire; the objective
+ * page said "it runs again once an answer comes back"; every other screen showed
+ * a healthy `running`. Nothing anywhere was watching the one thing that matters
+ * — whether it is still making progress — so the only reason it was ever noticed
+ * is that somebody happened to read a log.
+ *
+ * The measurement is the same one a person makes: a turn ended, and no turn has
+ * begun since. Twenty minutes, the loop's own threshold, so the screen and the
+ * machine agree on when patience stops being reasonable.
+ */
+function judgeSilent(db) {
+  const SILENT_MIN = 20
+
+  return db
+    .prepare(
+      `SELECT r.id, r.turn, p.slug, p.name, o.id objective, o.title,
+              (SELECT MAX(ended_at) FROM passages WHERE objective_id = r.objective_id) last_turn
+       FROM runs r
+       JOIN projects p ON p.id = r.project_id
+       JOIN objectives o ON o.id = r.objective_id
+       WHERE r.status = 'running' AND r.cancel_asked = 0 AND r.taken_at IS NOT NULL AND r.turn > 0
+         AND NOT EXISTS (
+           SELECT 1 FROM passages WHERE objective_id = r.objective_id AND ended_at IS NULL
+         )`,
+    )
+    .all()
+    .map((r) => ({
+      ...r,
+      idle: r.last_turn ? (Date.now() - Date.parse(r.last_turn.replace(' ', 'T') + 'Z')) / 60000 : 0,
+    }))
+    .filter((r) => r.idle >= SILENT_MIN)
+    .map((r) => ({
+      kind: 'judge_silent',
+      group: 'A run has stopped advancing',
+      severity: BLOCKING,
+      project: r.slug,
+      objective: r.objective,
+      title:
+        `${r.name} #${r.objective}: turn ${r.turn} ended ${Math.round(r.idle)} min ago ` +
+        'and no turn has begun since',
+      detail:
+        'Between turns the loop asks the judging conversation and waits for its reply — which ' +
+        'normally comes back in seconds. Past twenty minutes it is not waiting, it is stuck: the ' +
+        'page is usually unreachable or signed out, and the run holds the worker while producing ' +
+        'nothing.',
+      action:
+        `Look at the judging conversation, then stop the run — or conclude #${r.objective} ` +
+        'yourself if what it already produced is enough.',
+      link: { to: `/o/${r.objective}`, label: 'See the objective' },
+      since: r.last_turn,
+    }))
+}
+
 function noWorker(db) {
   const WAITING_MIN = 3
 
