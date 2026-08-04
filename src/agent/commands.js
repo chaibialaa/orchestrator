@@ -2703,10 +2703,19 @@ const commands = {
       const started = await startJudgeBrowser()
       if (!started.ok) return started
 
-      const project = await call('GET', `/projects/${config.project}`, null, { soft: true }).catch(() => null)
+      // The list, then find it — there is no route for one project by slug, and
+      // asking for one answered 404, which `soft` turned into null, which read
+      // as "this project has no conversation". A missing route reported as a
+      // missing conversation: the errand said `done` ten times and opened
+      // nothing.
+      const project = (await call('GET', '/projects', null, { soft: true }).catch(() => null))?.find(
+        (p) => p.slug === config.project,
+      )
       const url = project?.judge_url
+      // `done` on an errand that opened nothing is what let this be pressed ten
+      // times in a row with no sign anything was wrong.
       if (!url) {
-        return { ok: true, detail: `${started.detail} — this project has no judging conversation recorded` }
+        return { ok: false, detail: `${started.detail}, but this project has no conversation recorded` }
       }
       if (started.health?.conversation) {
         return { ok: true, detail: `${started.detail}, and a conversation tab is already open` }
