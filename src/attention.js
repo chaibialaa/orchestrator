@@ -687,6 +687,16 @@ export function choices(objectiveId) {
     return out
   }
 
+  /**
+   * Nothing is left to choose on something already accepted.
+   *
+   * The gate still reads `ok` after a verdict — of course it does, that is why
+   * the verdict could be cast — so the page went on offering "Conclude it" and
+   * "Refuse it" under a banner saying it was finished. What comes next is the
+   * next step of the chapter, and it has its own place further down.
+   */
+  if (o.status === 'proven') return []
+
   const gate = evaluateGate(objectiveId)
 
   if (gate.ok) {

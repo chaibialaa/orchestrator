@@ -853,6 +853,26 @@ export function createServer() {
       waivers: db()
         .prepare('SELECT waives, body, decided_at FROM decisions WHERE objective_id = ? AND waives IS NOT NULL ORDER BY decided_at DESC')
         .all(o.id),
+      /**
+       * What comes after this one, in its own chapter.
+       *
+       * Concluding an objective ended the page: a green "Accepted", and nothing
+       * saying where to go. The project's own next step is a different question
+       * — it ranks the whole project, and answers with whatever is most urgent
+       * anywhere, which after finishing step 2 of 6 is rarely step 3. The
+       * continuation of the chapter you are reading belongs on the page you are
+       * reading.
+       */
+      next_in_chapter: o.parent_id
+        ? (db()
+            .prepare(
+              `SELECT id, title, status FROM objectives
+               WHERE parent_id = @parent AND priority > @priority
+                 AND status NOT IN ('proven','abandoned')
+               ORDER BY priority LIMIT 1`,
+            )
+            .get({ parent: o.parent_id, priority: o.priority }) ?? null)
+        : null,
       children: db().prepare('SELECT * FROM objectives WHERE parent_id = ? ORDER BY priority').all(o.id),
       halts: db().prepare('SELECT * FROM halts WHERE objective_id = ? ORDER BY id DESC').all(o.id),
       evidences: db()

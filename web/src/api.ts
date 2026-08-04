@@ -99,6 +99,8 @@ export interface Objective {
   proof_spec: string | null
   /** Gate rules lifted on this objective, with the ground given for each. */
   waivers?: { waives: string; body: string; decided_at: string }[]
+  /** The next open step of the same chapter — where to go once this one closes. */
+  next_in_chapter?: { id: number; title: string; status: string } | null
   blast_radius: BlastRadius
   status: ObjectiveStatus
   priority: number

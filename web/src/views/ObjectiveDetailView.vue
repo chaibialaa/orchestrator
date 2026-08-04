@@ -762,9 +762,43 @@ const criterionItems = computed(() => {
            anything. -->
     </section>
 
-    <section v-if="objective.status === 'proven'" class="flex items-center gap-3 text-proof">
-      <span class="w-2 h-2 rounded-full bg-proof" />
-      <span>Accepted{{ objective.proven_at ? ` on ${objective.proven_at.slice(0, 10)}` : '' }}</span>
+    <!-- Accepting used to END the page: a green line, and no way onward. The
+         thing a person wants at that exact moment is the next step of the
+         chapter they just advanced, and it was one they had to go and find. -->
+    <section v-if="objective.status === 'proven'" class="border border-proof/30 bg-proof/[0.05] rounded p-5">
+      <div class="flex items-center gap-3 text-proof">
+        <span class="w-2 h-2 rounded-full bg-proof" />
+        <span>Accepted{{ objective.proven_at ? ` on ${objective.proven_at.slice(0, 10)}` : '' }}</span>
+      </div>
+
+      <div v-if="objective.next_in_chapter" class="mt-4">
+        <p class="label text-ink-600">next in this chapter</p>
+        <RouterLink
+          :to="`/o/${objective.next_in_chapter.id}`"
+          class="mt-1.5 flex items-baseline gap-2.5 text-ink-100 hover:text-run transition-colors"
+        >
+          <span class="num text-[12px] text-ink-500">#{{ objective.next_in_chapter.id }}</span>
+          <span class="text-[15px]">{{ objective.next_in_chapter.title }}</span>
+          <span class="text-run">▸</span>
+        </RouterLink>
+      </div>
+
+      <!-- The chapter is finished. Say so, and hand back the objective that
+           holds it rather than leaving the reader at a dead end. -->
+      <RouterLink
+        v-else-if="objective.parent_id"
+        :to="`/o/${objective.parent_id}`"
+        class="mt-4 flex items-baseline gap-2 text-[13px] text-ink-300 hover:text-run transition-colors"
+      >
+        Every step of this chapter is done — look at the chapter ▸
+      </RouterLink>
+      <RouterLink
+        v-else-if="objective.project"
+        :to="`/p/${objective.project}`"
+        class="mt-4 flex items-baseline gap-2 text-[13px] text-ink-300 hover:text-run transition-colors"
+      >
+        See what this project is waiting on ▸
+      </RouterLink>
     </section>
 
     <!-- WHAT IS WAITING FOR YOU -->
