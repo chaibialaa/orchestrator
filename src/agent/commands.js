@@ -2363,7 +2363,7 @@ const commands = {
 
   async 'agents:check'() {
     const agents = await call('GET', '/agents')
-    const machine = hostname()
+    const machine = machineId()
     const results = []
 
     for (const a of agents) {
@@ -2492,7 +2492,7 @@ const commands = {
 
     do {
       const pris = looping
-        ? (await call('POST', '/scans/claim', { machine: hostname() }, { soft: true }))?.scan
+        ? (await call('POST', '/scans/claim', { machine: machineId() }, { soft: true }))?.scan
         : { id: null }
 
       if (looping && !pris) {
@@ -2677,7 +2677,7 @@ const commands = {
      * and is the only answer that cannot go stale.
      */
     const sweepDeadRuns = async () => {
-      const carried = await call('GET', `/runs/carried?machine=${encodeURIComponent(hostname())}`, null, {
+      const carried = await call('GET', `/runs/carried?machine=${encodeURIComponent(machineId())}`, null, {
         soft: true,
       }).catch(() => null)
       const dead = (carried?.runs ?? [])
@@ -2692,7 +2692,7 @@ const commands = {
         })
         .map((r) => r.id)
       if (!dead.length) return
-      const freed = await call('POST', '/runs/release', { machine: hostname(), ids: dead }, { soft: true }).catch(
+      const freed = await call('POST', '/runs/release', { machine: machineId(), ids: dead }, { soft: true }).catch(
         () => null,
       )
       if (freed?.released?.length) {
@@ -2723,7 +2723,7 @@ const commands = {
       const claimed = await call(
         'POST',
         `/projects/${config.project}/chores/claim`,
-        { machine: hostname() },
+        { machine: machineId() },
         { soft: true },
       ).catch(() => null)
       const chore = claimed?.chore
@@ -3941,6 +3941,38 @@ async function resolveHalts(objectiveId) {
  *   ORCHESTRATOR_CODEX_BIN=/path/to/codex
  *   "binaries": { "codex": "/path/to/codex" }
  */
+/**
+ * Who this machine is, stably.
+ *
+ * The worker identified itself by `hostname()`, and a hostname changes: this one
+ * has been `MacBookPro`, `MacBookPro.mshome.net` and now
+ * `M1-Pro---Alaa-Chaibi.local`. A run is claimed under one name and released
+ * under another — so after a rename the sweep finds nothing to free, the run
+ * stays `running` for ever, and the "one run per objective" guard refuses every
+ * new one on an objective nobody is working. It cost a night on Atlas #48.
+ *
+ * The name is written once, next to the database, and never derived again.
+ * Renaming the Mac now changes nothing.
+ */
+function machineId() {
+  const file = join(homedir(), '.orchestrator', 'machine')
+  try {
+    const kept = readFileSync(file, 'utf8').trim()
+    if (kept) return kept
+  } catch {
+    /* first time on this machine */
+  }
+  const id = `${hostname()}-${Math.random().toString(36).slice(2, 8)}`
+  try {
+    mkdirSync(join(homedir(), '.orchestrator'), { recursive: true })
+    writeFileSync(file, id + '\n')
+  } catch {
+    // Unwritable home: fall back to the hostname rather than refusing to work.
+    return hostname()
+  }
+  return id
+}
+
 function harnessBin(harness) {
   const declared = process.env[`ORCHESTRATOR_${harness.toUpperCase()}_BIN`] ?? config.binaries?.[harness]
   if (declared) return declared
