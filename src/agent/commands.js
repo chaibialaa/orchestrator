@@ -2626,8 +2626,18 @@ const commands = {
         }
       } else if (a.reach === 'browser') {
         const port = a.settings?.cdp_port ?? 9222
-        const match = a.settings?.match ?? 'chatgpt.com'
-        try {
+        let match = a.settings?.match ?? null
+        if (!match && a.settings?.url) {
+          try {
+            match = new URL(a.settings.url).hostname
+          } catch {
+            /* an invalid declared URL is reported below rather than guessed */
+          }
+        }
+        if (!match) {
+          status = 'unknown'
+          detail = 'no browser match or valid URL declared'
+        } else try {
           const res = await fetch(`http://127.0.0.1:${port}/json`, { signal: AbortSignal.timeout(2500) })
           const tabs = await res.json()
           const target = tabs.find((t) => t.type === 'page' && String(t.url).includes(match))
