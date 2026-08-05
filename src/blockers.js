@@ -495,6 +495,14 @@ function closedOnAVerdictAlone(db) {
             WHERE e.objective_id = o.id AND e.verdict = 'pass'
               AND (e.payload IS NULL OR e.payload NOT LIKE '%judged_by%')
          )
+         -- Acknowledged, once, with its ground: an objective closed before the
+         -- rule existed AND whose criterion asked for a rubric score no command
+         -- computes cannot be re-measured. A warning that can never be cleared
+         -- teaches the reader to ignore the panel it lives in.
+         AND NOT EXISTS (
+           SELECT 1 FROM decisions d
+            WHERE d.objective_id = o.id AND d.waives = 'verdict_only'
+         )
        GROUP BY p.slug, p.name`,
     )
     .all()

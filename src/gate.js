@@ -65,7 +65,19 @@ export function requiresVisual(spec) {
  * with an author and a date, and it stays legible afterwards — where a quietly
  * loosened regex would leave no trace of who decided what.
  */
-export const WAIVABLE = ['visual_proof']
+export const WAIVABLE = [
+  'visual_proof',
+  /**
+   * Closed on the judge's word, before a proof was required — and not
+   * re-measurable, because the criterion asked for a rubric score no command
+   * computes. Two objectives predate the rule that now refuses that shape.
+   *
+   * It lifts a WARNING, never the gate: nothing here lets a new objective close
+   * on a verdict. It stops a permanent flag from teaching someone to ignore the
+   * panel it lives in.
+   */
+  'verdict_only',
+]
 
 /**
  * Is the missing image the thing standing in the way, right now? Asked by the
