@@ -516,3 +516,42 @@ test('un run porté par cette machine sous un ancien nom est bien récupéré', 
   assert.deepEqual(freed.released, [98])
   assert.equal(db.prepare('SELECT status FROM runs WHERE id = 98').get().status, 'failed')
 })
+
+/**
+ * Un « test » qui passe doit porter ce que la commande a imprimé.
+ *
+ * 23 des 66 preuves qui passent etaient DECLAREES : un agent appelant
+ * `orchestrator evidence <passe> test pass "check_c45_gate.py — exit 0"`. Le
+ * libelle raconte une commande ; personne ne l'a rejouee. Meme maladie qu'un
+ * verdict tenant lieu de preuve, un etage plus bas.
+ */
+test('une réussite racontée n’est pas une réussite mesurée', async () => {
+  db.prepare(
+    `INSERT INTO objectives (id,project_id,title,proof_spec,blast_radius,status)
+     VALUES (14,2,'mesure','le test passe','feature','in_progress')`,
+  ).run()
+  const p = db
+    .prepare("INSERT INTO passages (objective_id,harness,started_at) VALUES (14,'claude',datetime('now'))")
+    .run().lastInsertRowid
+
+  const poste = (body) =>
+    fetch(`${API}/passages/${p}/evidences`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+
+  const raconte = await poste({ type: 'test', verdict: 'pass', label: 'gate.py — exit 0' })
+  assert.equal(raconte.status, 422)
+  assert.match((await raconte.json()).message, /what the command printed/)
+
+  assert.equal(
+    (await poste({ type: 'test', verdict: 'pass', label: 'gate.py', payload: { output: 'PASS 5/5' } })).status,
+    201,
+    'la même, avec sa sortie, passe',
+  )
+  // Un echec est un rapport, pas une pretention.
+  assert.equal((await poste({ type: 'test', verdict: 'fail', label: 'gate.py' })).status, 201)
+  // Un artefact ne pretend a aucun code de sortie.
+  assert.equal((await poste({ type: 'render', verdict: 'pass', label: 'une image' })).status, 201)
+})

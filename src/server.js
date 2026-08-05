@@ -1228,6 +1228,33 @@ export function createServer() {
     const types = ['test', 'e2e', 'screenshot', 'render', 'diff', 'invariant', 'manual']
     if (!types.includes(b.type)) throw new Rejected(`Unknown proof type: ${types.join(', ')}.`)
     if (!b.label?.trim()) throw new Rejected('A proof must have a label.')
+
+    /**
+     * A passing `test` or `e2e` has to carry what the command printed.
+     *
+     * Of sixty-six passing proofs here, thirty-six were verdicts, seven came from
+     * a command this tool ran, and twenty-three were DECLARED: an agent calling
+     * `orchestrator evidence <passage> test pass "check_c45_gate.py — exit 0"`.
+     * The label narrates a command; nobody re-ran it. That is the same disease as
+     * a verdict standing in for a proof, one floor down — the session's account of
+     * a measurement, recorded as the measurement.
+     *
+     * `prove` runs a declared command and keeps its output, so a genuine pass has
+     * one. An artefact (screenshot, render, diff) and an opinion (manual) claim no
+     * exit code and are untouched; a failing or inconclusive result is a report,
+     * not a claim, and stays recordable.
+     */
+    // `payload` arrives as an object from a request and as text from the
+    // database: reading it one way only made the guard refuse the very proofs it
+    // was meant to let through.
+    const charge = typeof b.payload === 'string' ? json.read(b.payload, {}) : (b.payload ?? {})
+    if (b.verdict === 'pass' && ['test', 'e2e'].includes(b.type) && !charge?.output) {
+      throw new Rejected(
+        `A passing ${b.type} has to carry what the command printed. Run it through the tool — ` +
+          '`orchestrator prove <passage> <key>`, with the command declared in .orchestrator.json — ' +
+          'rather than recording that it passed. An account of a command is not its result.',
+      )
+    }
     const r = db()
       .prepare(
         `INSERT INTO evidences (objective_id,passage_id,type,label,ref,verdict,payload)
