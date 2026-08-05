@@ -3143,7 +3143,22 @@ const commands = {
         ` · stops at $${budgetWithoutProgress} without progress · ${willPost ? 'EXECUTION ACTIVE' : 'read only — nothing will be executed'}\n`,
     )
 
-    let lastSeen = null
+    /**
+     * What was already on the page when this run began does not answer it.
+     *
+     * `lastSeen` started empty, so a fresh run read the conversation's LAST
+     * message as its own reply — and that message was the previous run's "END
+     * DECLARED". Run 62 ended at turn 0, `declared_done`, having done nothing:
+     * it accepted a declaration written before the criterion was rewritten, as
+     * an answer to the criterion it had never been shown.
+     *
+     * A declaration is an answer to a question. Reading one that predates the
+     * question is how a chapter closes on work nobody did.
+     */
+    let lastSeen = await readJudge(page).catch(() => null)
+    if (lastSeen) {
+      console.log(`  (the conversation already ends on a message; it answers the previous run, not this one)`)
+    }
     let spent = 0
     let consecutiveEmpty = 0
     let sterile = 0
