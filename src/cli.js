@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { existsSync } from 'node:fs'
 import { startServer } from './server.js'
 import { commands as agent, Refusal } from './agent/commands.js'
 import { importData } from './db/import.js'
@@ -118,6 +119,22 @@ const commandes = {
     const logs = join(homedir(), '.orchestrator')
     mkdirSync(logs, { recursive: true })
 
+    /**
+     * Where the usual things live, on top of what a service is given.
+     *
+     * Only directories that exist: a PATH full of missing entries is noise, and
+     * on a machine without Homebrew it would advertise a place nothing is in.
+     */
+    const paths = [
+      join(homedir(), '.local/bin'),
+      '/opt/homebrew/bin',
+      '/usr/local/bin',
+      join(homedir(), '.bun/bin'),
+      join(homedir(), '.codex/bin'),
+    ]
+      .filter((d) => existsSync(d))
+      .concat(['/usr/bin', '/bin', '/usr/sbin', '/sbin'])
+
     const plist = (label, argv, cwd) =>
       `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -129,6 +146,18 @@ const commandes = {
 ${argv.map((a) => `    <string>${a}</string>`).join('\n')}
   </array>
   <key>WorkingDirectory</key><string>${cwd}</string>
+  <!-- The PATH a service inherits is /usr/bin:/bin:/usr/sbin:/sbin, and nothing
+       else. The tool already LOOKS for the harness itself, so it starts fine —
+       but the harness then inherits that same PATH, and every node, npm or
+       python3 the pass tries to run is not found. A session spent 2.5 M tokens
+       discovering this, produced nothing, and reported it as a permissions
+       problem: the explicit Homebrew paths it fell back to were not on its allow
+       list either. Declared here so a pass runs the same way it would in a
+       terminal. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>${paths.join(':')}</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <!-- Brought back when it exits, whatever the reason. -->
   <key>KeepAlive</key><true/>

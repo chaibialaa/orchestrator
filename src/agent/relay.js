@@ -216,7 +216,7 @@ export async function openTab(url, port = CDP_PORT) {
  * is the kind of interruption this tool exists to remove — so when we know where
  * the conversation lives, we open it and carry on.
  */
-export async function attach(match, port = CDP_PORT, { openIfMissing = null } = {}) {
+async function attachOnce(match, port = CDP_PORT, { openIfMissing = null } = {}) {
   let targets
   try {
     targets = await cdpTargets(port)
@@ -249,6 +249,90 @@ export async function attach(match, port = CDP_PORT, { openIfMissing = null } = 
 
   const pages = targets.filter((t) => t.type === 'page').map((t) => t.url.slice(0, 70))
   throw new Error(`no tab matches “${match}”.\n  Open tabs:\n    ${pages.join('\n    ')}`)
+}
+
+/**
+ * A page that survives its tab being closed.
+ *
+ * The browser is shared: several projects drive one Chrome, and a third one
+ * registering tonight opened its own thread and closed the other two. Both
+ * running passes then spent an hour calling `reload()` on a dead connection —
+ * a closed tab cannot be reloaded back to life, and the loop only ever reopened
+ * its conversation when a run STARTED.
+ *
+ * So when an evaluate fails, this asks the browser whether the tab is still
+ * there. If it is, the failure is real and travels on. If it is gone, the
+ * conversation is reopened and the call is made once more. Reopening is not
+ * signing in: the session is the person's and untouched.
+ */
+function survivable(inner, { match, port, openIfMissing }) {
+  let cur = inner
+
+  /**
+   * Two ways a conversation stops being usable, and only one is a missing tab.
+   *
+   * A tab can also be LISTED and dead: the target answers `/json/list`, its title
+   * and url are right, and its renderer no longer replies to `Runtime.evaluate`
+   * at all. That is what happened to the third project tonight — every post
+   * looked fine and nothing came back, on a tab that was demonstrably there.
+   *
+   * `absent` returns the target when it is present, so the caller can close a
+   * corpse rather than reload it. Unreachable is neither: a browser that stopped
+   * answering is a third failure, and reopening a tab inside it would fail too.
+   */
+  const cible = async () => {
+    const cibles = await cdpTargets(port).catch(() => null)
+    if (!cibles) return { joignable: false }
+    const t = cibles.find((x) => x.type === 'page' && (x.url ?? '').includes(match))
+    return { joignable: true, presente: Boolean(t), id: t?.id }
+  }
+
+  const rouvrir = async () => {
+    if (!openIfMissing) return false
+    const { joignable, presente, id } = await cible()
+    if (!joignable) return false
+
+    console.error(
+      presente
+        ? `    ! the tab on “${match}” is there and no longer answering — replacing it`
+        : `    ! the tab on “${match}” is gone — reopening the conversation`,
+    )
+
+    try {
+      cur.close()
+    } catch {
+      /* already gone, which is the point */
+    }
+    // A listed tab whose renderer is dead has to be CLOSED, or the next attach
+    // finds it again by url and binds straight back onto the corpse.
+    if (presente && id) {
+      await fetch(`http://127.0.0.1:${port}/json/close/${id}`).catch(() => {})
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    cur = await attachOnce(match, port, { openIfMissing })
+    return true
+  }
+
+  return {
+    get url() {
+      return cur.url
+    },
+    close: () => cur.close(),
+    reload: () => cur.reload(),
+    evaluate: async (expression, opts) => {
+      try {
+        return await cur.evaluate(expression, opts)
+      } catch (e) {
+        if (await rouvrir()) return cur.evaluate(expression, opts)
+        throw e
+      }
+    },
+  }
+}
+
+export async function attach(match, port = CDP_PORT, options = {}) {
+  const inner = await attachOnce(match, port, options)
+  return survivable(inner, { match, port, openIfMissing: options.openIfMissing ?? null })
 }
 
 async function attachTo(tab) {
