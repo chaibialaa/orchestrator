@@ -29,6 +29,17 @@ const shown = computed(() => {
 })
 
 /**
+ * Being worked on, then set aside.
+ *
+ * The menu listed all five in one run, so a project deliberately put away sat
+ * between two that are running — and picking the wrong one is how you spend a
+ * pass on something nobody meant to touch this month. Set-aside projects stay
+ * reachable, under their own heading, dimmed.
+ */
+const actifs = computed(() => shown.value.filter((p) => p.active !== false))
+const ranges = computed(() => shown.value.filter((p) => p.active === false))
+
+/**
  * Close on a click anywhere else — via the document, not a full-screen overlay.
  *
  * The overlay was `fixed inset-0`, which is the viewport only when no ancestor
@@ -88,16 +99,30 @@ function go(slug: string) {
       />
 
       <div class="max-h-80 overflow-y-auto">
-        <button
-          v-for="p in shown"
-          :key="p.slug"
-          class="w-full text-left px-3 py-2 flex items-baseline gap-2 hover:bg-ink-850/60 transition-colors"
-          :class="p.slug === route.params.slug ? 'text-ink-100' : 'text-ink-300'"
-          @click="go(p.slug)"
-        >
-          <span class="text-[12px] truncate">{{ p.name }}</span>
-          <span class="num text-ink-600 text-[10px] ml-auto truncate max-w-[9rem]">{{ p.slug }}</span>
-        </button>
+        <template v-for="(groupe, i) in [
+          { titre: 'being worked on', items: actifs },
+          { titre: 'set aside', items: ranges },
+        ]" :key="groupe.titre">
+          <p
+            v-if="groupe.items.length && (i === 0 ? ranges.length : actifs.length)"
+            class="label px-3 pt-2 pb-1 text-ink-700"
+          >
+            {{ groupe.titre }}
+          </p>
+          <button
+            v-for="p in groupe.items"
+            :key="p.slug"
+            class="w-full text-left px-3 py-2 flex items-baseline gap-2 hover:bg-ink-850/60 transition-colors"
+            :class="[
+              p.slug === route.params.slug ? 'text-ink-100' : 'text-ink-300',
+              p.active === false ? 'opacity-55' : '',
+            ]"
+            @click="go(p.slug)"
+          >
+            <span class="text-[12px] truncate">{{ p.name }}</span>
+            <span class="num text-ink-600 text-[10px] ml-auto truncate max-w-[9rem]">{{ p.slug }}</span>
+          </button>
+        </template>
 
         <p v-if="!shown.length" class="px-3 py-3 text-ink-600 text-[11px]">
           Nothing matches “{{ filter }}”.

@@ -2574,9 +2574,19 @@ export function createServer() {
         detail: a.last_detail,
         checked_at: a.last_checked_at,
         machine: a.last_machine,
-        // Derived, never declared: how many passes this harness actually ran.
+        /**
+         * What this agent DID, in its own unit.
+         *
+         * `passes` counts executions, and a judge never executes one: GPT read
+         * as "never used" on the tools page while it had ruled forty-two times
+         * and driven a hundred and two turns. A column that measures one role
+         * and is read as measuring all of them says nothing about the others.
+         */
         passes: db()
           .prepare('SELECT COUNT(*) n FROM passages WHERE harness = ?')
+          .get(a.name).n,
+        verdicts: db()
+          .prepare("SELECT COUNT(*) n FROM evidences WHERE json_extract(payload, '$.judged_by') = ?")
           .get(a.name).n,
       })),
       servers: Object.values(servers).sort((a, b) => b.calls - a.calls),

@@ -60,6 +60,18 @@ const mot = (a: { reach?: string; reachable?: string; detail?: string | null }) 
   return base
 }
 
+/**
+ * What an agent DID, in the unit of its own job.
+ *
+ * The column counted passes, and a judge never runs one: GPT read "never used"
+ * while it had ruled forty-two times and driven a hundred and two turns. An
+ * agent that both executes and judges shows both.
+ */
+const usage = (a: { passes?: number; verdicts?: number }) =>
+  [a.passes ? `${a.passes} passes` : '', a.verdicts ? `${a.verdicts} verdicts` : '']
+    .filter(Boolean)
+    .join(' · ')
+
 const KIND = {
   model: 'model',
   machine: 'machine, billed by the hour',
@@ -115,10 +127,10 @@ const shortName = (t: string) => t.replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '')
           <!-- Declared vs exercised. A capability nobody has run is a guess. -->
           <span
             class="num text-[11px] text-right"
-            :class="a.passes ? 'text-ink-400' : 'text-ink-700'"
-            :title="a.passes ? 'attempts actually run by this harness' : 'never used yet'"
+            :class="usage(a) ? 'text-ink-400' : 'text-ink-700'"
+            :title="usage(a) || 'never used yet'"
           >
-            {{ a.passes ? `${a.passes} passes` : 'never used' }}
+            {{ usage(a) || 'never used' }}
           </span>
 
           <!-- The second line carries what a person reads only when curious. -->
