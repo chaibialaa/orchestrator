@@ -249,15 +249,15 @@ const done = computed(() => objectives.value.filter((o) => o.status === 'proven'
            inactive project simply stops filling that queue. -->
       <button
         class="chip ml-auto"
-        :class="project.active === false ? 'border-ink-700 text-ink-500' : 'border-proof/50 text-proof'"
+        :class="!project.active ? 'border-ink-700 text-ink-500' : 'border-proof/50 text-proof'"
         :title="
-          project.active === false
+          !project.active
             ? 'Set aside — it fills nothing on the overview'
             : 'Being worked on — it can put things in your queue'
         "
-        @click="setActive(project.active === false)"
+        @click="setActive(!project.active)"
       >
-        {{ project.active === false ? 'set aside' : 'active' }}
+        {{ !project.active ? 'set aside' : 'active' }}
       </button>
 
       <label class="flex items-center gap-2 text-[11px] text-ink-500">

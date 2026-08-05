@@ -142,7 +142,23 @@ export function createServer() {
 
   // ---- projets ------------------------------------------------------------
 
-  api.get('/projects', (_req, res) => res.json(db().prepare('SELECT * FROM projects ORDER BY name').all()))
+  /**
+   * `active` as a boolean, here as everywhere.
+   *
+   * SQLite has no boolean: the column comes back as 0 or 1, and a screen
+   * comparing `active === false` never matched — so the button read "active" on
+   * a project that was set aside, and pressing it set it aside again. Nothing
+   * moved on screen, which is exactly what a person reports as "the button does
+   * nothing". The dashboard already converted; the list did not.
+   */
+  api.get('/projects', (_req, res) =>
+    res.json(
+      db()
+        .prepare('SELECT * FROM projects ORDER BY name')
+        .all()
+        .map((p) => ({ ...p, active: Boolean(p.active) })),
+    ),
+  )
 
   /**
    * The objective list carries everything the screen needs without inferring it:
@@ -226,7 +242,10 @@ export function createServer() {
         .prepare(`UPDATE projects SET ${names.map((n) => `${n} = @${n}`).join(', ')}, updated_at = @now WHERE id = @id`)
         .run({ ...fields, now: nowStamp(), id: p.id })
     }
-    res.json(db().prepare('SELECT * FROM projects WHERE id = ?').get(p.id))
+    // Same shape as the list: a PATCH that answered with an integer put the
+    // screen back into the state it had just left.
+    const saved = db().prepare('SELECT * FROM projects WHERE id = ?').get(p.id)
+    res.json({ ...saved, active: Boolean(saved.active) })
   })
 
   api.get('/projects/:slug/objectives', (req, res) => {
