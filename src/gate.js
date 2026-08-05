@@ -232,13 +232,22 @@ export function evaluateGate(objectiveId) {
    * have refused on the halt a step later, without a word.
    */
   const openHalt = db
-    .prepare('SELECT reason FROM halts WHERE objective_id = ? AND resolved_at IS NULL LIMIT 1')
+    .prepare('SELECT reason, detail FROM halts WHERE objective_id = ? AND resolved_at IS NULL LIMIT 1')
     .get(o.id)
 
   if (openHalt) {
+    /**
+     * The halt's OWN reason, not `human_request` for all of them.
+     *
+     * Every open halt was reported under that one label, which means something
+     * precise — a person has to decide — and most halts are not that. An
+     * absorbable `no_new_proof` came back as `human_request`, so the screen said
+     * "a pass stopped here and nothing goes round it" about something the verdict
+     * route clears by itself a second later.
+     */
     return refuse(
-      'human_request',
-      'A halt is still open on this objective; it has to be cleared before concluding.',
+      openHalt.reason,
+      `A halt is still open on this objective (${openHalt.reason}); it has to be cleared before concluding.`,
     )
   }
 
