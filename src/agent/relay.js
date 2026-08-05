@@ -103,6 +103,19 @@ async function startBrowser(port) {
       `--user-data-dir=${CHROME_PROFILE}`,
       '--no-first-run',
       '--no-default-browser-check',
+      /**
+       * Chrome throttles what it thinks nobody is watching.
+       *
+       * Two projects mean two conversation tabs, and only one can be in front:
+       * the other has its timers slowed and its renderer backgrounded, so a
+       * `Runtime.evaluate` that answers in a second when visible takes longer
+       * than the two-minute ceiling when it is not. Both runs stalled at turn 1
+       * on a browser that was reachable, signed in, and holding both
+       * conversations — the page was not broken, it was asleep.
+       */
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
       // Restoring tabs would reopen whatever was on screen when it last died,
       // which is noise the loop then has to search through.
       '--hide-crash-restore-bubble',

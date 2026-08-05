@@ -2923,8 +2923,20 @@ const commands = {
       if (!url) {
         return { ok: false, detail: `${started.detail}, but this project has no conversation recorded` }
       }
-      if (started.health?.conversation) {
-        return { ok: true, detail: `${started.detail}, and a conversation tab is already open` }
+      /**
+       * THIS project's conversation, not any conversation.
+       *
+       * `health.conversation` answers "is a chatgpt tab open", and with several
+       * projects sharing one browser that is a different question. A new project
+       * opened its own thread, the other two were closed, and this errand
+       * reported "a conversation tab is already open" while the two runs that
+       * needed theirs reloaded a tab that no longer existed.
+       */
+      const ouverts = await fetch(`http://127.0.0.1:9222/json/list`)
+        .then((r) => r.json())
+        .catch(() => [])
+      if (ouverts.some((t) => (t.url ?? '').startsWith(url))) {
+        return { ok: true, detail: `${started.detail}, and this project's conversation is already open` }
       }
       await openTab(url)
       return { ok: true, detail: `${started.detail}, and the conversation was opened` }
