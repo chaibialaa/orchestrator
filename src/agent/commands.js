@@ -3156,8 +3156,29 @@ const commands = {
      * question is how a chapter closes on work nobody did.
      */
     let lastSeen = await readJudge(page).catch(() => null)
-    if (lastSeen) {
-      console.log(`  (the conversation already ends on a message; it answers the previous run, not this one)`)
+
+    /**
+     * Ignoring the stale message is only half of it.
+     *
+     * The workflow's first step is to READ an instruction, so a run that
+     * discounts what is already on screen and posts nothing waits for a reply
+     * nobody was asked for — run 64 stopped on `judge_silent` at turn 0 having
+     * done exactly that. Discounting a message and asking a question are the
+     * same act: give the conversation something this run can be answered on.
+     */
+    if (lastSeen && willPost) {
+      briefPosted = true
+      console.log('  (the conversation ends on a message answering the previous run — posting this chapter)')
+      try {
+        const capture = []
+        const real = console.log
+        console.log = (...a) => capture.push(a.join(' '))
+        await commands.brief('--objective', String(chapterId))
+        console.log = real
+        await postToJudgeWrapped(page).evaluate(jsPost(capture.join('\n'))).catch(() => {})
+      } catch (e) {
+        console.error(`  ! could not post the chapter state: ${e?.message ?? e}`)
+      }
     }
     let spent = 0
     let consecutiveEmpty = 0
