@@ -346,20 +346,27 @@ Throughout, **`v = max(R, G, B) / 255`** — the value channel, in `[0, 1]`.
 
 ### Where the dark and the light sit
 
-The six above are global scalars. They say *how much*, never *where*, and
-`shadowShare = 0.104` cannot tell a wall left in the dark against a lit façade
-from a grey veil laid evenly over the frame. The following four carry a position.
-The sample is cut into a grid of **exactly 8 × 8 = 64 tiles**, which is fixed in
-the code and deliberately not reachable from the command line: a grid figure a
-caller could vary at the moment of proving is a lever for choosing the result
-afterwards.
+The six above are global scalars. The two contractual spatial tension axes are:
+
+| Key | What it is | Thresholds |
+|---|---|---|
+| `tileShadowSpread` | `max(tileShadowShares) − min(tileShadowShares)` on a fixed row-major **4 × 4** grid; dark means `v < 0.15` | `--min-tile-shadow-spread`, `--max-tile-shadow-spread` |
+| `subjectKeyFillAdvantage` | central-third key/fill range minus the complementary frame range, in EV: `KF(S) − KF(F)`, with `KF(R)=log2(p90+1/255)−log2(p10+1/255)` | `--min-subject-key-fill-advantage`, `--max-subject-key-fill-advantage` |
+
+The central subject is `[⌊W/3⌋, ⌊2W/3⌋) × [⌊H/3⌋, ⌊2H/3⌋)`. An empty subject or
+frame publishes `null`. Both values are rounded only for publication, to the
+thousandth.
+
+The first #51 implementation remains additively available as **legacy diagnostic
+output**, not as validated contractual tension axes. Its sample is cut into a
+fixed **8 × 8 = 64 tile** grid.
 
 Tiles are cut by `x ∈ [⌊c·W/8⌋, ⌊(c+1)·W/8⌋)`, likewise for rows. Every pixel
 lands in exactly one tile whether or not the side divides by 8; when it does not,
 tiles differ in size by at most one pixel and each share is divided by its own
 tile's count. Tile index is `r · 8 + c`, left to right, top to bottom.
 
-| Key | What it is |
+| Legacy diagnostic key | What it is |
 |---|---|
 | `tileDarkShares` | 64 numbers: the share of pixels with `v < 0.15` in each tile — the same threshold `shadowShare` uses, not a second one |
 | `tileDarkStd` | **population** standard deviation of those 64 shares (divisor 64, not 63: the tiles are not a sample of anything, they are the whole partition) |
@@ -427,7 +434,10 @@ Everything else is appended, so a reader written against the old line still work
   "file": "after.png",
   "saturation": 0.144, "hues": 2, "distinctColours": 69,
   "contrast": 0.169, "shadowShare": 0.018, "highlightShare": 0,
-  "tileDarkShares": [0, 0, 0, "… 64 in all …"],
+  "tileShadowShares": [0, 0, 0, "… 16 in all …"],
+  "tileShadowSpread": 0.339,
+  "subjectKeyFillAdvantage": 1.063,
+  "tileDarkShares": [0, 0, 0, "… 64 legacy diagnostics …"],
   "tileDarkStd": 0.131,
   "frameMedianLuma": 0.567,
   "brightestTileMedianLuma": 1,

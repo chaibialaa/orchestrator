@@ -36,6 +36,9 @@ const run = (...argv) => {
 
 const LEGACY = ['saturation', 'hues', 'distinctColours', 'contrast', 'shadowShare', 'highlightShare']
 const TENSION = [
+  'tileShadowShares',
+  'tileShadowSpread',
+  'subjectKeyFillAdvantage',
   'tileDarkShares',
   'tileDarkStd',
   'frameMedianLuma',
@@ -59,8 +62,25 @@ test('the old invocation still works and still carries the six', () => {
 test('the new keys are added, and the six keep their place at the front', () => {
   const r = run(FLAT, '--json')
   for (const k of TENSION) assert.ok(k in r.json, `${k} missing`)
-  assert.equal(r.json.tileDarkShares.length, 64, 'the 8 × 8 grid is inspectable')
+  assert.equal(r.json.tileShadowShares.length, 16, 'the contractual 4 × 4 grid is inspectable')
+  assert.equal(r.json.tileDarkShares.length, 64, 'the legacy 8 × 8 diagnostic remains inspectable')
   assert.deepEqual(Object.keys(r.json).slice(0, 7), ['file', ...LEGACY], 'the frozen keys did not move')
+})
+
+test('contractual shadow thresholds pass relaxed and fail just beyond the value', () => {
+  const value = run(VARIED, '--json').json.tileShadowSpread
+  assert.equal(run(VARIED, '--min-tile-shadow-spread', String(justBelow(value)), '--json').code, 0)
+  assert.notEqual(run(VARIED, '--min-tile-shadow-spread', String(justAbove(value)), '--json').code, 0)
+  assert.equal(run(VARIED, '--max-tile-shadow-spread', String(justAbove(value)), '--json').code, 0)
+  assert.notEqual(run(VARIED, '--max-tile-shadow-spread', String(justBelow(value)), '--json').code, 0)
+})
+
+test('contractual subject key/fill thresholds pass relaxed and fail just beyond the value', () => {
+  const value = run(VARIED, '--json').json.subjectKeyFillAdvantage
+  assert.equal(run(VARIED, '--min-subject-key-fill-advantage', String(justBelow(value)), '--json').code, 0)
+  assert.notEqual(run(VARIED, '--min-subject-key-fill-advantage', String(justAbove(value)), '--json').code, 0)
+  assert.equal(run(VARIED, '--max-subject-key-fill-advantage', String(justAbove(value)), '--json').code, 0)
+  assert.notEqual(run(VARIED, '--max-subject-key-fill-advantage', String(justBelow(value)), '--json').code, 0)
 })
 
 test('without a reference there are no delta keys at all', () => {

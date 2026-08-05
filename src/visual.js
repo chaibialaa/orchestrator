@@ -115,7 +115,8 @@ function sample(file, side = 96) {
  * caller could vary at the moment of proving is a lever for choosing the result
  * afterwards.
  */
-export const TENSION_GRID = 8
+export const TENSION_GRID = 4
+const LEGACY_DIAGNOSTIC_GRID = 8
 
 /** The value axis of `toHsv`, on its own: v = max(R, G, B) / 255. */
 const lumaOf = (r, g, b) => Math.max(r, g, b) / 255
@@ -137,6 +138,37 @@ function median(values) {
   return n % 2 ? v[(n - 1) / 2] : (v[n / 2 - 1] + v[n / 2]) / 2
 }
 
+/** Rank percentile used by the frozen contrast metric: sorted[floor(q*n)]. */
+function percentile(values, q) {
+  if (!values.length) return null
+  const sorted = Float64Array.from(values).sort()
+  return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]
+}
+
+function darkShares(lumas, width, height, grid) {
+  const edge = (i, n) => Math.floor((i * n) / grid)
+  const shares = new Float64Array(grid * grid)
+  for (let row = 0; row < grid; row++) {
+    const y0 = edge(row, height)
+    const y1 = edge(row + 1, height)
+    for (let col = 0; col < grid; col++) {
+      const x0 = edge(col, width)
+      const x1 = edge(col + 1, width)
+      let count = 0
+      let dark = 0
+      for (let y = y0; y < y1; y++) {
+        const base = y * width
+        for (let x = x0; x < x1; x++) {
+          count++
+          if (lumas[base + x] < DARK) dark++
+        }
+      }
+      shares[row * grid + col] = count ? dark / count : 0
+    }
+  }
+  return shares
+}
+
 /**
  * The spatial measures, on an already-decoded frame.
  *
@@ -145,7 +177,7 @@ function median(values) {
  * against renderings whose expected values nobody can derive.
  */
 export function tensionMetrics(pixels, width, height) {
-  const G = TENSION_GRID
+  const G = LEGACY_DIAGNOSTIC_GRID
   // Floor-partition: the upper bound of one tile is the lower bound of the next,
   // and ⌊8·W/8⌋ = W. Every pixel lands in exactly one tile whether or not the
   // side divides by 8; tiles then differ in size by at most one pixel, and each
@@ -157,6 +189,41 @@ export function tensionMetrics(pixels, width, height) {
     const p = pixels[i]
     lumas[i] = lumaOf(p[0], p[1], p[2])
   }
+
+  // #50 contractual shadow axis: a fixed 4×4 row-major grid and the exact
+  // max-minus-min range of the sixteen unrounded per-tile dark shares.
+  const shadowShares = darkShares(lumas, width, height, TENSION_GRID)
+  const tileShadowSpread = shadowShares.length
+    ? Math.max(...shadowShares) - Math.min(...shadowShares)
+    : 0
+
+  // #50 contractual subject-vs-frame axis. The subject is the central third
+  // on each axis; the frame is its complement. Percentiles use the same rank
+  // convention as frozen contrast, and epsilon is one 8-bit code value.
+  const subject = []
+  const surroundingFrame = []
+  const sx0 = Math.floor(width / 3)
+  const sx1 = Math.floor((2 * width) / 3)
+  const sy0 = Math.floor(height / 3)
+  const sy1 = Math.floor((2 * height) / 3)
+  for (let y = 0; y < height; y++) {
+    const base = y * width
+    for (let x = 0; x < width; x++) {
+      const target = x >= sx0 && x < sx1 && y >= sy0 && y < sy1 ? subject : surroundingFrame
+      target.push(lumas[base + x])
+    }
+  }
+  const keyFill = (region) => {
+    const p90 = percentile(region, 0.9)
+    const p10 = percentile(region, 0.1)
+    if (p90 === null || p10 === null) return null
+    const epsilon = 1 / 255
+    return Math.log2(p90 + epsilon) - Math.log2(p10 + epsilon)
+  }
+  const subjectKeyFill = keyFill(subject)
+  const frameKeyFill = keyFill(surroundingFrame)
+  const subjectKeyFillAdvantage =
+    subjectKeyFill === null || frameKeyFill === null ? null : subjectKeyFill - frameKeyFill
 
   const shares = new Float64Array(G * G)
   let brightest = null
@@ -202,6 +269,12 @@ export function tensionMetrics(pixels, width, height) {
   const ratio = frame && brightest !== null ? brightest / frame : null
 
   return {
+    tileShadowShares: Array.from(shadowShares, round3),
+    tileShadowSpread: round3(tileShadowSpread),
+    subjectKeyFillAdvantage:
+      subjectKeyFillAdvantage === null ? null : round3(subjectKeyFillAdvantage),
+    // Legacy diagnostics retained additively for consumers of the first #51
+    // pass. They are not contractual tension axes after the 2026-08-05 review.
     tileDarkShares: Array.from(shares, round3),
     tileDarkStd: round3(Math.sqrt(variance)),
     frameMedianLuma: frame === null ? null : round3(frame),
@@ -257,6 +330,9 @@ const toHsv = (r, g, b) => {
  */
 export function measureImage(file, side = 96) {
   const { pixels, width, height } = sample(file, side)
+  if (side === 96 && (width !== 96 || height !== 96 || pixels.length !== 9216)) {
+    throw new Error(`visual sample invariant failed: expected 96x96/9216, got ${width}x${height}/${pixels.length}`)
+  }
   const hsv = pixels.map(([r, g, b]) => toHsv(r, g, b))
 
   const saturation = hsv.reduce((n, [, s]) => n + s, 0) / hsv.length

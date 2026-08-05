@@ -714,9 +714,26 @@ const commands = {
   async prove(passageId, key) {
     if (!passageId || !key) fail(`usage: orchestrator prove <passageId> <${Object.keys(config.proofs).join('|') || 'key'}>`)
 
-    const command = config.proofs[key]
+    /**
+     * A proof may declare WHAT KIND of proof it is.
+     *
+     * Everything ran here was typed `test`, and the gate rightly refuses a `test`
+     * on an api-wide change: it wants something that touched the real world. But
+     * a script that invokes the shipped command eighteen times on real files IS
+     * end-to-end — calling it a unit test was the recording being wrong, not the
+     * rule. Declared as a string it stays `test`, as before; declared as
+     * `{ run, type }` it says what it is.
+     */
+    const declared = config.proofs[key]
+    const command = typeof declared === 'string' ? declared : declared?.run
     if (!command) {
       fail(`Proof “${key}” is not declared in .orchestrator.json — refusing to run an undeclared command.`)
+    }
+
+    const TYPES = ['test', 'e2e', 'invariant', 'screenshot', 'render']
+    const declaredType = typeof declared === 'object' ? declared.type : null
+    if (declaredType && !TYPES.includes(declaredType)) {
+      fail(`Proof “${key}” declares type “${declaredType}” — expected one of ${TYPES.join(', ')}.`)
     }
 
     /**
@@ -740,7 +757,7 @@ const commands = {
     process.stdout.write(output)
 
     await call('POST', `/passages/${passageId}/evidences`, {
-      type: key === 'e2e' ? 'e2e' : 'test',
+      type: declaredType ?? (key === 'e2e' ? 'e2e' : 'test'),
       verdict,
       label: key,
       ref: command,
@@ -2265,6 +2282,8 @@ const commands = {
    *          [--min-hues 7] [--min-saturation 0.5] [--min-contrast 0.6] [--min-shadow 0.08]
    *          [--min-highlight 0.01] [--json]
    *          [--tension-ref same-camera.png]
+   *          [--min-tile-shadow-spread X] [--max-tile-shadow-spread X]
+   *          [--min-subject-key-fill-advantage X] [--max-subject-key-fill-advantage X]
    *          [--min-tile-dark-std X] [--max-tile-dark-std X]
    *          [--min-brightest-tile-ratio X] [--max-brightest-tile-ratio X]
    *          [--min-delta-tile-dark-std X] [--max-delta-tile-dark-std X]
@@ -2290,6 +2309,7 @@ const commands = {
         'usage: orchestrator visual <image.png> [--ref target.png] [--min-colours N] ' +
           '[--min-hues N] [--min-saturation X] [--min-contrast X] [--min-shadow X] [--min-highlight X] ' +
           '[--tension-ref same-camera.png] [--min|--max-tile-dark-std X] ' +
+          '[--min|--max-tile-shadow-spread X] [--min|--max-subject-key-fill-advantage X] ' +
           '[--min|--max-brightest-tile-ratio X] [--min|--max-delta-tile-dark-std X] ' +
           '[--min|--max-delta-brightest-tile-ratio X]',
       )
@@ -2353,10 +2373,15 @@ const commands = {
       `    contrast ${m.contrast} (p95−p5) · shadow ${(m.shadowShare * 100).toFixed(1)}% · ` +
         `highlight ${(m.highlightShare * 100).toFixed(1)}%`,
     )
-    // Where the dark sits rather than how much of it there is — the question the
-    // three lines above cannot answer whatever their values.
+    // The two contractual #50 axes measurable on the D21 corpus.
     say(
-      `    tile dark std ${m.tileDarkStd} (8×8) · brightest tile / frame ` +
+      `    tile shadow spread ${m.tileShadowSpread} (4×4) · subject key/fill advantage ` +
+        `${m.subjectKeyFillAdvantage === null ? '— (no valid subject/frame)' : `${m.subjectKeyFillAdvantage} EV`}`,
+    )
+    // Compatibility diagnostics from the first #51 pass. They remain readable
+    // and gateable, but are no longer presented as validated tension axes.
+    say(
+      `    legacy diagnostics: tile dark std ${m.tileDarkStd} (8×8) · brightest tile / frame ` +
         `${m.brightestTileMedianRatio === null ? '— (frame median 0)' : m.brightestTileMedianRatio}`,
     )
     if (delta) {
@@ -2395,6 +2420,9 @@ const commands = {
       highlightShare: m.highlightShare,
       // Appended, never inserted: the six above keep their names, their values
       // and their place, so a reader written against the old line still works.
+      tileShadowShares: m.tileShadowShares,
+      tileShadowSpread: m.tileShadowSpread,
+      subjectKeyFillAdvantage: m.subjectKeyFillAdvantage,
       tileDarkShares: m.tileDarkShares,
       tileDarkStd: m.tileDarkStd,
       frameMedianLuma: m.frameMedianLuma,
@@ -2448,7 +2476,11 @@ const commands = {
       if (value > want) failures.push(`${label} ${value} > ${want}`)
     }
 
-    floor('min-tile-dark-std', 'tile dark std', m.tileDarkStd)
+    floor('min-tile-shadow-spread', 'tile shadow spread', m.tileShadowSpread)
+    ceiling('max-tile-shadow-spread', 'tile shadow spread', m.tileShadowSpread)
+    floor('min-subject-key-fill-advantage', 'subject key/fill advantage', m.subjectKeyFillAdvantage)
+    ceiling('max-subject-key-fill-advantage', 'subject key/fill advantage', m.subjectKeyFillAdvantage)
+    floor('min-tile-dark-std', 'legacy tile dark std', m.tileDarkStd)
     ceiling('max-tile-dark-std', 'tile dark std', m.tileDarkStd)
     floor('min-brightest-tile-ratio', 'brightest tile ratio', m.brightestTileMedianRatio)
     ceiling('max-brightest-tile-ratio', 'brightest tile ratio', m.brightestTileMedianRatio)
@@ -2508,6 +2540,10 @@ const commands = {
      * enough to a floor to leave a settled sentence alone.
      */
     const TENSION_FLAGS = [
+      'min-tile-shadow-spread',
+      'max-tile-shadow-spread',
+      'min-subject-key-fill-advantage',
+      'max-subject-key-fill-advantage',
       'min-tile-dark-std',
       'max-tile-dark-std',
       'min-brightest-tile-ratio',
