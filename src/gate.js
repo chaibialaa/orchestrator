@@ -33,6 +33,54 @@ export const HUMAN_HALTS = [
  */
 const NOT_CONVERGING_AFTER = 6
 
+/**
+ * However well it is converging, this many attempts is a method problem.
+ *
+ * Without it, a quantity improving by a tenth each pass would run for ever, and
+ * "it is moving" would become the excuse that patience always finds.
+ */
+const HARD_CEILING = 12
+
+/**
+ * Has any measured quantity come CLOSER to its target since the run before?
+ *
+ * The rule above counts passing proofs, so a chapter converging slowly looks
+ * exactly like a dead one. Chapter 6 spent six passes at a steady
+ * `9 PASS / 1 FAIL` while the palette distance went from 62.3 to 49.0 — real
+ * work, invisible to a verdict, and stopped by this rule as if nothing had
+ * happened.
+ *
+ * Only what a proof states itself, through `PROGRESS <name> <value> <target>`.
+ * Nothing is inferred from prose, and a gate that says nothing falls back to the
+ * old rule unchanged — so adopting this costs nothing and skips nobody.
+ */
+function rapproche(db, objectiveId) {
+  const runs = db
+    .prepare(
+      `SELECT payload FROM evidences
+       WHERE objective_id = @id AND payload IS NOT NULL AND payload LIKE '%progress%'
+       ORDER BY id DESC LIMIT 2`,
+    )
+    .all({ id: objectiveId })
+    .map((e) => json.read(e.payload, {})?.progress)
+    .filter(Array.isArray)
+
+  if (runs.length < 2) return null
+
+  const [maintenant, avant] = runs
+  for (const m of maintenant) {
+    const a = avant.find((x) => x.name === m.name)
+    if (!a) continue
+    // Closer, whichever side of the target it started on.
+    const ecartAvant = Math.abs(a.value - a.target)
+    const ecartMaintenant = Math.abs(m.value - m.target)
+    if (ecartMaintenant < ecartAvant) {
+      return `${m.name} moved from ${a.value} to ${m.value}, target ${m.target}`
+    }
+  }
+  return null
+}
+
 const refuse = (reason, detail) => ({ ok: false, reason, detail, ready: false })
 
 /** Who pronounced this proof, if it is a judgement. Otherwise, nobody. */
@@ -321,12 +369,22 @@ export function canStart(objectiveId) {
   // attempt billed again — and the loop is what keeps relaunching it.
   const { attempts, spent } = attemptsSinceProof(o.id)
   if (attempts >= NOT_CONVERGING_AFTER) {
-    return refuse(
-      'not_converging',
-      `${attempts} attempts since the last passing proof` +
-        (spent ? `, $${spent.toFixed(0)} spent` : '') +
-        '. Trying again changes nothing on its own: the criterion or the approach has to change.',
-    )
+    const avance = rapproche(db, o.id)
+    if (!avance) {
+      return refuse(
+        'not_converging',
+        `${attempts} attempts since the last passing proof` +
+          (spent ? `, $${spent.toFixed(0)} spent` : '') +
+          '. Trying again changes nothing on its own: the criterion or the approach has to change.',
+      )
+    }
+    if (attempts >= HARD_CEILING) {
+      return refuse(
+        'not_converging',
+        `${attempts} attempts. ${avance} — but a measure creeping towards its target over that many ` +
+          'passes is a problem of method, not of patience.',
+      )
+    }
   }
 
   const blockingHalt = db

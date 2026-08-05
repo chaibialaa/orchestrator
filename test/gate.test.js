@@ -217,3 +217,51 @@ test('le verdict d’une personne conclut, même quand le juge du projet est GPT
   const g = evaluateGate(o)
   assert.equal(g.ok, true, 'le verdict humain suffit')
 })
+
+test('une grandeur qui se rapproche vaut mieux qu’un verdict qui ne bouge pas', () => {
+  // Le chapitre 6 a passé six passes à `9 PASS / 1 FAIL` pendant que la distance
+  // de palette allait de 62,3 à 49,0. Du travail réel, invisible pour un verdict,
+  // et arrêté par cette règle comme s'il ne s'était rien passé.
+  const o = objectif()
+  // Une preuve qui passe D'ABORD : sinon la porte refuse plus tôt, sur
+  // « rien de neuf n'a été produit », et n'atteint jamais cette règle-ci.
+  preuve(o, { type: 'test' })
+  verdict(o)
+  // La preuve doit être ANTÉRIEURE aux tentatives : les horodatages sont à la
+  // seconde, et tout inséré dans la même seconde ne se distingue pas.
+  db.prepare("UPDATE evidences SET created_at = datetime('now','-2 hours') WHERE objective_id = ?").run(o)
+
+  const passe = () =>
+    db
+      .prepare(
+        "INSERT INTO passages (objective_id,harness,started_at,ended_at,prevented) VALUES (?,'claude',datetime('now'),datetime('now'),0)",
+      )
+      .run(o)
+  for (let i = 0; i < 7; i++) passe()
+
+  assert.equal(canStart(o).reason, 'not_converging', 'sans mesure, sept tentatives arrêtent tout')
+
+  const dire = (valeur) =>
+    preuve(o, {
+      type: 'test',
+      verdict: 'fail',
+      payload: JSON.stringify({ output: 'GATE FAIL', progress: [{ name: 'palette', value: valeur, target: 40 }] }),
+    })
+
+  dire(62.3)
+  assert.equal(canStart(o).reason, 'not_converging', 'une seule mesure ne dit rien d’un mouvement')
+
+  dire(49.0)
+  assert.notEqual(canStart(o).reason, 'not_converging', 'elle s’est rapprochée : ça travaille')
+
+  // Et qui s'en éloigne ne travaille pas.
+  dire(58.0)
+  assert.equal(canStart(o).reason, 'not_converging')
+
+  // Le plafond dur tient, même en convergeant.
+  dire(41.0)
+  assert.notEqual(canStart(o).reason, 'not_converging')
+  for (let i = 0; i < 6; i++) passe()
+  dire(40.5)
+  assert.equal(canStart(o).reason, 'not_converging', 'douze tentatives : c’est la méthode, pas la patience')
+})

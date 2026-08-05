@@ -783,7 +783,7 @@ const commands = {
       label: key,
       ref: command,
       // Bounded: a proof that prints a megabyte is a proof nobody reads either.
-      payload: { output: output.slice(-4000) },
+      payload: { output: output.slice(-4000), ...ditParSaSortie(output) },
     })
     console.log(`proof “${key}” → ${verdict}`)
     if (verdict === 'fail') process.exit(1)
@@ -4088,10 +4088,14 @@ const commands = {
       // Kept from turn to turn so the report can say whether anything moved. The
       // comparison is the whole point: one measurement is a fact, two are a
       // trend, and #11 needed the trend.
+      // Rejouées MAINTENANT, pas relues depuis un rapport : c'est toute la
+      // différence entre ce qui est vrai et ce qu'une session a dit être vrai.
+      const mesures = await mesuresDuTour(chapterId).catch(() => null)
       const report = buildReport(turn, directive, {
         ...outcome,
         joints,
         measured,
+        mesures,
         previous: measuredLastTurn,
       })
       if (measured.length) measuredLastTurn = measured
@@ -4619,6 +4623,91 @@ function codexPricing(model) {
     .sort((a, b) => b.length - a.length)
     .find((k) => (model ?? '').startsWith(k))
   return key ? table[key] : null
+}
+
+/**
+ * Three things a proof may say about itself, in a line a machine can read.
+ *
+ *   BLOCKING  <id> <text>      this is why the exit code is not zero
+ *   OBSERVED  <id> <text>      measured and reported; it does not decide
+ *   PROGRESS  <name> <value> <target>
+ *
+ * Nothing is sniffed out of prose. A gate that says none of this behaves exactly
+ * as before, so adoption costs nothing and breaks nothing.
+ *
+ * Why it exists. Chapter 6 lost six passes because nothing separated the ONE
+ * check that fails the gate from the three it merely reports — the gate itself
+ * knew, in a `governs_exit` flag nobody read, and the passes worked on all four
+ * at once. And the rule that stops a chapter counts PASSING proofs, so a
+ * chapter converging slowly looks identical to a dead one: over those same six
+ * passes the score stayed `9 PASS / 1 FAIL` while the palette distance went from
+ * 62.3 to 49.0. A verdict cannot show that. A distance can.
+ */
+/**
+ * Replay the declared proofs and hand the judge what they MEASURED.
+ *
+ * The report already carried "Scores recorded" — read out of the session's own
+ * prose. So the conversation wrote each next mission against an account of the
+ * work rather than against the work, and it took eight passes on chapter 6 to
+ * arrive at the number the gate had been printing the whole time.
+ *
+ * Only proofs this objective has already been measured with: running everything
+ * a project declares would spend minutes proving things nobody asked about.
+ * Whatever they print goes in verbatim — no summary, no interpretation.
+ */
+async function mesuresDuTour(objectiveId) {
+  const attachees = await call('GET', `/objectives/${objectiveId}`, null, { soft: true }).catch(() => null)
+  if (!attachees) return null
+
+  const evs = [
+    ...(attachees.evidences ?? []),
+    ...(attachees.passages ?? []).flatMap((p) => p.evidences ?? []),
+  ]
+  const cles = [...new Set(evs.map((e) => e.label))].filter((l) => config.proofs?.[l])
+  if (!cles.length) return null
+
+  const blocs = []
+  for (const cle of cles) {
+    const declare = config.proofs[cle]
+    const commande = typeof declare === 'string' ? declare : declare?.run
+    if (!commande) continue
+
+    let sortie = ''
+    let code = 0
+    try {
+      sortie = execFileSync('/bin/sh', ['-c', commande], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 5 * 60 * 1000,
+      })
+    } catch (e) {
+      code = e.status ?? 1
+      sortie = `${e.stdout ?? ''}${e.stderr ?? ''}`
+    }
+    blocs.push({ cle, code, sortie: sortie.trim().split('\n').slice(-25).join('\n') })
+  }
+  return blocs.length ? blocs : null
+}
+
+export function ditParSaSortie(sortie) {
+  const bloquants = []
+  const observes = []
+  const progres = []
+
+  for (const ligne of String(sortie ?? '').split('\n')) {
+    let m
+    if ((m = ligne.match(/^\s*BLOCKING\s+(\S+)\s*(.*)$/))) bloquants.push({ id: m[1], text: m[2].trim() })
+    else if ((m = ligne.match(/^\s*OBSERVED\s+(\S+)\s*(.*)$/))) observes.push({ id: m[1], text: m[2].trim() })
+    else if ((m = ligne.match(/^\s*PROGRESS\s+(\S+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s*$/))) {
+      progres.push({ name: m[1], value: Number(m[2]), target: Number(m[3]) })
+    }
+  }
+
+  const dit = {}
+  if (bloquants.length) dit.blocking = bloquants
+  if (observes.length) dit.observed = observes
+  if (progres.length) dit.progress = progres
+  return dit
 }
 
 export function codexDiagnostics(file) {
@@ -5759,6 +5848,20 @@ function buildReport(turn, directive, outcome) {
     `**What had to be true** ${outcome.proofSpec ?? '(not specified)'}`,
     '',
   ]
+
+  /**
+   * The measurement first, before anything the session says about itself.
+   *
+   * Whatever follows is an account; this is what a command returned when it was
+   * run again, just now. Where the two disagree, the disagreement is visible in
+   * one screen rather than discovered eight passes later.
+   */
+  if (outcome.mesures?.length) {
+    lines.push('**Measured again, after this turn**', '')
+    for (const m of outcome.mesures) {
+      lines.push(`\`${m.cle}\` — exit ${m.code}`, '```', m.sortie, '```', '')
+    }
+  }
 
   if (outcome.resultats?.scores?.length) {
     lines.push('**Scores recorded**')
