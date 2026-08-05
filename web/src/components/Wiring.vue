@@ -32,12 +32,33 @@ onMounted(() => {
 })
 onUnmounted(() => window.clearInterval(timer))
 
+/**
+ * What `refused` means depends on how the thing is reached.
+ *
+ * "present but refusing" reads as: it is there, and it is declining. For a
+ * browser-reached service that is the wrong subject — what is present is the
+ * BROWSER; nothing of Poly Haven is there at all, the detail says so plainly
+ * ("no polyhaven.com tab"), and someone reading the page reported all three as
+ * available. A CLI or an API that answers and says no IS refusing; a site with
+ * no tab open is simply not open.
+ */
 const REACH = {
   ok: { word: 'reachable', color: 'text-proof', dot: 'bg-proof' },
-  refused: { word: 'present but refusing', color: 'text-halt', dot: 'bg-halt' },
+  refused: { word: 'refusing', color: 'text-halt', dot: 'bg-halt' },
   absent: { word: 'not found', color: 'text-fail', dot: 'bg-fail' },
   unknown: { word: 'never checked', color: 'text-ink-500', dot: 'bg-ink-700' },
 } as const
+
+const mot = (a: { reach?: string; reachable?: string; detail?: string | null }) => {
+  const base = REACH[(a.reachable ?? 'unknown') as keyof typeof REACH] ?? REACH.unknown
+  if (a.reachable === 'refused' && a.reach === 'browser') {
+    return {
+      ...base,
+      word: /aucun onglet|no .* tab/i.test(a.detail ?? '') ? 'no tab open for it' : 'signed out',
+    }
+  }
+  return base
+}
 
 const KIND = {
   model: 'model',
@@ -81,14 +102,14 @@ const shortName = (t: string) => t.replace(/^mcp__[^_]+(?:_[^_]+)*?__/, '')
           class="py-2 grid items-baseline gap-x-3 gap-y-0.5
                  grid-cols-[auto_minmax(0,1fr)_auto] sm:grid-cols-[auto_minmax(0,1fr)_9rem_auto]"
         >
-          <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" :class="REACH[a.reachable].dot" />
+          <span class="w-1.5 h-1.5 rounded-full self-center shrink-0" :class="mot(a).dot" />
 
           <span class="text-ink-100 truncate" :class="a.enabled ? '' : 'opacity-50'" :title="a.label">
             {{ a.label }}
           </span>
 
-          <span class="hidden sm:block text-[11px] truncate" :class="REACH[a.reachable].color">
-            {{ REACH[a.reachable].word }}
+          <span class="hidden sm:block text-[11px] truncate" :class="mot(a).color">
+            {{ mot(a).word }}
           </span>
 
           <!-- Declared vs exercised. A capability nobody has run is a guess. -->
