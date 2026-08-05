@@ -4393,7 +4393,7 @@ function codexPricing(model) {
   return key ? table[key] : null
 }
 
-function codexDiagnostics(file) {
+export function codexDiagnostics(file) {
   const denied = new Set()
   const tools = {}
   let lastMessage = null
@@ -4419,8 +4419,24 @@ function codexDiagnostics(file) {
     // `model` were declared here, assigned nowhere, returned nowhere, while the
     // rollout carried a `token_count` event on every turn all along.
     if (p?.type === 'token_count' && p.info?.total_token_usage) usage = p.info.total_token_usage
-    if (p?.type === 'turn_context' && p.model) model = p.model
-    if (p?.type === 'session_meta' && p.payload?.model) model = p.payload.model
+    /**
+     * Where Codex writes the model — and where it USED to.
+     *
+     * It moved. Older rollouts carry it on `turn_context`; the current ones put
+     * it in `thread_settings_applied.thread_settings.model` and leave
+     * `turn_context` without it. Reading only the old places found nothing, so
+     * seventeen passes were recorded with no model, no rate could match, and the
+     * screen sent someone to declare a price that was already declared and
+     * already correct — `gpt-5.6-sol`, sitting in the file the message pointed at.
+     *
+     * All three are read, newest first, because a rate that cannot be matched is
+     * indistinguishable from a rate nobody set.
+     */
+    if (p?.type === 'thread_settings_applied' && p.thread_settings?.model) {
+      model = p.thread_settings.model
+    }
+    if (!model && p?.type === 'turn_context' && p.model) model = p.model
+    if (!model && p?.type === 'session_meta' && p.payload?.model) model = p.payload.model
 
     // Codex names its tools differently: `custom_tool_call` for its own, plus the
     // MCP calls. Counting both is what lets anyone see where a pass spent itself.

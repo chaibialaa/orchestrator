@@ -242,22 +242,20 @@ const done = computed(() => objectives.value.filter((o) => o.status === 'proven'
       <!-- Who closes an objective here. It could only be chosen when the project
            was created, so taking the decision back — or handing it over — meant
            editing the database by hand. -->
-      <!-- Set aside, or picked back up.
-           Four projects were registered and two were in hand, so half of what the
-           overview called "waiting on you" was waiting on a decision nobody meant
-           to take this month. Nothing is deleted and nothing is stopped: an
-           inactive project simply stops filling that queue. -->
+      <!-- The state, then what pressing it will DO.
+           This was one chip showing the current state — "set aside" — which
+           reads as an order, not as a status. Pressing it to set the project
+           aside turned it back on, and the overview filled up again with a
+           project someone had just tried to put away. A button says what it
+           will do; a word says what is. -->
+      <span class="ml-auto text-[11px]" :class="project.active ? 'text-proof' : 'text-ink-500'">
+        {{ project.active ? 'being worked on' : 'set aside' }}
+      </span>
       <button
-        class="chip ml-auto"
-        :class="!project.active ? 'border-ink-700 text-ink-500' : 'border-proof/50 text-proof'"
-        :title="
-          !project.active
-            ? 'Set aside — it fills nothing on the overview'
-            : 'Being worked on — it can put things in your queue'
-        "
+        class="chip border-ink-700 text-ink-400 hover:border-ink-500 hover:text-ink-200"
         @click="setActive(!project.active)"
       >
-        {{ !project.active ? 'set aside' : 'active' }}
+        {{ project.active ? 'set it aside' : 'pick it back up' }}
       </button>
 
       <label class="flex items-center gap-2 text-[11px] text-ink-500">

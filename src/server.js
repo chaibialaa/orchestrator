@@ -1399,7 +1399,12 @@ export function createServer() {
            (SELECT COUNT(*) FROM passages  WHERE objective_id=o.id) passages,
            (SELECT COALESCE(SUM(cost_usd),0) FROM passages WHERE objective_id=o.id) cost_usd
          FROM objectives o JOIN projects p ON p.id = o.project_id
-         WHERE o.status IN ('in_progress','blocked','ready')`,
+         -- Only projects being worked on. The dashboard's "needs you" takes its
+         -- COUNT from attention() and its CARDS from here: filtering one and not
+         -- the other left a project that had just been set aside still sitting in
+         -- the queue, under a heading that no longer counted it. Two sources for
+         -- one section is how a screen ends up disagreeing with itself.
+         WHERE o.status IN ('in_progress','blocked','ready') AND p.active = 1`,
       )
       .all()
       .map((l) => ({ ...l, ...evaluateGate(l.id) }))
