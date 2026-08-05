@@ -310,6 +310,28 @@ function survivable(inner, { match, port, openIfMissing }) {
       await new Promise((r) => setTimeout(r, 500))
     }
     cur = await attachOnce(match, port, { openIfMissing })
+
+    /**
+     * Wait for the CONVERSATION, not for the tab.
+     *
+     * `openTab` returns as soon as the target is attachable, which is seconds
+     * before React has drawn a single message — and a read at that moment comes
+     * back with an empty thread. `reload` already waits for this; the reopen path
+     * did not, so recovering from a dead tab handed the loop a conversation that
+     * looked like it had never said anything. Measured on a real reopen: the
+     * first call after it returned nothing at all.
+     */
+    for (let i = 0; i < 60; i++) {
+      const dessine = await cur
+        .evaluate(`document.querySelectorAll('[data-message-author-role]').length`, {
+          timeoutMs: 5000,
+          retries: 0,
+        })
+        .catch(() => 0)
+      if (Number(dessine) > 0) return true
+      await new Promise((r) => setTimeout(r, 1000))
+    }
+    console.error('    ! reopened, but the conversation never drew a message')
     return true
   }
 
