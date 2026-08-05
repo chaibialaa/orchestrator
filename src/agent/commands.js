@@ -730,6 +730,27 @@ const commands = {
       fail(`Proof “${key}” is not declared in .orchestrator.json — refusing to run an undeclared command.`)
     }
 
+    /**
+     * A command that cannot fail is not a proof.
+     *
+     * Four were declared as `echo '... to be wired up' && true`: placeholders for
+     * an intention, recorded as passing every time anyone asked. Nothing cited
+     * them, so nothing broke — but the day a criterion had, it would have been
+     * settled by a command whose only possible outcome is success. That is the
+     * exact shape this whole tool exists to refuse, sitting inside the tool.
+     *
+     * Narrow on purpose: only the forms that provably cannot fail. A real command
+     * that happens to always pass today is a different thing, and not detectable.
+     */
+    const inerte = /^\s*(true|:)\s*$|^\s*echo\b[^|;&]*(&&\s*(true|:)\s*)?$/
+    if (inerte.test(command)) {
+      fail(
+        `Proof “${key}” runs \`${command.trim()}\`, which cannot fail. A proof that always passes ` +
+          'is worse than no proof: it settles a criterion without measuring anything. Remove it, or ' +
+          'point it at something that can return non-zero.',
+      )
+    }
+
     const TYPES = ['test', 'e2e', 'invariant', 'screenshot', 'render']
     const declaredType = typeof declared === 'object' ? declared.type : null
     if (declaredType && !TYPES.includes(declaredType)) {

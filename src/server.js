@@ -1,7 +1,7 @@
 import express from 'express'
 import { execFileSync } from 'node:child_process'
 const { X_OK } = constants
-import { existsSync, statSync, createReadStream, accessSync, constants, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, statSync, createReadStream, accessSync, constants, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { resolve as path, join, extname, basename, dirname } from 'node:path'
 import { homedir } from 'node:os'
@@ -833,6 +833,39 @@ export function createServer() {
         )
         .all(p.id)
         .map((d) => ({ ...d, paths: json.read(d.paths, []) })),
+
+      /**
+       * The documents, finally travelling.
+       *
+       * The agent side already iterated `recall.resources` and printed each one
+       * with its content — that loop has been there all along, reading a key this
+       * route never sent. So the memory page promised "what the tool brings back
+       * when a session starts", the include switch decided nothing, and the
+       * consumer sat waiting on a field that did not exist.
+       *
+       * A small text file travels whole; anything else travels as a link, because
+       * a megabyte of image in a prompt helps nobody.
+       */
+      resources: db()
+        .prepare('SELECT * FROM resources WHERE project_id = ? AND included = 1 ORDER BY id')
+        .all(p.id)
+        .map((r) => {
+          const absolute = r.path ? join(dirname(dbPathOf()), r.path) : null
+          const present = Boolean(absolute && existsSync(absolute))
+          const inline =
+            present && readable(r.mime, r.name) && statSync(absolute).size <= INLINE_MAX
+              ? readFileSync(absolute, 'utf8')
+              : null
+          return {
+            name: r.name,
+            summary: r.summary,
+            content: inline,
+            // Named rather than silently dropped: a document marked to travel and
+            // missing from disk is a fact the agent should see, not a blank.
+            url: present ? `/api/resources/${r.id}/raw` : null,
+            missing: !present,
+          }
+        }),
     })
   })
 
@@ -3422,6 +3455,86 @@ export function createServer() {
   })
 
   /**
+   * Where the documents live: beside the database, never inside a repository.
+   * A file dropped into a working tree becomes a change to review, attributed to
+   * whichever pass happens to run next.
+   */
+  const resourcesDir = (slug) => {
+    const dir = join(dirname(dbPathOf()), 'resources', slug)
+    mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
+  /** Small text files travel WITH the memory; anything else travels as a link. */
+  const INLINE_MAX = 32 * 1024
+  const readable = (mime, name) =>
+    /^text\//.test(mime ?? '') || /\.(md|txt|json|csv|log|ya?ml)$/i.test(name ?? '')
+
+  api.post('/projects/:slug/resources', (req, res) => {
+    const p = projectBy(req.params.slug)
+    const b = req.body ?? {}
+    const name = String(b.name ?? '').trim()
+    if (!name || /[/\\]/.test(name)) throw new Rejected('A file name, without a path.')
+
+    const data = Buffer.from(String(b.data ?? ''), 'base64')
+    if (!data.length) throw new Rejected('The file arrived empty.')
+    if (data.length > 5 * 1024 * 1024) throw new Rejected('Too big — 5 MB at most for a memory document.')
+
+    const sha = createHash('sha256').update(data).digest('hex')
+    const safe = `${sha.slice(0, 40)}${extname(name).slice(0, 12)}`
+    writeFileSync(join(resourcesDir(p.slug), safe), data)
+
+    const r = db()
+      .prepare(
+        `INSERT INTO resources (project_id,name,kind,mime,size,summary,path,sha256,included)
+         VALUES (?,?,?,?,?,?,?,?,1)`,
+      )
+      .run(p.id, name, 'document', b.mime ?? null, data.length, b.summary?.trim() || null,
+           `resources/${p.slug}/${safe}`, sha)
+
+    const saved = db().prepare('SELECT * FROM resources WHERE id = ?').get(r.lastInsertRowid)
+    res.status(201).json({ ...saved, included: true, file_exists: true })
+  })
+
+  api.get('/resources/:id/raw', (req, res) => {
+    const r = db().prepare('SELECT * FROM resources WHERE id = ?').get(req.params.id)
+    if (!r) throw new Rejected('This document does not exist.', 404)
+    const absolute = join(dirname(dbPathOf()), r.path ?? '')
+    if (!r.path || !existsSync(absolute)) throw new Rejected('The row is here; the file is not.', 404)
+    res.set('Content-Type', r.mime ?? 'application/octet-stream')
+    res.set('Content-Disposition', `inline; filename="${basename(r.name)}"`)
+    createReadStream(absolute).pipe(res)
+  })
+
+  api.patch('/resources/:id', (req, res) => {
+    const r = db().prepare('SELECT * FROM resources WHERE id = ?').get(req.params.id)
+    if (!r) throw new Rejected('This document does not exist.', 404)
+    const b = req.body ?? {}
+    // Only what a person can decide about a document: whether it travels, and
+    // what it is for. Never its bytes, its size or its fingerprint.
+    if ('included' in b) db().prepare('UPDATE resources SET included = ? WHERE id = ?').run(b.included ? 1 : 0, r.id)
+    if ('summary' in b) db().prepare('UPDATE resources SET summary = ? WHERE id = ?').run(String(b.summary ?? '').trim() || null, r.id)
+    const saved = db().prepare('SELECT * FROM resources WHERE id = ?').get(r.id)
+    res.json({
+      ...saved,
+      included: Boolean(saved.included),
+      file_exists: Boolean(saved.path && existsSync(join(dirname(dbPathOf()), saved.path))),
+    })
+  })
+
+  api.delete('/resources/:id', (req, res) => {
+    const r = db().prepare('SELECT * FROM resources WHERE id = ?').get(req.params.id)
+    if (!r) throw new Rejected('This document does not exist.', 404)
+    // The row goes; the file goes with it, but only ours — a path that escaped
+    // our own directory is left alone rather than followed.
+    const root = join(dirname(dbPathOf()), 'resources')
+    const absolute = r.path ? join(dirname(dbPathOf()), r.path) : null
+    if (absolute && absolute.startsWith(root + '/') && existsSync(absolute)) rmSync(absolute)
+    db().prepare('DELETE FROM resources WHERE id = ?').run(r.id)
+    res.json({ removed: r.id })
+  })
+
+  /**
    * The documents, with the two facts the page was asserting without checking.
    *
    * `file_exists`: every row here pointed at a path, and not one of the files was
@@ -3437,7 +3550,7 @@ export function createServer() {
     const p = projectBy(req.params.slug)
     const root = join(homedir(), '.orchestrator')
     res.json({
-      reaches_agents: false,
+      reaches_agents: true,
       items: db()
         .prepare('SELECT * FROM resources WHERE project_id = ?')
         .all(p.id)

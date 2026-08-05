@@ -919,11 +919,27 @@ export const api = {
     http
       .get<{ reaches_agents: boolean; items: ResourceItem[] }>(`/projects/${slug}/resources`)
       .then((r) => r.data),
-  uploadResource: (slug: string, file: File, summary: string) => {
-    const form = new FormData()
-    form.append('file', file)
-    if (summary) form.append('summary', summary)
-    return http.post<ResourceItem>(`/projects/${slug}/resources`, form).then((r) => r.data)
+  /**
+   * Base64, like attachments — the server has no multipart parser, and adding one
+   * for a single form was a dependency the tool did not need. The upload button
+   * posted multipart to a route that did not exist at all, so this is the second
+   * half of the same repair.
+   */
+  uploadResource: async (slug: string, file: File, summary: string) => {
+    const data = await new Promise<string>((ok, ko) => {
+      const r = new FileReader()
+      r.onload = () => ok(String(r.result).split(',')[1] ?? '')
+      r.onerror = () => ko(r.error)
+      r.readAsDataURL(file)
+    })
+    return http
+      .post<ResourceItem>(`/projects/${slug}/resources`, {
+        name: file.name,
+        mime: file.type || null,
+        summary,
+        data,
+      })
+      .then((r) => r.data)
   },
   updateResource: (id: number, payload: Partial<ResourceItem>) =>
     http.patch<ResourceItem>(`/resources/${id}`, payload).then((r) => r.data),
