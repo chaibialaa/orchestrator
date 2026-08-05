@@ -26,6 +26,10 @@ const RUN_NEEDS_PERSON = [
   'no_progress_budget',
   'no_unity_editor',
   'out_of_turns',
+  // The machine stopped the worker mid-run — a restart, an update, a reboot.
+  // Nothing is wrong with the work; it simply needs launching again, and until
+  // somebody does, nothing will.
+  'worker_stopped',
 ]
 
 /**

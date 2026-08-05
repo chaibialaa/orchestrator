@@ -3037,6 +3037,54 @@ const commands = {
       ).catch(() => {})
     }
 
+    /**
+     * Say what happened when the machine stops this worker.
+     *
+     * A service restart sends SIGTERM, the process dies where it stands, and the
+     * harness child dies with it. Nothing was recorded, so the run sat `running`
+     * with a dead pid until a sweep noticed, and the reason — somebody restarted
+     * the worker — appeared nowhere at all. It cost two runs tonight, on two
+     * different projects, and both times the record said only that the process
+     * was gone.
+     *
+     * There is no waiting for the turn to finish: launchd follows SIGTERM with
+     * SIGKILL within seconds, and a turn takes minutes. What CAN be done is to
+     * name the interruption before dying, so the run reads as stopped by a
+     * restart rather than as a mystery, and lands in the queue of what needs a
+     * person to relaunch it.
+     */
+    let porte = null
+    for (const signal of ['SIGTERM', 'SIGINT']) {
+      process.on(signal, async () => {
+        if (porte) {
+          /**
+           * Awaited, not fired and forgotten.
+           *
+           * The first version posted and exited three hundred milliseconds later;
+           * the request never left, and the run stayed `running` exactly as
+           * before. A handler that records nothing is worse than none — it reads
+           * like the case is handled. Two seconds at most: launchd follows with
+           * SIGKILL, and a write that has not landed by then was not going to.
+           */
+          await Promise.race([
+            call(
+              'PATCH',
+              `/runs/${porte}`,
+              {
+                status: 'failed',
+                outcome: 'worker_stopped',
+                error: `the worker carrying it was stopped (${signal})`,
+              },
+              { soft: true },
+            ).catch(() => {}),
+            new Promise((r) => setTimeout(r, 2000)),
+          ])
+          console.error(`\n  ${signal} — run #${porte} was in flight; recorded as stopped by the restart\n`)
+        }
+        process.exit(0)
+      })
+    }
+
     for (;;) {
       await sweepDeadRuns()
       await runChores()
@@ -3070,6 +3118,8 @@ const commands = {
       }
 
       const run = claimed?.run
+      // What this worker is carrying, so a stop signal can name it.
+      porte = run?.id ?? null
       if (!run) {
         await pause(every)
         continue
@@ -3103,6 +3153,7 @@ const commands = {
         const command = { plan: 'plan', judge: 'judge:renew' }[run.mode] ?? 'chapter'
         await commands[command](...argsFor)
         await call('PATCH', `/runs/${run.id}`, { status: 'done' }, { soft: true }).catch(() => {})
+        porte = null
         console.log(`  run #${run.id} — finished\n`)
       } catch (e) {
         // A run that throws must not take the worker with it: the next one in the
