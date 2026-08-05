@@ -34,6 +34,21 @@ async function setJudge(value: string) {
 }
 const savingJudge = ref(false)
 
+/**
+ * How far the project is, as a share rather than a ratio to work out.
+ *
+ * The header carried "13/26" and nothing else: no bar, no percentage, and the
+ * chapters flow in two balanced columns, so there was no way to see how far it
+ * had come without counting cards. Chapters, not steps — a project is read in
+ * chapters, and counting steps would make a chapter with twelve of them look
+ * like most of the game.
+ */
+const chapters = computed(() => objectives.value.filter((o) => !o.parent_id))
+const chaptersDone = computed(() => chapters.value.filter((o) => o.status === 'proven'))
+const pctDone = computed(() =>
+  chapters.value.length ? Math.round((100 * chaptersDone.value.length) / chapters.value.length) : 0,
+)
+
 async function setActive(value: boolean) {
   if (!project.value) return
   project.value = await api.updateProject(props.slug, { active: value })
@@ -170,8 +185,19 @@ const done = computed(() => objectives.value.filter((o) => o.status === 'proven'
       </div>
 
       <dl class="flex items-end gap-7 text-[12px]">
+        <!-- Chapters first: a project is read in chapters, and "13/26" mixed
+             them with their steps into one ratio that answered neither question.
+             Blockrise has 19 chapters and 26 objectives; the header said 26 of
+             both. -->
         <div>
-          <dt class="label">Verified</dt>
+          <dt class="label">Chapters done</dt>
+          <dd class="num text-[18px] text-ink-100 mt-0.5">
+            {{ chaptersDone.length }}<span class="text-ink-600 text-[13px]">/{{ chapters.length }}</span>
+            <span class="text-proof text-[13px] ml-1.5">{{ pctDone }} %</span>
+          </dd>
+        </div>
+        <div>
+          <dt class="label">Steps proven</dt>
           <dd class="num text-[18px] text-ink-100 mt-0.5">
             {{ done.length }}<span class="text-ink-600 text-[13px]">/{{ objectives.length }}</span>
           </dd>
@@ -334,7 +360,7 @@ const done = computed(() => objectives.value.filter((o) => o.status === 'proven'
 
     <!-- The one action this page could not do: start something new. -->
     <div class="flex items-baseline gap-3">
-      <span class="label">Chapters — {{ tree.length }}</span>
+      <span class="label">Chapters — {{ chapters.length }}</span>
       <AddObjective
         class="ml-auto"
         :slug="slug"

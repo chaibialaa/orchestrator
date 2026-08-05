@@ -66,6 +66,20 @@ const roots = computed(() =>
   props.nodes.filter((n) => !n.parent_id).sort((a, b) => a.priority - b.priority || a.id - b.id),
 )
 
+/**
+ * Its place in the order, said out loud.
+ *
+ * The track flows in two balanced COLUMNS, so chapter 3 sits opposite chapter 0
+ * and the sequence is read down the left then down the right. The order is the
+ * plan — it decides what runs next — and the layout was the only thing carrying
+ * it. A rank costs one number and survives any arrangement of the page.
+ */
+const rankOf = computed(() => {
+  const m = new Map<number, number>()
+  roots.value.forEach((r, i) => m.set(r.id, i + 1))
+  return m
+})
+
 function childrenOf(id: number) {
   return props.nodes
     .filter((n) => n.parent_id === id)
@@ -226,6 +240,9 @@ function when(iso: string) {
         >{{ root.status === 'proven' ? '\u25C6' : '\u25C7' }}</span
       >
 
+      <span class="num text-[11px] text-ink-600 shrink-0" title="its place in the running order">
+        {{ rankOf.get(root.id) }}<span class="text-ink-700">/{{ roots.length }}</span>
+      </span>
       <RouterLink :to="`/o/${root.id}`" class="text-ink-100 text-[14px] hover:text-run transition-colors">
         {{ root.title }}
       </RouterLink>
