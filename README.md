@@ -302,6 +302,8 @@ orchestrator prove <id> <key> run a declared proof and file it as evidence
 orchestrator visual <img>     measure a rendering — palette, value range, and
                               where the dark and the light sit; any --min-… or
                               --max-… turns a reading into a pass or fail
+orchestrator visual --diff    every measured number, before → after, signed
+    <before> <after>
 orchestrator import <json>    restore an export
 orchestrator where            where the database lives
 ```
@@ -311,6 +313,8 @@ orchestrator where            where the database lives
 ## `orchestrator visual` — reference
 
 ```
+orchestrator visual --diff <before.png> <after.png> [--json]
+
 orchestrator visual <image.png> [--json] [--ref target.png]
     [--min-saturation X] [--min-hues N] [--min-colours N]
     [--min-contrast X] [--min-shadow X] [--min-highlight X]
@@ -423,6 +427,128 @@ would let a criterion declare a floor that could never fail.
 `--ref` is a **different** option and keeps its meaning: the target you are trying
 to look like, reported as ratios. `--tension-ref` means "the same camera,
 earlier".
+
+### `--diff` — every measured number, before and after
+
+```bash
+orchestrator visual --diff before.png after.png
+orchestrator visual --diff before.png after.png --json
+```
+
+```
+delta = after − before
+```
+
+**The sign is kept**, and no absolute value is ever taken. A value that rose
+prints `+0.141`, one that fell prints `-0.141`, one that did not move prints
+exactly `0.000` with no sign at all. The words `before`, `after` and the formula
+are printed on the report and carried in the JSON, so the order cannot be read
+backwards.
+
+**The compared fields are discovered, never listed.** Every first-level property
+of the mono-image measurement whose value is a JSON number is compared —
+whatever there are of them. There is no `DIFF_FIELDS` constant anywhere: both
+readings are built from the same `publishedMeasurement()` object in
+`src/visual.js`, so a number added there is compared by `--diff` with nothing
+else to update. Today that is **twelve** fields; the count is an observation, not
+a rule.
+
+| Excluded | Why |
+|---|---|
+| `file` | a string, and a filename is not a measure |
+| `tileShadowShares`, `tileDarkShares` | arrays — no scalar delta exists for them |
+| nested objects | not first-level values |
+| `null` | means "not measured"; standing in a 0 would report a fall to zero |
+| booleans, strings | not quantities |
+
+Field order is the key order of `after`, filtered to the numbers — the same
+order the mono-image JSON publishes. `before` is then required to carry exactly
+the same set of numeric keys.
+
+**A field on one side only is refused.** No zero is invented and nothing is
+dropped in silence: the command names the field and the side it is missing from,
+and exits non-zero. Likewise **`NaN` and `Infinity` are refused** rather than
+published — a delta formed on either is not a number anybody can read.
+
+**Rounding.** Each delta is formed on the two **published** values — already at
+the thousandth — and rounded to the thousandth again, so a reader reproduces
+every line by subtracting the two numbers visible in the archived JSON without
+reopening the images. A zero is normalised: `-0` never reaches the output, where
+it would print `-0.000` and read as a fall.
+
+**It measures; it does not gate.** `--diff` accepts no threshold, and no
+mono-image threshold is quietly applied to one of the two sides — that would make
+the flag mean something it does not say. Read one image on its own to gate it.
+
+**Not combinable with `--tension-ref`.** The two are different comparisons and
+neither silently wins: `--diff` is before/after over every numeric field,
+`--tension-ref` is current/reference over two diagnostics. Combining them exits
+non-zero with a message naming both.
+
+**The two frames must come from the same camera, and the CLI does not check
+it.** It reads no filename, correlates no pixels, matches no histogram and opens
+no EXIF, and claims nowhere to have established that the two images share a
+viewpoint. A delta between two different framings is perfectly well defined and
+perfectly meaningless, and it will be computed without complaint. **That
+responsibility is the caller's.**
+
+An image against itself — nothing moved:
+
+```
+  before: docs/after.png
+  after:  docs/after.png
+  delta = after - before
+  12 numeric field(s), discovered from the measurement itself
+
+    saturation                 0.216 ->   0.216      0.000
+    hues                       8.000 ->   8.000      0.000
+    …
+
+  Non-zero fields: 0
+```
+
+A real A/B on one camera — two renderings of the same framing under different
+lighting:
+
+```
+  before: Captures/D21_Artistic/D21_1920x1080_arrival.png
+  after:  Captures/D21_Artistic/1920x1080/D21_1920x1080_arrival.png
+  delta = after - before
+  12 numeric field(s), discovered from the measurement itself
+
+    saturation                 0.144 ->   0.285     +0.141
+    hues                       2.000 ->   9.000     +7.000
+    distinctColours           69.000 -> 216.000   +147.000
+    contrast                   0.169 ->   0.851     +0.682
+    …
+
+  Non-zero fields: 12
+  - saturation: 0.144 -> 0.285 = +0.141
+  …
+```
+
+```json
+{
+  "mode": "diff",
+  "direction": "delta = after - before",
+  "fields": ["saturation", "hues", "… every numeric field …"],
+  "before": { "file": "before.png", "metrics": { "saturation": 0.144, "hues": 2 } },
+  "after":  { "file": "after.png",  "metrics": { "saturation": 0.285, "hues": 9 } },
+  "delta":  { "saturation": 0.141, "hues": 7 },
+  "nonZeroFields": ["saturation", "hues"]
+}
+```
+
+`before.file` and `after.file` are the paths **as they were typed**, not
+basenames: a corpus can hold two files of the same name showing different
+images, and the report has to tell them apart. `metrics` carries exactly the
+compared fields, so every delta is checkable against its two operands in the
+same object. The JSON line is last on stdout, and alone on it under `--json`.
+
+**Exit codes.** `0` on a completed comparison whatever the deltas are — `--diff`
+sets no floor. `1` with a usage message on stderr when the command is wrong:
+fewer or more than two files, an unreadable or non-image file, a third path
+beside `--diff`, any other flag, or `--tension-ref`.
 
 ### The JSON line
 

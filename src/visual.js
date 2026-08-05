@@ -305,6 +305,101 @@ export function tensionDelta(current, reference) {
   }
 }
 
+/**
+ * A comparison that cannot be made, said out loud rather than papered over.
+ *
+ * Its own class so the CLI can turn it into a usage message while a genuine bug
+ * still comes out as a stack: catching every `Error` around the comparison would
+ * dress a real defect up as a mistake in the command line.
+ */
+export class MeasurementDiffError extends Error {}
+
+/**
+ * The numeric fields of a measurement, DISCOVERED and never listed.
+ *
+ * A parallel array of metric names is a second contract: it is right on the day
+ * it is written and silently wrong on the day a thirteenth measure is added —
+ * the differential would keep reporting twelve and nobody would see the hole.
+ * So the fields come from the measurement object itself, and adding a number to
+ * `publishedMeasurement` is the whole of what it takes to have it compared.
+ *
+ * A first-level property qualifies when `typeof value === 'number'`. That leaves
+ * out `file` and every string, the tile arrays, nested objects, booleans, and
+ * `null` — which is what "this was not measured" means here, not a zero.
+ *
+ * A number that is NaN or Infinity is NOT quietly dropped from the set: it is
+ * refused. Dropping it would publish a delta report that silently covers one
+ * field fewer than the measurement it claims to cover.
+ */
+export function numericFields(measurement, side = 'measurement') {
+  if (measurement === null || typeof measurement !== 'object') {
+    throw new MeasurementDiffError(`${side}: not a measurement object`)
+  }
+  const keys = []
+  for (const [key, value] of Object.entries(measurement)) {
+    if (typeof value !== 'number') continue
+    if (!Number.isFinite(value)) {
+      throw new MeasurementDiffError(
+        `${side}.${key} is ${value}, which no subtraction can make meaningful. ` +
+          'The comparison is refused rather than published as a number.',
+      )
+    }
+    keys.push(key)
+  }
+  return keys
+}
+
+/**
+ * How every measured number moved between two renderings — `after − before`.
+ *
+ * Signed, and deliberately not absolute: a value that rose and a value that fell
+ * are not the same fact. The order is the one the command line reads, before
+ * first, and it is NOT the `current − reference` of `tensionDelta` — that one
+ * answers "how far from the reference", this one "what did the change do".
+ *
+ * Field order is the key order of `after`, filtered to the numbers. It is the
+ * order the mono-image JSON publishes, so the report reads in the same sequence
+ * as the measurement it came from; `before` is then required to carry exactly
+ * the same set, which is what makes taking the order from one side safe.
+ *
+ * Computed on the PUBLISHED values — already at the thousandth — then rounded
+ * again, so a reader reproduces every delta by subtracting the two numbers
+ * visible in the archived JSON, without reopening the images.
+ */
+export function diffMeasurements(before, after) {
+  const beforeFields = numericFields(before, 'before')
+  const afterFields = numericFields(after, 'after')
+
+  const inBefore = new Set(beforeFields)
+  const inAfter = new Set(afterFields)
+  const missingFromBefore = afterFields.filter((k) => !inBefore.has(k))
+  const missingFromAfter = beforeFields.filter((k) => !inAfter.has(k))
+  if (missingFromBefore.length || missingFromAfter.length) {
+    const said = []
+    if (missingFromBefore.length) said.push(`absent from before: ${missingFromBefore.join(', ')}`)
+    if (missingFromAfter.length) said.push(`absent from after: ${missingFromAfter.join(', ')}`)
+    throw new MeasurementDiffError(
+      `the two measurements do not carry the same numeric fields — ${said.join(' · ')}. ` +
+        'A field measured on one side only has no delta: standing in a zero would report ' +
+        '"nothing moved" about something that was never compared.',
+    )
+  }
+
+  const beforeValues = {}
+  const afterValues = {}
+  const delta = {}
+  for (const key of afterFields) {
+    beforeValues[key] = before[key]
+    afterValues[key] = after[key]
+    // `-0` is a real IEEE value and it prints as "-0.000": a field that did not
+    // move would read as having gone down. Normalised to a plain zero.
+    const d = round3(after[key] - before[key])
+    delta[key] = Object.is(d, -0) ? 0 : d
+  }
+
+  return { fields: afterFields, before: beforeValues, after: afterValues, delta }
+}
+
 const toHsv = (r, g, b) => {
   const [R, G, B] = [r / 255, g / 255, b / 255]
   const max = Math.max(R, G, B)
@@ -390,6 +485,42 @@ export function measureImage(file, side = 96) {
     // sample, and a replay of the baseline has to give them back to the
     // thousandth on every line of the corpus.
     ...tensionMetrics(pixels, width, height),
+  }
+}
+
+/**
+ * The mono-image measurement, as the one object the command publishes.
+ *
+ * Lifted out of the CLI so there is a SINGLE place where the published keys are
+ * decided. `visual <image> --json` prints it, and `visual --diff a b` discovers
+ * its fields from it — so a number added here is compared by the differential
+ * without a second list existing anywhere to fall out of date.
+ *
+ * The six frozen keys keep their names, their values and their place at the
+ * front; everything else is appended, never inserted.
+ *
+ * `name` is passed in rather than derived: the mono-image line prints a
+ * basename, and the differential prints the two paths as they were typed —
+ * which matters, because the corpus holds two files of the SAME basename
+ * showing different images.
+ */
+export function publishedMeasurement(m, name) {
+  return {
+    file: name,
+    saturation: m.saturation,
+    hues: m.hues,
+    distinctColours: m.distinctColours,
+    contrast: m.contrast,
+    shadowShare: m.shadowShare,
+    highlightShare: m.highlightShare,
+    tileShadowShares: m.tileShadowShares,
+    tileShadowSpread: m.tileShadowSpread,
+    subjectKeyFillAdvantage: m.subjectKeyFillAdvantage,
+    tileDarkShares: m.tileDarkShares,
+    tileDarkStd: m.tileDarkStd,
+    frameMedianLuma: m.frameMedianLuma,
+    brightestTileMedianLuma: m.brightestTileMedianLuma,
+    brightestTileMedianRatio: m.brightestTileMedianRatio,
   }
 }
 

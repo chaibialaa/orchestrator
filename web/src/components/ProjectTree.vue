@@ -80,6 +80,19 @@ const rankOf = computed(() => {
   return m
 })
 
+/**
+ * The whole chapter, not just its heading.
+ *
+ * A chapter can read `proven` while a step under it is still open — the gate
+ * refuses to conclude one whose parts are unfinished, but nothing stops a
+ * chapter proven before a step was added afterwards. The tint answers "is there
+ * anything left in here", so it asks the same of every level.
+ */
+function allDone(root: TreeNode) {
+  if (root.status !== 'proven') return false
+  return childrenOf(root.id).every((c) => c.status === 'proven' || c.status === 'abandoned')
+}
+
 function childrenOf(id: number) {
   return props.nodes
     .filter((n) => n.parent_id === id)
@@ -226,7 +239,15 @@ function when(iso: string) {
     <span class="label text-ink-700 shrink-0">not started</span>
   </RouterLink>
 
-  <div v-else class="card px-5 py-4 mb-4 break-inside-avoid">
+  <!-- A finished chapter reads as finished from across the room.
+       The track carries nineteen cards of identical weight, and telling the done
+       ones from the rest meant reading a word inside each. The tint is very
+       light on purpose: it groups without shouting, and the word stays. -->
+  <div
+    v-else
+    class="card px-5 py-4 mb-4 break-inside-avoid"
+    :class="allDone(root) ? 'border-proof/25 bg-proof/[0.035]' : ''"
+  >
     <!-- ROOT — what was asked for -->
     <div class="relative pl-7">
       <span
@@ -240,7 +261,7 @@ function when(iso: string) {
         >{{ root.status === 'proven' ? '\u25C6' : '\u25C7' }}</span
       >
 
-      <span class="num text-[11px] text-ink-600 shrink-0" title="its place in the running order">
+      <span class="num text-[11px] text-ink-600 shrink-0 mr-2" title="its place in the running order">
         {{ rankOf.get(root.id) }}<span class="text-ink-700">/{{ roots.length }}</span>
       </span>
       <RouterLink :to="`/o/${root.id}`" class="text-ink-100 text-[14px] hover:text-run transition-colors">

@@ -2278,7 +2278,8 @@ const commands = {
   /**
    * What a rendering measurably contains, and how far it is from a reference.
    *
-   * usage: orchestrator visual <image.png> [--ref target.png] [--min-colours 1500]
+   * usage: orchestrator visual --diff <before.png> <after.png> [--json]
+   *        orchestrator visual <image.png> [--ref target.png] [--min-colours 1500]
    *          [--min-hues 7] [--min-saturation 0.5] [--min-contrast 0.6] [--min-shadow 0.08]
    *          [--min-highlight 0.01] [--json]
    *          [--tension-ref same-camera.png]
@@ -2302,6 +2303,17 @@ const commands = {
     // flag that takes one would have swallowed the image path behind it.
     const jsonOnly = argv.includes('--json')
     argv = argv.filter((a) => a !== '--json')
+
+    /**
+     * `--diff` is routed before anything else parses.
+     *
+     * It takes TWO operands, which `parseFlags` — one value to a flag — would
+     * tear apart, keeping the first and letting the second fall through as a
+     * mono-image path. And it is a different reading, not an option on the one
+     * below: there is no single image to threshold.
+     */
+    if (argv.includes('--diff')) return await visualDiff(argv, jsonOnly)
+
     const opts = parseFlags(argv)
     const file = argv.find((a) => !a.startsWith('--') && argv[argv.indexOf(a) - 1]?.startsWith('--') !== true)
     if (!file)
@@ -2311,10 +2323,11 @@ const commands = {
           '[--tension-ref same-camera.png] [--min|--max-tile-dark-std X] ' +
           '[--min|--max-tile-shadow-spread X] [--min|--max-subject-key-fill-advantage X] ' +
           '[--min|--max-brightest-tile-ratio X] [--min|--max-delta-tile-dark-std X] ' +
-          '[--min|--max-delta-brightest-tile-ratio X]',
+          '[--min|--max-delta-brightest-tile-ratio X]\n' +
+          '   or: orchestrator visual --diff <before.png> <after.png> [--json]',
       )
 
-    const { measureImage, compareToReference, tensionDelta } = await import('../visual.js')
+    const { measureImage, compareToReference, tensionDelta, publishedMeasurement } = await import('../visual.js')
 
     const m = measureImage(file)
 
@@ -2411,23 +2424,10 @@ const commands = {
      * block, and neither depends on the other.
      */
     const measurement = JSON.stringify({
-      file: basename(file),
-      saturation: m.saturation,
-      hues: m.hues,
-      distinctColours: m.distinctColours,
-      contrast: m.contrast,
-      shadowShare: m.shadowShare,
-      highlightShare: m.highlightShare,
-      // Appended, never inserted: the six above keep their names, their values
-      // and their place, so a reader written against the old line still works.
-      tileShadowShares: m.tileShadowShares,
-      tileShadowSpread: m.tileShadowSpread,
-      subjectKeyFillAdvantage: m.subjectKeyFillAdvantage,
-      tileDarkShares: m.tileDarkShares,
-      tileDarkStd: m.tileDarkStd,
-      frameMedianLuma: m.frameMedianLuma,
-      brightestTileMedianLuma: m.brightestTileMedianLuma,
-      brightestTileMedianRatio: m.brightestTileMedianRatio,
+      // The keys, their order and their values come from `publishedMeasurement`
+      // in visual.js — the same object `--diff` discovers its numeric fields
+      // from, so the two readings can never publish different contracts.
+      ...publishedMeasurement(m, basename(file)),
       ...(delta
         ? {
             tensionRef: {
@@ -4196,6 +4196,140 @@ const HALT_FR = {
   error: 'erreur technique',
 }
 const indent = (text) => text.split('\n').map((l) => `    │ ${l}`).join('\n')
+
+/**
+ * `visual --diff before.png after.png` — every measured number, signed.
+ *
+ * The A/B reading, and a different question from `--tension-ref`. That one asks
+ * how far the current image is from a reference and answers on two diagnostics;
+ * this one asks what a change DID, over every numeric field the mono-image
+ * reading publishes — however many there are. The criterion it was written for
+ * said "the ten metrics"; there have been twelve since #51, and a list typed out
+ * here would have to be right again on the day there is a thirteenth.
+ *
+ * `delta = after − before`, always, and the words `before`, `after` and the
+ * formula are printed so the order cannot be read backwards.
+ *
+ * It measures and does not gate. No threshold is accepted: a floor on a delta is
+ * a separate decision, and quietly applying a mono-image threshold to one of the
+ * two sides would make `--diff` mean something the flag does not say.
+ *
+ * Nothing here checks that the two frames come from one camera. Pixels cannot
+ * establish it, no heuristic is attempted, and the responsibility stays with the
+ * caller — as it already does for `--tension-ref`.
+ */
+async function visualDiff(argv, jsonOnly) {
+  const { measureImage, publishedMeasurement, diffMeasurements, MeasurementDiffError } = await import(
+    '../visual.js'
+  )
+
+  const usage = 'usage: orchestrator visual --diff <before.png> <after.png> [--json]'
+
+  // The operands are the run of non-flag words directly after `--diff`, and
+  // everything else is left over. Read positionally rather than through
+  // `parseFlags`, which keeps one value per flag.
+  const at = argv.indexOf('--diff')
+  const operands = []
+  let i = at + 1
+  while (i < argv.length && !argv[i].startsWith('--')) operands.push(argv[i++])
+  const rest = [...argv.slice(0, at), ...argv.slice(i)]
+  const strayFlags = rest.filter((a) => a.startsWith('--'))
+  const strayPath = rest.find((a) => !a.startsWith('--'))
+
+  if (!operands.length) fail(`${usage}\n  --diff needs two files, before first. None were given.`)
+  if (operands.length === 1)
+    fail(`${usage}\n  --diff needs two files, before first. Only “${operands[0]}” was given.`)
+  if (operands.length > 2)
+    fail(
+      `${usage}\n  --diff compares exactly two files and ${operands.length} were given ` +
+        `(${operands.join(', ')}). A before/after has no third side.`,
+    )
+
+  if (strayFlags.includes('--tension-ref'))
+    fail(
+      `${usage}\n  --diff and --tension-ref are two different comparisons and are not combined.\n` +
+        '    --diff        before/after, delta = after − before, over every numeric field.\n' +
+        '    --tension-ref current/reference, delta = current − reference, over two diagnostics.\n' +
+        '  Neither silently wins over the other. Run whichever one answers your question.',
+    )
+  if (strayFlags.length)
+    fail(
+      `${usage}\n  --diff takes no other flag, and ${strayFlags.join(', ')} was given. ` +
+        '--diff measures a before/after; it sets no threshold on a delta and applies no ' +
+        'mono-image threshold to one of the two sides. Read one image on its own to gate it.',
+    )
+  if (strayPath)
+    fail(
+      `${usage}\n  “${strayPath}” is a third image path outside --diff. A mono-image reading ` +
+        'and a differential are two commands, and which one you meant cannot be guessed.',
+    )
+
+  const [beforeFile, afterFile] = operands
+  const read = (file, side) => {
+    try {
+      return publishedMeasurement(measureImage(file), file)
+    } catch (e) {
+      // A usage message, not a stack: an unreadable file is a mistake in the
+      // command, and the caller needs to read WHICH side failed.
+      fail(`--diff ${side} ${file}: ${e.message}`)
+    }
+  }
+  const before = read(beforeFile, 'before')
+  const after = read(afterFile, 'after')
+
+  let d
+  try {
+    d = diffMeasurements(before, after)
+  } catch (e) {
+    if (e instanceof MeasurementDiffError) fail(`--diff: ${e.message}`)
+    throw e
+  }
+
+  const fmt = (v) => v.toFixed(3)
+  // The sign is carried: `+` written on a rise, `-` kept on a fall, and a field
+  // that did not move printed as exactly `0.000` with no sign at all.
+  const signed = (v) => (v > 0 ? `+${v.toFixed(3)}` : v.toFixed(3))
+  const nonZero = d.fields.filter((k) => d.delta[k] !== 0)
+
+  const say = jsonOnly ? () => {} : (line) => console.log(line)
+  const nameWidth = Math.max(0, ...d.fields.map((k) => k.length))
+  const beforeWidth = Math.max(0, ...d.fields.map((k) => fmt(d.before[k]).length))
+  const afterWidth = Math.max(0, ...d.fields.map((k) => fmt(d.after[k]).length))
+
+  say('')
+  say(`  before: ${beforeFile}`)
+  say(`  after:  ${afterFile}`)
+  say('  delta = after - before')
+  say(`  ${d.fields.length} numeric field(s), discovered from the measurement itself`)
+  say('')
+  for (const k of d.fields) {
+    say(
+      `    ${k.padEnd(nameWidth)}  ${fmt(d.before[k]).padStart(beforeWidth)} -> ` +
+        `${fmt(d.after[k]).padStart(afterWidth)}   ${signed(d.delta[k]).padStart(8)}`,
+    )
+  }
+  say('')
+  say(`  Non-zero fields: ${nonZero.length}`)
+  for (const k of nonZero) say(`  - ${k}: ${fmt(d.before[k])} -> ${fmt(d.after[k])} = ${signed(d.delta[k])}`)
+  say('')
+  say('  The two frames must come from the same camera. Nothing here establishes that,')
+  say('  and the caller answers for it.')
+  say('')
+
+  // Last on stdout, and alone on it under `--json`: the reading contract the
+  // mono-image line already follows.
+  console.log(
+    JSON.stringify({
+      mode: 'diff',
+      direction: 'delta = after - before',
+      fields: d.fields,
+      before: { file: beforeFile, metrics: d.before },
+      after: { file: afterFile, metrics: d.after },
+      delta: d.delta,
+      nonZeroFields: nonZero,
+    }),
+  )
+}
 
 function parseFlags(argv) {
   const out = {}
