@@ -1,63 +1,37 @@
-import { writeFileSync } from 'node:fs'
-import { base } from './index.js'
+import { base, json } from './index.js'
 
-/**
- * The other half of `import`, which the README promised and nothing produced.
- *
- * Same tables, same order, same identifiers. Proofs, halts and decisions cite
- * each other by number and the logs already written say "#14": renumbering on
- * the way out would falsify everything said so far, so ids travel as they are.
- *
- * `storages` and `settings` are deliberately NOT here. They hold OAuth tokens
- * and keys, and an export is a file people put in a shared folder — the one
- * place credentials must never go. Losing them on a restore is the correct
- * trade: they are reconnected in three clicks, and a leaked token is not
- * recalled at all.
- */
-const TABLES = [
-  'projects',
-  'objectives',
-  'passages',
-  'evidences',
-  'halts',
-  'decisions',
-  'resources',
-  'invariants',
-  'permissions',
-  'workflows',
-  'briefs',
-  'agents',
-]
-
-export function exportData(file, { verbose = true } = {}) {
-  const db = base()
-  const dump = { exported_at: new Date().toISOString(), tables: TABLES }
-  const counts = {}
-
+const TABLES = ['projects','chapters','objectives','events','evidence_manifests','decisions','blockers','verdicts','costs','cleanups']
+export function exportObject(projectId = null) {
+  const out = { format: 'orchestrator-memory', version: 1, exported_at: new Date().toISOString(), scope: projectId ? 'project' : 'complete', tables: {} }
   for (const table of TABLES) {
-    try {
-      const rows = db.prepare(`SELECT * FROM ${table}`).all()
-      dump[table] = rows
-      counts[table] = rows.length
-    } catch {
-      // A table this install does not have is not an error: an export made by a
-      // newer version must still be readable by an older one, and the reverse.
-      dump[table] = []
-      counts[table] = 0
-    }
+    const columns = base().prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name)
+    const scoped = projectId && columns.includes('project_id')
+    out.tables[table] = base().prepare(`SELECT * FROM ${table}${scoped ? ' WHERE project_id=?' : ''} ORDER BY id`).all(...(scoped ? [projectId] : [])).map((row) => table === 'events' ? { ...row, payload: json.read(row.payload, {}) } : row)
   }
-
-  const json = JSON.stringify(dump, null, 1)
-  writeFileSync(file, json)
-
-  if (verbose) {
-    for (const [table, n] of Object.entries(counts)) {
-      if (n) console.log(`  ${String(n).padStart(6)}  ${table}`)
-    }
-    const mo = (json.length / 1024 / 1024).toFixed(1)
-    console.log(`\n  ${file} — ${mo} MB`)
-    console.log('  storages and settings are not in it: they hold tokens.\n')
+  return out
+}
+export function exportJson(projectId = null) { return JSON.stringify(exportObject(projectId), null, 2) }
+export function exportJournal(machine, afterId = 0) {
+  const out = exportObject()
+  const events = out.tables.events.filter((row) => row.machine_id === machine && row.id > afterId)
+  const eventIds = new Set(events.map((row) => row.id))
+  out.scope = 'machine-journal'
+  out.machine_id = machine
+  out.tables.events = events
+  for (const table of ['evidence_manifests','decisions','blockers','verdicts','costs','cleanups']) out.tables[table] = out.tables[table].filter((row) => eventIds.has(row.event_id))
+  out.cursor = events.at(-1)?.id || afterId
+  return out
+}
+export function exportMarkdown(projectId = null) {
+  const data = exportObject(projectId); const lines = ['# Orchestrator memory export','',`Exported: ${data.exported_at}`,'']
+  for (const project of data.tables.projects) {
+    lines.push(`## ${project.name}`,'',project.description || '', '', '### Objectives','')
+    for (const objective of data.tables.objectives.filter((row) => row.project_id === project.id)) lines.push(`- [${objective.status}] ${objective.title}`)
+    lines.push('', '### Timeline','')
+    for (const event of data.tables.events.filter((row) => row.project_id === project.id).sort((a,b) => b.occurred_at.localeCompare(a.occurred_at))) lines.push(`- ${event.occurred_at} — **${event.assertion}** — ${event.summary}`)
+    lines.push('')
   }
-
-  return { file, counts, bytes: json.length }
+  lines.push('## Evidence manifest','')
+  for (const proof of data.tables.evidence_manifests) lines.push(`- ${proof.label}: ${proof.status}; sha256=${proof.sha256 || 'unknown'}; ${proof.locator || 'no locator'}`)
+  return lines.join('\n')
 }

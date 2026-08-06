@@ -1,0 +1,73 @@
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { after, before, test } from 'node:test'
+import Database from 'better-sqlite3'
+import { estimateTokenCost } from '../src/pricing.js'
+
+const dir = mkdtempSync(join(tmpdir(), 'orchestrator-test-'))
+const path = join(dir, 'test.db')
+process.env.ORCHESTRATOR_DB = path
+const { migrate } = await import('../src/db/migrate.js')
+migrate(path)
+const { base, uid } = await import('../src/db/index.js')
+const { createServer } = await import('../src/server.js')
+const { exportJournal, exportObject } = await import('../src/db/export.js')
+const { importBundle } = await import('../src/db/import.js')
+const { journalName } = await import('../src/sync.js')
+let server, origin, project
+
+test('public rate card estimates API-equivalent costs',()=>{assert.equal(estimateTokenCost('gpt-5.6-sol',{input_tokens:1_000_000,cached_tokens:500_000,output_tokens:100_000}).amount,5.75);assert.equal(estimateTokenCost('claude-sonnet-4',{input_tokens:1_000_000,output_tokens:100_000}).amount,4.5);assert.equal(estimateTokenCost('unknown-model',{input_tokens:1_000_000}),null)})
+
+before(async () => {
+  project = { uid: uid(), slug: 'test', name: 'Test' }
+  base().prepare('INSERT INTO projects(uid,slug,name) VALUES(?,?,?)').run(project.uid,project.slug,project.name)
+  server = createServer().listen(0,'127.0.0.1')
+  await new Promise((resolve)=>server.once('listening',resolve))
+  origin=`http://127.0.0.1:${server.address().port}`
+})
+after(async()=>{ await new Promise((resolve)=>server.close(resolve)); rmSync(dir,{recursive:true,force:true}) })
+
+test('migration is idempotent and valid',()=>{ assert.equal(migrate(path).migrated,false); const db=new Database(path,{readonly:true}); assert.equal(db.pragma('integrity_check',{simple:true}),'ok'); assert.deepEqual(db.pragma('foreign_key_check'),[]); db.close() })
+test('events are idempotent and append-only',async()=>{
+  const body={project:'test',kind:'event.recorded',actor_kind:'codex',actor:'Codex',assertion:'agent_statement',summary:'Observed state'}
+  const first=await fetch(`${origin}/api/ingest`,{method:'POST',headers:{'content-type':'application/json','Idempotency-Key':'same'},body:JSON.stringify(body)})
+  const second=await fetch(`${origin}/api/ingest`,{method:'POST',headers:{'content-type':'application/json','Idempotency-Key':'same'},body:JSON.stringify(body)})
+  assert.equal(first.status,201); assert.equal(second.status,200); assert.equal(base().prepare('SELECT count(*) n FROM events').get().n,1)
+  assert.throws(()=>base().prepare('UPDATE events SET summary=?').run('changed'),/append-only/)
+})
+test('proof requires hash when available',async()=>{
+  const body={project:'test',kind:'evidence.recorded',actor_kind:'codex',actor:'Codex',assertion:'measured_fact',summary:'Test output',payload:{label:'suite',type:'test',origin:'npm test',locator_kind:'path',path:'/tmp/out',status:'available'}}
+  const response=await fetch(`${origin}/api/ingest`,{method:'POST',headers:{'content-type':'application/json','Idempotency-Key':'proof'},body:JSON.stringify(body)})
+  assert.equal(response.status,400)
+})
+test('evidence verification reports verified, modified and missing files',async()=>{const fixture=join(dir,'proof.txt'),content='measured output';writeFileSync(fixture,content);const hash=createHash('sha256').update(content).digest('hex'),body={project:'test',kind:'evidence.recorded',actor_kind:'codex',actor:'Codex',assertion:'measured_fact',summary:'Verified file',payload:{label:'proof',type:'test',origin:'test',locator_kind:'path',path:fixture,status:'available',sha256:hash,bytes:content.length}};const created=await fetch(`${origin}/api/ingest`,{method:'POST',headers:{'content-type':'application/json','Idempotency-Key':'verified-proof'},body:JSON.stringify(body)}),uid=(await created.json()).events[0].event.id,proof=base().prepare('SELECT uid FROM evidence_manifests WHERE event_id=?').get(uid);let result=await(await fetch(`${origin}/api/evidence/${proof.uid}/verify`)).json();assert.equal(result.verification,'verified');writeFileSync(fixture,'changed');result=await(await fetch(`${origin}/api/evidence/${proof.uid}/verify`)).json();assert.equal(result.verification,'modified');rmSync(fixture);result=await(await fetch(`${origin}/api/evidence/${proof.uid}/verify`)).json();assert.equal(result.verification,'missing')})
+test('exports round-trip without id collisions',()=>{ const bundle=exportObject(); const before=base().prepare('SELECT count(*) n FROM events').get().n; importBundle(bundle); assert.equal(base().prepare('SELECT count(*) n FROM events').get().n,before) })
+test('machine journals are immutable deltas with content-addressed names',()=>{const machine=base().prepare('SELECT machine_id FROM events LIMIT 1').get().machine_id,bundle=exportJournal(machine,0),body=JSON.stringify(bundle),name=journalName(machine,bundle.cursor,body);assert.equal(bundle.scope,'machine-journal');assert.ok(bundle.tables.events.length);assert.match(name,/^orchestrator-journal--.+--\d{12}--[a-f0-9]{16}\.json$/);assert.equal(exportJournal(machine,bundle.cursor).tables.events.length,0);assert.equal(journalName(machine,bundle.cursor,body),name)})
+test('pass protocol validates state and derives conflicts and stale bases',async()=>{
+  const ingest=(key,kind,payload,summary=kind)=>fetch(`${origin}/api/ingest`,{method:'POST',headers:{'content-type':'application/json','Idempotency-Key':key},body:JSON.stringify({project:'test',kind,actor_kind:'codex',actor:'Codex',assertion:'system_record',summary,payload})})
+  assert.equal((await ingest('bad-start','work.started',{session_id:'bad'})).status,400)
+  assert.equal((await ingest('git-1','git.state',{machine:'mac-a',head_commit:'bbbbbbbb',branch:'main',dirty:false})).status,201)
+  assert.equal((await ingest('start-a','work.started',{session_id:'pass-a',machine:'mac-a',base_commit:'aaaaaaaa',branch:'main',paths:['src/api']} ,'API pass')).status,201)
+  assert.equal((await ingest('start-b','work.started',{session_id:'pass-b',machine:'mac-b',base_commit:'bbbbbbbb',branch:'main',paths:['src/api/routes.js']} ,'Routes pass')).status,201)
+  let state=await (await fetch(`${origin}/api/projects/test/coordination`)).json()
+  assert.equal(state.active.length,2);assert.equal(state.counts.stale,1);assert.equal(state.counts.conflicts,2);assert.deepEqual(state.active.find(row=>row.session_id==='pass-a').overlaps,['pass-b'])
+  assert.equal((await ingest('finish-b','work.finished',{session_id:'pass-b',outcome:'completed'})).status,201)
+  state=await (await fetch(`${origin}/api/projects/test/coordination`)).json();assert.equal(state.active.length,1);assert.equal(state.active[0].overlaps.length,0);assert.equal(state.recent.find(row=>row.session_id==='pass-b').status,'finished')
+})
+test('one derived-state rule prevents proven, blocker and judgment contradictions',async()=>{
+  const objectiveUid=uid();base().prepare("INSERT INTO objectives(uid,project_id,title,status) VALUES(?,?,?,'in_progress')").run(objectiveUid,base().prepare("SELECT id FROM projects WHERE slug='test'").get().id,'Derived objective')
+  const ingest=(key,kind,payload,status=201)=>fetch(`${origin}/api/ingest`,{method:'POST',headers:{'content-type':'application/json','Idempotency-Key':key},body:JSON.stringify({project:'test',objective:objectiveUid,kind,actor_kind:'human',actor:'tester',assertion:'human_judgment',summary:key,payload})}).then(response=>assert.equal(response.status,status))
+  await ingest('state-block','blocker.opened',{title:'Needs review'});await ingest('state-request','human_judgment.requested',{});await ingest('state-proven','objective.updated',{status:'proven'})
+  let detail=await(await fetch(`${origin}/api/projects/test`)).json(),objective=detail.objectives.find(row=>row.uid===objectiveUid)
+  assert.equal(objective.status,'proven');assert.equal(detail.blockers.some(row=>row.objective_id===objective.id),false);assert.equal(detail.judgment_requests.some(row=>row.objective_id===objective.id),false)
+  await ingest('state-reopen','objective.updated',{status:'in_progress'});detail=await(await fetch(`${origin}/api/projects/test`)).json();objective=detail.objectives.find(row=>row.uid===objectiveUid)
+  assert.equal(objective.status,'in_progress');assert.equal(objective.reopened,true);assert.equal(detail.judgment_requests.some(row=>row.objective_id===objective.id),false)
+  await ingest('state-new-request','human_judgment.requested',{});await ingest('state-new-blocker','blocker.opened',{title:'Blocked review',pass_ref:'42'});detail=await(await fetch(`${origin}/api/projects/test`)).json();assert.equal(detail.judgment_requests.some(row=>row.objective_id===objective.id),true);assert.equal(detail.blockers.find(row=>row.objective_id===objective.id).pass_ref,'42')
+})
+test('portfolio aggregates tracked projects, machines and Git state',async()=>{const response=await fetch(`${origin}/api/portfolio`),portfolio=await response.json(),tracked=portfolio.projects.find(row=>row.slug==='test');assert.equal(response.status,200);assert.ok(tracked);assert.equal(tracked.git.branch,'main');assert.ok(tracked.machines.includes('mac-a'));assert.ok(Array.isArray(portfolio.detected));assert.ok(Array.isArray(portfolio.sync))})
+test('analytics separates reported tokens and measured costs',async()=>{const body={project:'test',kind:'cost.recorded',actor_kind:'codex',actor:'Codex',assertion:'measured_fact',summary:'Reported API usage',payload:{amount:1.25,currency:'USD',known:true,category:'model',model:'gpt-test',input_tokens:1200,output_tokens:300,cached_tokens:400,total_tokens:1500,cost_basis:'measured',duration_ms:900,requests:2}},ingested=await fetch(`${origin}/api/ingest`,{method:'POST',headers:{'content-type':'application/json','Idempotency-Key':'analytics-usage'},body:JSON.stringify(body)});assert.equal(ingested.status,201);const response=await fetch(`${origin}/api/analytics?project=test&days=30`),data=await response.json();assert.equal(response.status,200);assert.equal(data.totals.total_tokens,1500);assert.equal(data.totals.input_tokens,1200);assert.equal(data.totals.cached_tokens,400);assert.equal(data.totals.measured_cost,1.25);assert.equal(data.models.find(row=>row.key==='gpt-test').tokens,1500)})
+test('published runtime has no execution primitive',()=>{ for(const file of ['src/server.js','src/cli.js','src/db/index.js','src/db/migrate.js']) assert.doesNotMatch(readFileSync(new URL(`../${file}`,import.meta.url),'utf8'),/node:child_process|\bspawn\s*\(|\bexecFile|\bkill\s*\(|\/claim\b/) })
+test('API exposes no execution routes',()=>{ const routes=[]; for(const layer of createServer()._router.stack){ if(layer.name!=='router') continue; for(const child of layer.handle.stack) if(child.route) routes.push(`${Object.keys(child.route.methods)[0]} ${child.route.path}`) } assert.equal(routes.some((route)=>/run|claim|cancel|chore|worker|agent|unity|browser/i.test(route)),false) })

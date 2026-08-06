@@ -1,0 +1,17 @@
+import { closeSync, existsSync, openSync, readSync, readdirSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { basename, join } from 'node:path'
+import { estimateTokenCost, pricingVersion } from './pricing.js'
+
+const chunk=(path,start,length)=>{const fd=openSync(path,'r'),buffer=Buffer.alloc(length),bytes=readSync(fd,buffer,0,length,start);closeSync(fd);return buffer.subarray(0,bytes).toString('utf8')}
+const latestUsage=(text)=>{const lines=text.trim().split('\n');for(let i=lines.length-1;i>=0;i--){try{const row=JSON.parse(lines[i]),usage=row?.payload?.type==='token_count'&&row.payload.info?.total_token_usage;if(usage)return usage}catch{}}return null}
+const latestModel=(text)=>{const lines=text.trim().split('\n');for(let i=lines.length-1;i>=0;i--){try{const row=JSON.parse(lines[i]),model=row?.type==='turn_context'&&row.payload?.model;if(model)return model}catch{}}return null}
+export function scanCodexUsageToday(project){
+  const day=new Date(),root=join(homedir(),'.codex','sessions',String(day.getFullYear()),String(day.getMonth()+1).padStart(2,'0'),String(day.getDate()).padStart(2,'0'))
+  if(!existsSync(root))return{source:'codex-local',sessions:0,input_tokens:0,output_tokens:0,cached_tokens:0,total_tokens:0,cost_basis:'api_equivalent',estimated_cost:0,pricing_version:pricingVersion,models:[],machine_total:{sessions:0,input_tokens:0,output_tokens:0,cached_tokens:0,total_tokens:0,estimated_cost:0,models:[]}}
+  const expected=String(project.description||'').match(/(?:Repository:|·)\s*(\/[^\n]+)/)?.[1]?.trim(),empty=()=>({sessions:0,input_tokens:0,output_tokens:0,cached_tokens:0,total_tokens:0,estimated_cost:0,models:[]}),totals={source:'codex-local',...empty(),cost_basis:'api_equivalent',pricing_version:pricingVersion,machine_total:empty()},machineModels=new Map(),projectModels=new Map()
+  const add=(target,map,model,usage,estimate)=>{target.sessions++;for(const key of ['input_tokens','output_tokens','cached_tokens','total_tokens'])target[key]+=usage[key];target.estimated_cost+=estimate?.amount||0;const item=map.get(model)||{model,sessions:0,input_tokens:0,output_tokens:0,cached_tokens:0,total_tokens:0,estimated_cost:0};item.sessions++;for(const key of ['input_tokens','output_tokens','cached_tokens','total_tokens'])item[key]+=usage[key];item.estimated_cost+=estimate?.amount||0;map.set(model,item)}
+  for(const name of readdirSync(root)){const path=join(root,name);if(!name.endsWith('.jsonl')||!statSync(path).isFile())continue;const stat=statSync(path),head=chunk(path,0,Math.min(stat.size,65536)),meta=head.split('\n').map(line=>{try{return JSON.parse(line)}catch{return null}}).find(row=>row?.type==='session_meta')?.payload,cwd=meta?.cwd;if(!cwd)continue;const tail=chunk(path,Math.max(0,stat.size-2*1024*1024),Math.min(stat.size,2*1024*1024)),raw=latestUsage(tail),model=latestModel(tail)||'unknown';if(!raw)continue;const usage={input_tokens:Number(raw.input_tokens||0),output_tokens:Number(raw.output_tokens||0),cached_tokens:Number(raw.cached_input_tokens||0),total_tokens:Number(raw.total_tokens||0)},estimate=estimateTokenCost(model,usage);add(totals.machine_total,machineModels,model,usage,estimate);const matches=expected?cwd===expected||cwd.startsWith(`${expected}/`):basename(cwd).toLowerCase()===project.name.toLowerCase();if(matches)add(totals,projectModels,model,usage,estimate)}
+  totals.models=[...projectModels.values()];totals.machine_total.models=[...machineModels.values()]
+  return totals
+}

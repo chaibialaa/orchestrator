@@ -1,81 +1,16 @@
-import { readFileSync } from 'node:fs'
-import { base } from './index.js'
+import { base, json } from './index.js'
 
-/**
- * Reprend l'export de l'ancien socle. On garde les identifiants d'origine :
- * proofs, halts and decisions cite each other by number, and the logs already
- * written mention "#14". Renumbering them would falsify everything said so far.
- */
-const TABLES = [
-  'projects',
-  'objectives',
-  'passages',
-  'evidences',
-  'halts',
-  'decisions',
-  'resources',
-  'invariants',
-  'permissions',
-  'workflows',
-  'briefs',
-  'agents',
-]
-
-/** Ce que l'ancien socle stockait autrement, et qu'il faut traduire. */
-const BOOLEENS = {
-  passages: ['prevented'],
-  resources: ['included'],
-  invariants: ['armed'],
-  workflows: ['active'],
-  agents: ['enabled'],
-}
-
-export function importData(file, { verbose = true } = {}) {
-  const db = base()
-  const dump = JSON.parse(readFileSync(file, 'utf8'))
-  const outcome = {}
-
-  const colonnesDe = (table) =>
-    new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name))
-
-  db.transaction(() => {
-    for (const table of TABLES) {
-      const lines = dump[table] ?? []
-      if (!lines.length) {
-        outcome[table] = 0
-        continue
-      }
-
-      const connues = colonnesDe(table)
-      const bools = BOOLEENS[table] ?? []
-      let posees = 0
-      let ignorees = new Set()
-
-      for (const ligne of lines) {
-        const champs = {}
-        for (const [k, v] of Object.entries(ligne)) {
-          if (!connues.has(k)) {
-            ignorees.add(k)
-            continue
-          }
-          champs[k] = bools.includes(k) ? (v ? 1 : 0) : v instanceof Object ? JSON.stringify(v) : v
-        }
-
-        const noms = Object.keys(champs)
-        if (!noms.length) continue
-
-        db.prepare(
-          `INSERT OR REPLACE INTO ${table} (${noms.join(',')}) VALUES (${noms.map((n) => '@' + n).join(',')})`,
-        ).run(champs)
-        posees++
-      }
-
-      outcome[table] = posees
-      if (verbose && ignorees.size) {
-        console.log(`  ${table}: ${[...ignorees].join(', ')} — column(s) dropped, unused`)
-      }
-    }
+export function importBundle(bundle) {
+  if (bundle?.format !== 'orchestrator-memory' || bundle?.version !== 1 || !bundle.tables) throw new Error('Unsupported import format.')
+  const inserted = {}
+  base().transaction(() => {
+    const projectMap = new Map(); const objectiveMap = new Map(); const eventMap = new Map()
+    for (const row of bundle.tables.projects || []) { base().prepare('INSERT INTO projects(uid,slug,name,description,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(uid) DO NOTHING').run(row.uid,row.slug,row.name,row.description,row.status,row.created_at,row.updated_at); projectMap.set(row.id,base().prepare('SELECT id FROM projects WHERE uid=?').get(row.uid).id) }
+    for (const row of bundle.tables.objectives || []) { const p=projectMap.get(row.project_id); if(!p) continue; base().prepare('INSERT INTO objectives(uid,project_id,parent_id,title,intent,success_criteria,status,priority,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(uid) DO NOTHING').run(row.uid,p,null,row.title,row.intent,row.success_criteria,row.status,row.priority,row.created_at,row.updated_at); objectiveMap.set(row.id,base().prepare('SELECT id FROM objectives WHERE uid=?').get(row.uid).id) }
+    for (const row of bundle.tables.events || []) { const p=projectMap.get(row.project_id); if(!p) continue; base().prepare('INSERT INTO events(uid,project_id,objective_id,kind,actor_kind,actor,assertion,summary,payload,occurred_at,recorded_at,idempotency_key,source,machine_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(uid) DO NOTHING').run(row.uid,p,objectiveMap.get(row.objective_id)||null,row.kind,row.actor_kind,row.actor,row.assertion,row.summary,json.write(row.payload),row.occurred_at,row.recorded_at,`import:${row.uid}`,row.source,row.machine_id||bundle.machine_id||null); eventMap.set(row.id,base().prepare('SELECT id FROM events WHERE uid=?').get(row.uid).id) }
+    const simple = ['evidence_manifests','decisions','blockers','verdicts','costs','cleanups']
+    for (const table of simple) { inserted[table]=0; for(const row of bundle.tables[table]||[]){ const p=projectMap.get(row.project_id),e=eventMap.get(row.event_id); if(!p||!e) continue; const copy={...row,project_id:p,event_id:e,objective_id:objectiveMap.get(row.objective_id)||null}; delete copy.id; const fields=Object.keys(copy); const result=base().prepare(`INSERT INTO ${table}(${fields.join(',')}) VALUES(${fields.map(()=>'?').join(',')}) ON CONFLICT(uid) DO NOTHING`).run(...fields.map((field)=>copy[field])); inserted[table]+=result.changes } }
+    inserted.projects=projectMap.size; inserted.objectives=objectiveMap.size; inserted.events=eventMap.size
   })()
-
-  return outcome
+  return { imported: inserted }
 }

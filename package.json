@@ -1,7 +1,7 @@
 {
   "name": "@chaibialaa/orchestrator",
-  "version": "0.1.0-beta.1",
-  "description": "A driving loop for coding agents: a judge decides, an agent executes, a proof settles it. Cost, deliverables and progress are derived from the traces — never declared.",
+  "version": "0.1.0-beta.2",
+  "description": "An auditable project dashboard and persistent memory for work performed outside Orchestrator.",
   "type": "module",
   "bin": {
     "orchestrator": "src/cli.js"
@@ -19,8 +19,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
-    "express": "^4.21.1",
-    "zod": "^3.23.8"
+    "express": "^4.21.1"
   },
   "license": "PolyForm-Noncommercial-1.0.0",
   "author": "Chaibi Alaa",
@@ -33,13 +32,10 @@
     "url": "https://github.com/chaibialaa/orchestrator/issues"
   },
   "keywords": [
-    "agents",
-    "orchestration",
-    "claude-code",
-    "codex",
-    "unity",
-    "mcp",
-    "automation"
+    "project-memory",
+    "audit-log",
+    "evidence",
+    "dashboard"
   ],
   "publishConfig": {
     "access": "public"
