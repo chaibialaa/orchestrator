@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import SystemHealthPanel from "./components/SystemHealthPanel.vue";
 
 type Project = {
   uid: string;
@@ -75,6 +76,7 @@ type SyncConnection = {
   shard_count: number;
   pending_events: number;
 };
+type SavedView = { id: string; label: string; context: string; url: string; saved_at: string };
 type DiagramNode = {
   id: string;
   label: string;
@@ -105,14 +107,96 @@ const diagram = ref<Diagram | null>(null),
     latest_git: null,
     counts: { active: 0, stale: 0, conflicts: 0, abandoned: 0 },
   }),
+  resume = ref<any>(null),
+  confidence = ref<any>(null),
+  searchResults = ref<any[]>([]),
+  searchBusy = ref(false),
+  snapshots = ref<any[]>([]),
+  snapshotDiff = ref<any>(null),
+  snapshotBusy = ref(false),
   localMemory = ref<any>(null),
   portfolio = ref<any>(null),
   portfolioBusy = ref(false),
+  attention = ref<any>(null),
+  attentionBusy = ref(false),
+  briefing = ref<any>(null),
+  briefingBusy = ref(false),
+  systemHealth = ref<any>(null),
+  systemHealthBusy = ref(false),
   analytics = ref<any>(null),
   analyticsBusy = ref(false),
   memoryBusy = ref(false);
+const analyticsDays = ref(30),
+  analyticsScope = ref<"project" | "global">("project");
+const shareState = ref("Copy context link");
+const focusedEvidence = ref(""), pendingEvidence = ref("");
+const savedViews = ref<SavedView[]>([]), saveState = ref("Save shortcut");
+const savedViewsKey = "orchestrator:saved-views";
+const allowedViews = new Set(["search", "briefing", "attention", "health", "projects", "overview", "chapters", "evidence", "diagram", "snapshots", "analytics", "memory"]);
+const globalViews = new Set(["search", "briefing", "attention", "health", "projects"]);
+const isGlobalView = (view: string) => globalViews.has(view);
+let restoringNavigation = true;
+function applyUrlState() {
+  const params = new URLSearchParams(window.location.search), project = params.get("project"), view = params.get("view");
+  if (project && projects.value.some(row => row.slug === project)) selected.value = project;
+  if (view && allowedViews.has(view)) activeView.value = view as typeof activeView.value;
+  selectedChapter.value = params.get("chapter") || "";
+  selectedPass.value = params.get("pass") || "";
+  pendingEvidence.value = params.get("proof") || "";
+  focusedEvidence.value = pendingEvidence.value;
+  if (!pendingEvidence.value) {
+    previewImage.value = null;
+    openPreview.value = "";
+  }
+}
+function urlForContext() {
+  const params = new URLSearchParams();
+  if (selected.value) params.set("project", selected.value);
+  params.set("view", activeView.value);
+  if (selectedChapter.value) params.set("chapter", selectedChapter.value);
+  if (selectedPass.value) params.set("pass", selectedPass.value);
+  const proof = previewImage.value?.uid || openPreview.value || focusedEvidence.value;
+  if (proof) params.set("proof", proof);
+  return `${window.location.pathname}?${params.toString()}`;
+}
+let urlTimer: number;
+function syncContextUrl() {
+  if (restoringNavigation) return;
+  clearTimeout(urlTimer);
+  urlTimer = window.setTimeout(() => {
+    const next = urlForContext();
+    if (`${window.location.pathname}${window.location.search}` !== next) window.history.pushState(null, "", next);
+  }, 0);
+}
+async function copyContextLink() {
+  await navigator.clipboard.writeText(new URL(urlForContext(), window.location.origin).href);
+  shareState.value = "Copied";
+  window.setTimeout(() => shareState.value = "Copy context link", 1600);
+}
+function loadSavedViews() {
+  try { savedViews.value = JSON.parse(localStorage.getItem(savedViewsKey) || "[]"); }
+  catch { savedViews.value = []; }
+}
+function persistSavedViews() { localStorage.setItem(savedViewsKey, JSON.stringify(savedViews.value)); }
+function saveCurrentView() {
+  const chapter = detail.value?.chapters.find(row => row.uid === selectedChapter.value);
+  const context = [activeView.value, chapter?.title, selectedPass.value ? `Pass ${selectedPass.value}` : ""].filter(Boolean).join(" · ");
+  const url = urlForContext(), id = btoa(unescape(encodeURIComponent(url))).replace(/=+$/g, "");
+  savedViews.value = [{ id, label: detail.value?.name || "Project view", context, url, saved_at: new Date().toISOString() }, ...savedViews.value.filter(row => row.id !== id)].slice(0, 8);
+  persistSavedViews();
+  saveState.value = "Saved";
+  window.setTimeout(() => saveState.value = "Save shortcut", 1600);
+}
+function openSavedView(view: SavedView) {
+  window.history.pushState(null, "", view.url);
+  restoreFromHistory();
+}
+function removeSavedView(id: string) {
+  savedViews.value = savedViews.value.filter(row => row.id !== id);
+  persistSavedViews();
+}
 const activeView = ref<
-    "projects" | "overview" | "chapters" | "evidence" | "diagram" | "analytics" | "memory"
+    "search" | "briefing" | "attention" | "health" | "projects" | "overview" | "chapters" | "evidence" | "diagram" | "snapshots" | "analytics" | "memory"
   >("overview"),
   selectedChapter = ref(""),
   selectedPass = ref(""),
@@ -120,6 +204,8 @@ const activeView = ref<
   assertion = ref(""),
   loading = ref(true),
   error = ref("");
+const globalQuery=ref("")
+const searchType=ref("all"),searchPage=ref(1)
 const openPreview = ref(""),
   textPreviews = ref<Record<string, string>>({}),
   previewErrors = ref<Record<string, string>>({});
@@ -142,8 +228,8 @@ const api = async <T,>(path: string): Promise<T> => {
 async function loadProjects() {
   projects.value = await api("/projects");
   connections.value = await api("/sync");
-  if (!selected.value && projects.value[0])
-    selected.value = projects.value[0].slug;
+  if (!selected.value && projects.value[0]) selected.value = projects.value[0].slug;
+  applyUrlState();
 }
 async function loadPortfolio() {
   portfolioBusy.value = true;
@@ -155,11 +241,29 @@ async function loadPortfolio() {
     portfolioBusy.value = false;
   }
 }
+async function loadAttention(){attentionBusy.value=true;try{attention.value=await api('/attention')}catch(e:any){error.value=e.message}finally{attentionBusy.value=false}}
+async function loadBriefing(){briefingBusy.value=true;try{const since=localStorage.getItem('orchestrator:briefing-reviewed')||new Date(Date.now()-86400000).toISOString();briefing.value=await api(`/briefing?since=${encodeURIComponent(since)}`)}catch(e:any){error.value=e.message}finally{briefingBusy.value=false}}
+async function loadSystemHealth(){systemHealthBusy.value=true;try{systemHealth.value=await api('/system/health')}catch(e:any){error.value=e.message}finally{systemHealthBusy.value=false}}
+function markBriefingReviewed(){localStorage.setItem('orchestrator:briefing-reviewed',new Date().toISOString());loadBriefing()}
+function openBriefingItem(item:any){selected.value=item.project.slug;window.setTimeout(()=>{selectedChapter.value=item.target.objective_uid||'';selectedPass.value=item.target.pass_ref||'';pendingEvidence.value=item.target.evidence_uid||'';focusedEvidence.value=pendingEvidence.value;activeView.value=item.target.view||'overview'},0)}
+function openAttention(item:any){selected.value=item.project.slug;window.setTimeout(()=>{selectedChapter.value=item.target.objective_uid||'';selectedPass.value=item.target.pass_ref||'';activeView.value=item.target.view||'overview'},0)}
+async function runSearch(){const value=globalQuery.value.trim();if(value.length<2){searchResults.value=[];return}searchBusy.value=true;try{const data=await api<any>(`/search?q=${encodeURIComponent(value)}&limit=100`);searchResults.value=data.results;searchPage.value=1;activeView.value='search'}catch(e:any){error.value=e.message}finally{searchBusy.value=false}}
+function openSearchResult(item:any){selected.value=item.project.slug;window.setTimeout(()=>{selectedChapter.value=item.target.objective_uid||'';selectedPass.value=item.target.pass_ref||'';activeView.value=item.target.view||'overview'},0)}
+const filteredSearchResults=computed(()=>searchType.value==='all'?searchResults.value:searchResults.value.filter(item=>item.type===searchType.value))
+const searchPages=computed(()=>Math.max(1,Math.ceil(filteredSearchResults.value.length/15)))
+const pagedSearchResults=computed(()=>filteredSearchResults.value.slice((searchPage.value-1)*15,searchPage.value*15))
+watch(searchType,()=>searchPage.value=1)
+const snapshotKey=()=>`orchestrator:snapshots:${selected.value}`
+function loadSnapshots(){try{snapshots.value=JSON.parse(localStorage.getItem(snapshotKey())||'[]')}catch{snapshots.value=[]}snapshotDiff.value=null}
+async function captureSnapshot(){snapshotBusy.value=true;try{const snapshot=await api<any>(`/projects/${selected.value}/snapshot`);snapshots.value=[snapshot,...snapshots.value.filter(row=>row.state_hash!==snapshot.state_hash)].slice(0,10);localStorage.setItem(snapshotKey(),JSON.stringify(snapshots.value));if(snapshots.value.length>1)await compareSnapshots()}catch(e:any){error.value=e.message}finally{snapshotBusy.value=false}}
+async function compareSnapshots(){if(snapshots.value.length<2)return;const response=await fetch('/api/snapshots/compare',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({after:snapshots.value[0],before:snapshots.value[1]})});if(!response.ok)throw new Error((await response.json()).message);snapshotDiff.value=await response.json()}
+function downloadSnapshot(snapshot:any){const url=URL.createObjectURL(new Blob([JSON.stringify(snapshot,null,2)],{type:'application/json'})),link=document.createElement('a');link.href=url;link.download=`orchestrator-${snapshot.project.slug}-${snapshot.captured_at.replace(/[: ]/g,'-')}.json`;link.click();URL.revokeObjectURL(url)}
 async function loadAnalytics() {
   if (!selected.value) return;
   analyticsBusy.value = true;
   try {
-    analytics.value = await api(`/analytics?project=${selected.value}&days=30`);
+    const scope = analyticsScope.value === "project" ? `&project=${selected.value}` : "";
+    analytics.value = await api(`/analytics?days=${analyticsDays.value}${scope}`);
   } catch (e: any) {
     error.value = e.message;
   } finally {
@@ -171,7 +275,12 @@ const money=(value:number)=>new Intl.NumberFormat("en",{style:"currency",currenc
 const maxDailyCost=computed(()=>Math.max(0,...(analytics.value?.daily||[]).map((row:any)=>row.cost)))
 const maxDailyTokens=computed(()=>Math.max(0,...(analytics.value?.daily||[]).map((row:any)=>row.tokens)))
 const todayAnalytics=computed(()=>analytics.value?.daily?.find((row:any)=>row.key===new Date().toISOString().slice(0,10))||null)
+const attentionItems=computed(()=>{const rows=attention.value?.items||[],groups=new Map<string,any>(),visible=[];for(const item of rows){if(item.type!=='evidence'||item.severity==='blocked'){visible.push(item);continue}const key=item.project.slug,current=groups.get(key)||{...item,id:`evidence-group:${key}`,objective:{uid:null,title:null},title:'Evidence records need verification',detail:'',count:0};current.count++;current.detail=`${current.count} unverified or unhashed evidence records`;groups.set(key,current)}return[...visible,...groups.values()].sort((a:any,b:any)=>String(b.occurred_at).localeCompare(String(a.occurred_at)))})
 function openPortfolioProject(project: any) {
+  selected.value = project.slug;
+  activeView.value = "overview";
+}
+function openTrackedProject(project: Project) {
   selected.value = project.slug;
   activeView.value = "overview";
 }
@@ -186,6 +295,7 @@ async function setPortfolioTracking(project: any) {
     });
     if (!response.ok) throw new Error((await response.json()).message);
     await loadProjects();
+    await loadAttention();
     await loadPortfolio();
   } catch (e: any) {
     error.value = e.message;
@@ -198,11 +308,15 @@ async function loadProject() {
   loading.value = true;
   error.value = "";
   try {
-    [detail.value, diagram.value, coordination.value] = await Promise.all([
+    const visitKey=`orchestrator:last-visit:${selected.value}`,since=localStorage.getItem(visitKey)||new Date(Date.now()-86400000).toISOString();
+    [detail.value, diagram.value, coordination.value, resume.value, confidence.value] = await Promise.all([
       api<Detail>(`/projects/${selected.value}`),
       api<Diagram>(`/projects/${selected.value}/diagram`),
       api<any>(`/projects/${selected.value}/coordination`),
+      api<any>(`/projects/${selected.value}/resume?since=${encodeURIComponent(since)}`),
+      api<any>(`/projects/${selected.value}/confidence`),
     ]);
+    localStorage.setItem(visitKey,new Date().toISOString())
     await loadMemory();
   } catch (e: any) {
     error.value = e.message;
@@ -222,16 +336,32 @@ async function loadMemory() {
     api<Event[]>(`/projects/${selected.value}/timeline?${p}`),
     api<Evidence[]>(`/projects/${selected.value}/evidence?${ep}`),
   ]);
+  if (pendingEvidence.value) {
+    const proof = evidence.value.find(row => row.uid === pendingEvidence.value);
+    if (proof && isImage(proof)) previewImage.value = proof;
+    else if (proof && isText(proof) && openPreview.value !== proof.uid) await previewText(proof);
+    pendingEvidence.value = "";
+  }
   evidencePage.value = 1;
   passPage.value = 1;
   eventPage.value = 1;
   comparisonIndex.value = 0;
 }
 watch(selected, () => {
-  selectedChapter.value = "";
-  selectedPass.value = "";
+  if (!restoringNavigation) {
+    selectedChapter.value = "";
+    selectedPass.value = "";
+  }
+  loadSnapshots();
   loadProject();
   if(activeView.value==='analytics')loadAnalytics()
+});
+watch([selected, activeView, selectedChapter, selectedPass, previewImage, openPreview], syncContextUrl);
+watch(activeView, (view) => {
+  if (view === "briefing" && !briefing.value) loadBriefing();
+  if (view === "health" && !systemHealth.value) loadSystemHealth();
+  if (view === "projects" && !portfolio.value) loadPortfolio();
+  if (view === "analytics" && !analytics.value) loadAnalytics();
 });
 let timer: number;
 watch([query, assertion, selectedChapter, selectedPass], () => {
@@ -245,14 +375,27 @@ const closeOnEscape = (event: KeyboardEvent) => {
 };
 onMounted(async () => {
   window.addEventListener("keydown", closeOnEscape);
+  window.addEventListener("popstate", restoreFromHistory);
   try {
     await loadProjects();
+    await loadAttention();
+    loadSavedViews();
+    restoringNavigation = false;
+    window.history.replaceState(null, "", urlForContext());
   } catch (e: any) {
     error.value = e.message;
     loading.value = false;
   }
 });
-onBeforeUnmount(() => window.removeEventListener("keydown", closeOnEscape));
+function restoreFromHistory() {
+  restoringNavigation = true;
+  applyUrlState();
+  window.setTimeout(() => restoringNavigation = false, 0);
+}
+onBeforeUnmount(() => {
+  window.removeEventListener("keydown", closeOnEscape);
+  window.removeEventListener("popstate", restoreFromHistory);
+});
 const progress = computed(() => {
   const all = detail.value?.objectives || [];
   return all.length
@@ -439,8 +582,11 @@ const graphNodes = computed(() => {
 const graphHeight = computed(() =>
   Math.max(300, Math.ceil(graphNodes.value.length / 3) * 150 + 80),
 );
+const flowSummary=computed(()=>{const roots=graphNodes.value,current=roots.find(node=>node.phase==='blocked')||roots.find(node=>node.phase==='active')||null,next=roots.find(node=>node.phase==='planned')||null;return{current,next,completed:roots.filter(node=>node.phase==='completed').length,returns:(diagram.value?.edges||[]).filter(edge=>['returns','retry'].includes(edge.type)).length}})
 const graphNode = (id: string) =>
   graphNodes.value.find((node) => node.id === id);
+const edgeCritical=(edge:{from:string;to:string;type:string})=>{const from=graphNode(edge.from),to=graphNode(edge.to);return edge.type==='precedes'&&Boolean(from&&to&&['active','blocked'].includes(from.phase)&&to.phase==='planned')}
+function inspectGraphNode(id:string){const chapter=detail.value?.chapters.find(row=>row.uid===id);if(chapter)inspectChapter(chapter)}
 function graphPath(edge: { from: string; to: string; type: string }) {
   const a = graphNode(edge.from),
     b = graphNode(edge.to);
@@ -574,20 +720,40 @@ async function recordJudgment() {
         ><span>O</span>
         <div>Orchestrator<small>Project memory</small></div></a
       >
-      <p class="nav-title">Projects</p>
-      <nav aria-label="Projects">
-        <button class="all-projects" :class="{ active: activeView === 'projects' }" @click="activeView = 'projects'; loadPortfolio()"><span>All projects</span><small>Global view</small></button>
-        <button
-          v-for="p in projects"
-          :key="p.uid"
-          :class="{ active: activeView !== 'projects' && selected === p.slug }"
-          :aria-current="activeView !== 'projects' && selected === p.slug ? 'page' : undefined"
-          @click="selected = p.slug"
-        >
-          <span>{{ p.name }}</span
-          ><small>{{ p.open_blockers ? `${p.open_blockers} blocked` : 'On track' }}</small>
-        </button>
-      </nav>
+      <section class="nav-section nav-section-global">
+        <div class="nav-heading"><span>Workspace</span><small>Global</small></div>
+        <nav aria-label="Workspace" class="workspace-nav">
+          <button class="all-projects" :class="{ active: activeView === 'briefing' }" @click="activeView = 'briefing'; loadBriefing()"><span>Recent briefing</span><small>What changed</small></button>
+          <button class="all-projects" :class="{ active: activeView === 'attention' }" @click="activeView = 'attention'; loadAttention()"><span>Attention center</span><small>{{ attentionItems.length }} signals</small></button>
+          <button class="all-projects" :class="{ active: activeView === 'health' }" @click="activeView = 'health'; loadSystemHealth()"><span>System health</span><small>Read-only checks</small></button>
+          <button class="all-projects" :class="{ active: activeView === 'search' }" @click="activeView = 'search'"><span>Search memory</span><small>All records</small></button>
+          <button class="all-projects" :class="{ active: activeView === 'projects' }" @click="activeView = 'projects'; loadPortfolio()"><span>All projects</span><small>Global view</small></button>
+        </nav>
+      </section>
+      <section class="nav-section nav-section-projects">
+        <div class="nav-heading"><span>Tracked projects</span><small>{{ projects.length }}</small></div>
+        <nav aria-label="Tracked projects" class="project-nav">
+          <button
+            v-for="p in projects"
+            :key="p.uid"
+            :class="{ active: !isGlobalView(activeView) && selected === p.slug }"
+            :aria-current="!isGlobalView(activeView) && selected === p.slug ? 'page' : undefined"
+            @click="openTrackedProject(p)"
+          >
+            <span>{{ p.name }}</span
+            ><small>{{ p.open_blockers ? `${p.open_blockers} blocked` : 'On track' }}</small>
+          </button>
+        </nav>
+      </section>
+      <section v-if="savedViews.length" class="nav-section nav-section-saved">
+        <div class="nav-heading"><span>Saved views</span><small>{{ savedViews.length }}</small></div>
+        <nav aria-label="Saved views" class="saved-nav">
+          <div v-for="view in savedViews" :key="view.id" class="saved-nav-row">
+            <button @click="openSavedView(view)"><span>{{ view.label }}</span><small>{{ view.context }}</small></button>
+            <button class="saved-remove" :aria-label="`Remove ${view.label} saved view`" @click="removeSavedView(view.id)">×</button>
+          </div>
+        </nav>
+      </section>
       <div class="boundary">
         <strong>Observation only</strong>
         <p>Orchestrator records state and evidence. It never executes work.</p>
@@ -596,18 +762,21 @@ async function recordJudgment() {
     <main id="main-content" tabindex="-1">
       <header>
         <div>
-          <p class="eyebrow">{{ activeView === "projects" ? "Global portfolio" : "Project record" }}</p>
-          <h1>{{ activeView === "projects" ? "Projects" : detail?.name || "Project memory" }}</h1>
+          <p class="eyebrow">{{ activeView === "search" ? "Universal search" : activeView === "briefing" ? "Global resume" : activeView === "attention" ? "Global attention" : activeView === "health" ? "Register integrity" : activeView === "projects" ? "Global portfolio" : "Project record" }}</p>
+          <h1>{{ activeView === "search" ? "Search memory" : activeView === "briefing" ? "Recent briefing" : activeView === "attention" ? "Attention center" : activeView === "health" ? "System health" : activeView === "projects" ? "Projects" : detail?.name || "Project memory" }}</h1>
           <p>
             {{
-              activeView === "projects"
+              activeView === "search" ? "Projects, objectives, events, decisions, evidence, paths and hashes." : activeView === "briefing" ? "Changes across every active project since your last review." : activeView === "attention" ? "Decisions and risks that require a closer look." : activeView === "health" ? "Read-only integrity, backup and evidence-retention checks." : activeView === "projects"
                 ? "Tracked work, local discoveries and multi-machine state."
                 : detail?.description ||
               "Auditable history and conversation handoff."
             }}
           </p>
         </div>
-        <div v-if="activeView !== 'projects'" class="exports">
+        <form class="global-search" role="search" @submit.prevent="runSearch"><input v-model="globalQuery" aria-label="Search all project memory" placeholder="Search memory…" minlength="2"><button :disabled="searchBusy || globalQuery.trim().length < 2">{{ searchBusy ? 'Searching…' : 'Search' }}</button></form>
+        <div v-if="!isGlobalView(activeView)" class="exports">
+          <button @click="copyContextLink">{{ shareState }}</button>
+          <button @click="saveCurrentView">{{ saveState }}</button>
           <button v-if="detail" @click="toggleProject">
             {{
               detail.status === "archived"
@@ -628,10 +797,12 @@ async function recordJudgment() {
             'chapters',
             'evidence',
             'diagram',
+            'snapshots',
             'analytics',
             'memory',
           ]"
           :key="view"
+          v-show="!isGlobalView(activeView)"
           :class="{ active: activeView === view }"
           role="tab"
           :aria-selected="activeView === view"
@@ -642,8 +813,18 @@ async function recordJudgment() {
         </button>
       </div>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <section v-if="activeView === 'projects'" class="portfolio-screen">
-        <div v-if="portfolioBusy && !portfolio" class="panel empty">Loading local project inventory…</div>
+      <section v-if="activeView === 'search'" class="search-screen"><section class="panel search-results"><div class="panel-head"><div><p class="eyebrow">{{ filteredSearchResults.length }} results</p><h2>“{{ globalQuery }}”</h2></div><select v-model="searchType" aria-label="Filter search results by type"><option value="all">All types</option><option v-for="type in [...new Set(searchResults.map(item=>item.type))]" :key="type" :value="type">{{ type }}</option></select></div><p v-if="!searchBusy && !filteredSearchResults.length" class="empty">No matching memory records.</p><button v-for="item in pagedSearchResults" :key="item.id" class="search-row" @click="openSearchResult(item)"><span class="attention-kind">{{ item.type }}</span><div><strong>{{ item.title }}</strong><p>{{ item.project.name }} · {{ item.subtitle }}</p></div><time>{{ date(item.occurred_at) }}</time><span>Open →</span></button><div v-if="filteredSearchResults.length" class="pagination"><button :disabled="searchPage===1" @click="searchPage--">Previous</button><span>{{ filteredSearchResults.length }} results · Page {{ searchPage }} / {{ searchPages }}</span><button :disabled="searchPage===searchPages" @click="searchPage++">Next</button></div></section></section>
+      <section v-else-if="activeView === 'briefing'" class="briefing-screen"><div v-if="briefingBusy && !briefing" class="panel empty">Building recent briefing…</div><template v-else-if="briefing"><section class="briefing-summary" aria-label="Briefing summary"><article><span>Changes</span><strong>{{ briefing.summary.events }}</strong></article><article><span>Active projects changed</span><strong>{{ briefing.summary.projects }}</strong></article><article><span>New evidence</span><strong>{{ briefing.summary.evidence }}</strong></article><article><span>Decisions and blockers</span><strong>{{ briefing.summary.decisions + briefing.summary.blockers }}</strong></article></section><section class="panel briefing-projects"><div class="panel-head"><div><p class="eyebrow">Since {{ date(briefing.since) }}</p><h2>Changes by project</h2></div><div class="briefing-actions"><a :href="`/api/briefing/export/json?since=${encodeURIComponent(briefing.since)}`">Export JSON</a><a :href="`/api/briefing/export/markdown?since=${encodeURIComponent(briefing.since)}`">Export Markdown</a><button class="text-button" :disabled="briefingBusy" @click="markBriefingReviewed">Mark all reviewed</button></div></div><p v-if="!briefing.projects.length" class="empty good">No changes since your last review.</p><button v-for="project in briefing.projects" :key="project.slug" class="briefing-project" @click="selected=project.slug;activeView='overview'"><div><strong>{{ project.name }}</strong><p>{{ project.latest_summary }}</p></div><span>{{ project.events }} changes · {{ project.evidence }} evidence · {{ project.decisions }} decisions</span></button></section><section v-if="briefing.recent.length" class="panel briefing-feed"><div class="panel-head"><div><p class="eyebrow">Latest records</p><h2>Activity feed</h2></div></div><button v-for="item in briefing.recent" :key="item.uid" @click="openBriefingItem(item)"><span class="attention-kind">{{ item.kind.replace('.recorded','').replace('.',' ') }}</span><div><strong>{{ item.summary }}</strong><p>{{ item.project.name }}<template v-if="item.objective_title"> · {{ item.objective_title }}</template> · {{ item.actor }}</p></div><time>{{ date(item.occurred_at) }}</time><span>Open →</span></button></section></template></section>
+      <section v-else-if="activeView === 'attention'" class="attention-screen">
+        <div v-if="attentionBusy && !attention" class="panel empty" role="status" aria-live="polite">Collecting attention signals…</div>
+        <template v-else-if="attention">
+          <section class="attention-summary" aria-label="Attention summary"><article><span>Actionable signals</span><strong>{{ attentionItems.length }}</strong></article><article><span>Human decisions</span><strong>{{ attention.counts.judgments }}</strong></article><article><span>Open blockers</span><strong>{{ attention.counts.blockers }}</strong></article><article><span>Evidence debt</span><strong>{{ attention.counts.evidence }}</strong></article></section>
+          <section class="panel attention-list"><div class="panel-head"><div><p class="eyebrow">Actionable signals</p><h2>Across active projects</h2></div><button class="text-button" :disabled="attentionBusy" @click="loadAttention">Refresh</button></div><p v-if="!attentionItems.length" class="empty good">Nothing currently requires attention.</p><button v-for="item in attentionItems" :key="item.id" class="attention-row" :data-severity="item.severity" @click="openAttention(item)"><span class="attention-kind">{{ item.type.replace('_',' ') }}</span><div><strong>{{ item.title }}</strong><p>{{ item.project.name }}<template v-if="item.objective.title"> · {{ item.objective.title }}</template></p><small>{{ item.detail || 'Open context' }} · {{ date(item.occurred_at) }}</small></div><span class="attention-open">Open →</span></button></section>
+        </template>
+      </section>
+      <SystemHealthPanel v-else-if="activeView === 'health'" :health="systemHealth" :busy="systemHealthBusy" @refresh="loadSystemHealth" />
+      <section v-else-if="activeView === 'projects'" class="portfolio-screen">
+        <div v-if="portfolioBusy && !portfolio" class="panel empty" role="status" aria-live="polite">Loading local project inventory…</div>
         <template v-else-if="portfolio">
           <section class="portfolio-summary">
             <article><span>Tracked projects</span><strong>{{ portfolio.projects.length }}</strong></article>
@@ -655,7 +836,7 @@ async function recordJudgment() {
             <div class="panel-head"><div><p class="eyebrow">Tracked memory</p><h2>All projects</h2></div><span class="scope-note">Independent of the selected project</span></div>
             <article v-for="project in portfolio.projects" :key="project.uid" class="portfolio-row" :data-tracking="project.status">
               <div class="portfolio-main"><span class="status" :data-status="project.status">{{ project.status === 'archived' ? 'inactive' : project.status }}</span><h3>{{ project.name }}</h3><p>{{ project.last_summary || 'No recorded activity' }}</p><code v-if="project.local_memory">{{ project.local_memory.path }}</code></div>
-              <dl><div><dt>Progress</dt><dd>{{ project.proven }} / {{ project.objectives }}</dd></div><div><dt>Last activity</dt><dd>{{ date(project.last_activity) }}</dd></div><div><dt>Machines</dt><dd>{{ project.machines.length ? project.machines.join(', ') : 'None reported' }}</dd></div><div><dt>Git</dt><dd v-if="project.git">{{ project.git.branch }} · <code>{{ project.git.head_commit?.slice(0,10) }}</code><span :class="{warn:project.git.dirty}">{{ project.git.dirty ? 'dirty' : 'clean' }}</span></dd><dd v-else>Not reported</dd></div></dl>
+              <dl><div><dt>Progress</dt><dd>{{ project.proven }} / {{ project.objectives }}</dd></div><div><dt>Confidence</dt><dd><span class="confidence-pill" :data-level="project.confidence.label">{{ project.confidence.score }} · {{ project.confidence.label }}</span></dd></div><div><dt>Last activity</dt><dd>{{ date(project.last_activity) }}</dd></div><div><dt>Machines</dt><dd>{{ project.machines.length ? project.machines.join(', ') : 'None reported' }}</dd></div><div><dt>Git</dt><dd v-if="project.git">{{ project.git.branch }} · <code>{{ project.git.head_commit?.slice(0,10) }}</code><span :class="{warn:project.git.dirty}">{{ project.git.dirty ? 'dirty' : 'clean' }}</span></dd><dd v-else>Not reported</dd></div></dl>
               <div class="portfolio-actions"><button @click="openPortfolioProject(project)">Open project</button><button class="secondary" :disabled="portfolioBusy" @click="setPortfolioTracking(project)">{{ project.status === 'archived' ? 'Enable tracking' : 'Disable tracking' }}</button></div>
             </article>
           </section>
@@ -719,6 +900,8 @@ async function recordJudgment() {
             </ol>
           </section>
           <div class="stack">
+            <section v-if="confidence" class="panel confidence-card"><div class="confidence-head"><div><p class="eyebrow">Auditable confidence</p><h2>Project confidence</h2></div><strong :data-level="confidence.label">{{ confidence.score }}</strong></div><div class="confidence-components"><div v-for="(component,key) in confidence.components" :key="key"><span>{{ String(key).replace('_',' ') }}</span><i><b :style="{width:`${component.score}%`}"></b></i><strong>{{ component.score }}</strong></div></div><p>{{ confidence.components.evidence.coverage }}% evidence coverage · {{ confidence.components.blockers.active }} blockers · {{ confidence.components.coordination.conflicts }} pass conflicts</p></section>
+            <section v-if="resume" class="panel resume-card"><div class="panel-head"><div><p class="eyebrow">Since your last visit</p><h2>{{ resume.summary.events ? `${resume.summary.events} changes` : 'No new changes' }}</h2></div><small>{{ date(resume.since) }}</small></div><div class="resume-metrics"><span><strong>{{ resume.summary.evidence }}</strong> evidence</span><span><strong>{{ resume.summary.decisions }}</strong> decisions</span><span><strong>{{ resume.summary.blockers }}</strong> blocker updates</span><span><strong>{{ resume.summary.changed_objectives }}</strong> objectives</span></div><p v-if="resume.recent[0]">Latest: {{ resume.recent[0].summary }}</p><p v-else>Your project state is unchanged since the previous visit.</p></section>
             <section class="panel">
               <div class="panel-head">
                 <div>
@@ -1021,34 +1204,28 @@ async function recordJudgment() {
               </div>
               <span class="scope-note">{{ passGroups.length }} passes</span>
             </div>
-            <button
+            <article
               v-for="pass in pagedPasses"
               :key="pass.id"
               class="pass-row"
               :class="{ selected: selectedPass === pass.id }"
-              @click="
-                selectedPass = selectedPass === pass.id ? '' : pass.id;
-                evidencePage = 1;
-              "
             >
-              <div>
+              <button class="pass-select" :aria-pressed="selectedPass === pass.id" @click="selectedPass = selectedPass === pass.id ? '' : pass.id; evidencePage = 1">
                 <strong>Pass {{ pass.id }}</strong
                 ><span
                   >{{ pass.proofs.length }} evidence records ·
                   {{ pass.images.length }} images</span
                 >
-              </div>
+              </button>
               <div class="pass-thumbs">
-                <img
+                <button
                   v-for="proof in pass.images.slice(0, 4)"
                   :key="proof.uid"
-                  :src="previewUrl(proof)"
-                  :alt="proof.label"
-                  loading="lazy"
-                  @click.stop="previewImage = proof"
-                /><span v-if="!pass.images.length">No image</span>
+                  :aria-label="`Open ${proof.label}`"
+                  @click="focusedEvidence = proof.uid; previewImage = proof"
+                ><img :src="previewUrl(proof)" :alt="proof.label" loading="lazy" /></button><span v-if="!pass.images.length">No image</span>
               </div>
-            </button>
+            </article>
             <div class="pagination">
               <button :disabled="passPage === 1" @click="passPage--">
                 Previous</button
@@ -1160,7 +1337,7 @@ async function recordJudgment() {
                 </select>
               </div>
               <div class="comparison-grid">
-                <figure @click="previewImage = comparisonPair.before">
+                <figure role="button" tabindex="0" :aria-label="`Open before image: ${comparisonPair.before.label}`" @click="previewImage = comparisonPair.before" @keydown.enter="previewImage = comparisonPair.before" @keydown.space.prevent="previewImage = comparisonPair.before">
                   <span>Before</span>
                   <img
                     :src="previewUrl(comparisonPair.before)"
@@ -1168,7 +1345,7 @@ async function recordJudgment() {
                   />
                   <figcaption>{{ comparisonPair.before.label }}</figcaption>
                 </figure>
-                <figure @click="previewImage = comparisonPair.after">
+                <figure role="button" tabindex="0" :aria-label="`Open after image: ${comparisonPair.after.label}`" @click="previewImage = comparisonPair.after" @keydown.enter="previewImage = comparisonPair.after" @keydown.space.prevent="previewImage = comparisonPair.after">
                   <span>After</span>
                   <img
                     :src="previewUrl(comparisonPair.after)"
@@ -1181,12 +1358,14 @@ async function recordJudgment() {
             <p v-if="!scopedEvidence.length" class="empty">
               No evidence recorded for this selection.
             </p>
-            <div class="evidence-table" role="table">
+            <div class="evidence-table" role="list" aria-label="Evidence records">
               <article
                 v-for="proof in pagedEvidence"
                 :key="proof.uid"
                 class="evidence-row"
-                role="row"
+                :id="`proof-${proof.uid}`"
+                :data-focused="focusedEvidence === proof.uid"
+                role="listitem"
               >
                 <div class="evidence-main">
                   <img
@@ -1194,7 +1373,12 @@ async function recordJudgment() {
                     :src="previewUrl(proof)"
                     :alt="proof.label"
                     loading="lazy"
-                    @click="previewImage = proof"
+                    role="button"
+                    tabindex="0"
+                    :aria-label="`Open ${proof.label}`"
+                    @click="focusedEvidence = proof.uid; previewImage = proof"
+                    @keydown.enter="focusedEvidence = proof.uid; previewImage = proof"
+                    @keydown.space.prevent="focusedEvidence = proof.uid; previewImage = proof"
                   />
                   <div>
                     <span class="status" :data-status="proof.status">{{
@@ -1246,7 +1430,7 @@ async function recordJudgment() {
                   ><button
                     v-if="proof.status === 'available' && isText(proof)"
                     class="text-button"
-                    @click="previewText(proof)"
+                    @click="focusedEvidence = proof.uid; previewText(proof)"
                   >
                     {{
                       openPreview === proof.uid ? "Close text" : "Read text"
@@ -1309,6 +1493,7 @@ async function recordJudgment() {
               ><span data-phase="planned">Planned</span>
             </div>
           </div>
+          <section class="flow-summary" aria-label="Flow summary"><article><span>Current</span><strong>{{ flowSummary.current?.label || 'No active chapter' }}</strong></article><article><span>Next planned</span><strong>{{ flowSummary.next?.label || 'None' }}</strong></article><article><span>Completed</span><strong>{{ flowSummary.completed }} / {{ graphNodes.length }}</strong></article><article><span>Returns</span><strong>{{ flowSummary.returns }}</strong></article></section>
           <div class="graph-scroll">
             <svg
               class="project-graph"
@@ -1348,7 +1533,7 @@ async function recordJudgment() {
                   )"
                   :key="index"
                   :d="graphPath(edge)"
-                  :class="`edge-${edge.type}`"
+                  :class="[`edge-${edge.type}`,{ 'edge-critical': edgeCritical(edge) }]"
                   :marker-end="
                     edge.type === 'returns' || edge.type === 'retry'
                       ? 'url(#arrow-return)'
@@ -1361,6 +1546,11 @@ async function recordJudgment() {
                 :key="node.id"
                 class="graph-node"
                 :data-phase="node.phase"
+                role="button"
+                tabindex="0"
+                :aria-label="`Open ${node.label}, ${node.phase}`"
+                @click="inspectGraphNode(node.id)"
+                @keydown.enter="inspectGraphNode(node.id)"
               >
                 <rect
                   :x="node.x"
@@ -1399,13 +1589,21 @@ async function recordJudgment() {
             </p>
           </section>
         </section>
+        <section v-else-if="activeView === 'snapshots'" class="snapshots-screen"><section class="panel snapshot-actions"><div><p class="eyebrow">Portable checkpoints</p><h2>Project snapshots</h2><p>Metadata and derived state only. Evidence files remain referenced.</p></div><button :disabled="snapshotBusy" @click="captureSnapshot">{{ snapshotBusy ? 'Capturing…' : 'Capture snapshot' }}</button></section><section v-if="snapshotDiff" class="panel snapshot-diff"><div class="panel-head"><div><p class="eyebrow">Latest comparison</p><h2>{{ snapshotDiff.identical ? 'No state change' : 'Changes detected' }}</h2></div><span>{{ snapshotDiff.before.state_hash.slice(7,15) }} → {{ snapshotDiff.after.state_hash.slice(7,15) }}</span></div><div class="snapshot-metrics"><article><strong>{{ snapshotDiff.summary.status_changes }}</strong><span>Status changes</span></article><article><strong>{{ snapshotDiff.summary.added_evidence }}</strong><span>New evidence</span></article><article><strong>{{ snapshotDiff.summary.opened_blockers }}</strong><span>Opened blockers</span></article><article><strong>{{ snapshotDiff.summary.confidence_delta > 0 ? '+' : '' }}{{ snapshotDiff.summary.confidence_delta }}</strong><span>Confidence</span></article></div><ul><li v-for="change in snapshotDiff.status_changes" :key="change.uid"><strong>{{ change.title }}</strong><span>{{ change.before || 'new' }} → {{ change.after }}</span></li></ul></section><section class="panel snapshot-list"><div class="panel-head"><div><p class="eyebrow">Local browser archive</p><h2>Captured states</h2></div><span>{{ snapshots.length }} / 10</span></div><p v-if="!snapshots.length" class="empty">No snapshot captured in this browser.</p><article v-for="snapshot in snapshots" :key="snapshot.state_hash"><div><strong>{{ date(snapshot.captured_at) }}</strong><code>{{ snapshot.state_hash }}</code><p>Event {{ snapshot.cursor.event_id }} · Confidence {{ snapshot.confidence.score }}</p></div><button @click="downloadSnapshot(snapshot)">Download JSON</button></article></section></section>
         <section v-else-if="activeView === 'analytics'" class="analytics-screen">
-          <div v-if="analyticsBusy && !analytics" class="panel empty">Loading reported usage…</div>
+          <div v-if="analyticsBusy && !analytics" class="panel empty" role="status" aria-live="polite">Loading reported usage…</div>
           <template v-else-if="analytics">
+            <section class="panel analytics-toolbar" aria-label="Analytics controls">
+              <div><p class="eyebrow">Usage scope</p><h2>{{ analyticsScope === 'project' ? detail?.name : 'All projects' }}</h2><p>Reported events and read-only local estimates.</p></div>
+              <div class="analytics-controls">
+                <label>Scope<select v-model="analyticsScope" @change="loadAnalytics"><option value="project">Current project</option><option value="global">All projects</option></select></label>
+                <label>Period<select v-model="analyticsDays" @change="loadAnalytics"><option :value="7">7 days</option><option :value="30">30 days</option><option :value="90">90 days</option><option :value="365">1 year</option></select></label>
+              </div>
+            </section>
             <section class="analytics-metrics">
               <article><span>Cost today</span><strong>{{ todayAnalytics && todayAnalytics.cost > 0 ? money(todayAnalytics.cost) : '—' }}</strong><small>{{ todayAnalytics?.unknown_costs ? `${todayAnalytics.unknown_costs} records have unknown cost` : 'No cost reported today' }}</small></article>
-              <article><span>Reported cost · 30 days</span><strong>{{ money(analytics.totals.cost) }}</strong><small>{{ money(analytics.totals.measured_cost) }} measured · {{ money(analytics.totals.estimated_cost) }} estimated</small></article>
-              <article><span>Codex API equivalent · today</span><strong>{{ money(analytics.local_today?.machine_total?.estimated_cost || 0) }}</strong><small>Estimated from {{ compactNumber(analytics.local_today?.machine_total?.total_tokens || 0) }} local tokens · not an invoice</small></article>
+              <article><span>Reported cost · {{ analyticsDays }} days</span><strong>{{ money(analytics.totals.cost) }}</strong><small>{{ money(analytics.totals.measured_cost) }} measured · {{ money(analytics.totals.estimated_cost) }} estimated</small></article>
+              <article><span>Codex API equivalent · today</span><strong>{{ analyticsScope === 'project' ? money(analytics.local_today?.machine_total?.estimated_cost || 0) : '—' }}</strong><small>{{ analyticsScope === 'project' ? `Estimated from ${compactNumber(analytics.local_today?.machine_total?.total_tokens || 0)} local tokens · not an invoice` : 'Select one project for local usage' }}</small></article>
               <article><span>Total tokens</span><strong>{{ compactNumber(analytics.totals.total_tokens) }}</strong><small>{{ compactNumber(analytics.totals.input_tokens) }} input · {{ compactNumber(analytics.totals.output_tokens) }} output</small></article>
               <article><span>Cached tokens</span><strong>{{ compactNumber(analytics.totals.cached_tokens) }}</strong><small>{{ analytics.totals.token_records }} records include token usage</small></article>
               <article><span>Efficiency</span><strong>{{ analytics.efficiency?.cost_per_proven == null ? '—' : money(analytics.efficiency.cost_per_proven) }}</strong><small>Cost per proven objective · {{ analytics.totals.unknown_costs }} unknown costs</small></article>
@@ -1414,7 +1612,7 @@ async function recordJudgment() {
               <section class="panel chart-panel"><div class="panel-head"><div><p class="eyebrow">Reported spend</p><h2>Cost by day</h2></div><span class="scope-note">Measured + estimated</span></div><p v-if="!analytics.daily.length" class="empty">No cost records in this period.</p><div v-else class="bar-chart" role="img" aria-label="Daily reported costs"><div v-for="day in analytics.daily" :key="day.key" class="bar-column"><span>{{ day.cost > 0 ? money(day.cost) : day.unknown_costs ? '—' : money(0) }}</span><i :style="{height:`${maxDailyCost && day.cost ? Math.max(3,day.cost/maxDailyCost*100) : 3}%`}"></i><small>{{ day.key.slice(5) }}</small></div></div></section>
               <section class="panel chart-panel"><div class="panel-head"><div><p class="eyebrow">Model usage</p><h2>Tokens by day</h2></div><span class="scope-note">Externally reported only</span></div><p v-if="!analytics.totals.token_records" class="empty">No token usage has been reported yet. Future Codex/Claude clients can publish it through cost.recorded.</p><div v-else class="bar-chart tokens" role="img" aria-label="Daily reported tokens"><div v-for="day in analytics.daily" :key="day.key" class="bar-column"><span>{{ compactNumber(day.tokens) }}</span><i :style="{height:`${maxDailyTokens ? Math.max(3,day.tokens/maxDailyTokens*100) : 3}%`}"></i><small>{{ day.key.slice(5) }}</small></div></div></section>
             </div>
-            <section class="panel analytics-table"><div class="panel-head"><div><p class="eyebrow">Attribution</p><h2>Models and sources</h2></div></div><article v-for="model in analytics.models" :key="model.key"><strong>{{ model.key }}</strong><div><span>{{ money(model.cost) }}</span><span>{{ compactNumber(model.tokens) }} tokens</span><span>{{ model.records }} records</span><span>{{ model.unknown_costs }} unknown costs</span></div></article><article v-for="model in analytics.local_today?.machine_total?.models || []" :key="`local-${model.model}`"><strong>{{ model.model }} · local today</strong><div><span>≈ {{ money(model.estimated_cost) }}</span><span>{{ compactNumber(model.total_tokens) }} tokens</span><span>{{ model.sessions }} sessions</span><span>API equivalent</span></div></article><p class="analytics-note">Local estimates apply the public API token rate to observed Codex usage. They are not subscription charges or invoices. Pricing table: {{ analytics.local_today?.pricing_version }}. Orchestrator remains observation-only.</p></section>
+            <section class="panel analytics-table"><div class="panel-head"><div><p class="eyebrow">Attribution</p><h2>Models and sources</h2></div></div><p v-if="!analytics.models.length" class="empty">No attributed usage for this scope and period.</p><article v-for="model in analytics.models" :key="model.key"><strong>{{ model.key }}</strong><div><span>{{ money(model.cost) }}</span><span>{{ compactNumber(model.tokens) }} tokens</span><span>{{ model.records }} records</span><span>{{ model.unknown_costs }} unknown costs</span></div></article><article v-for="model in analytics.local_today?.machine_total?.models || []" :key="`local-${model.model}`"><strong>{{ model.model }} · local today</strong><div><span>≈ {{ money(model.estimated_cost) }}</span><span>{{ compactNumber(model.total_tokens) }} tokens</span><span>{{ model.sessions }} sessions</span><span>API equivalent</span></div></article><p class="analytics-note">Local estimates apply the public API token rate to observed Codex usage. They are not subscription charges or invoices. Pricing table: {{ analytics.local_today?.pricing_version || 'not applicable to this scope' }}. Orchestrator remains observation-only.</p></section>
           </template>
         </section>
         <section v-else class="panel memory-import">
@@ -1488,6 +1686,7 @@ async function recordJudgment() {
         <button
           class="lightbox-close"
           aria-label="Close image"
+          autofocus
           @click="previewImage = null"
         >
           ×</button

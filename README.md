@@ -7,7 +7,15 @@ It records projects, chapters, objectives, events, decisions, blockers, verdicts
 ## What it provides
 
 - A global portfolio of tracked and locally detected projects.
+- A global Attention Center for active decisions, blockers, evidence debt, and coordination risks.
+- A recent global briefing grouped by project, with JSON and Markdown exports.
+- A per-project summary of changes since the previous browser visit.
 - Project chapters with derived progress, blockers, and history.
+- A navigable dependency flow with completed, active, blocked, planned, retry, and return paths.
+- An explainable confidence score based on evidence coverage, freshness, Git observations, blockers, judgments, and coordination conflicts.
+- Universal search across projects, objectives, events, decisions, evidence labels, paths, hashes, and declared Git data.
+- Portable, hashed project snapshots with local browser history and state comparison.
+- Shareable deep links and saved views that restore the selected project, view, chapter, pass, and proof.
 - Evidence grouped by chapter and pass, with image previews, full-screen navigation, text display, hashes, retention status, and local verification.
 - A traceable event journal that separates measured facts, agent statements, human judgments, and system records.
 - Human-judgment forms shown only when a judgment has explicitly been requested.
@@ -16,6 +24,7 @@ It records projects, chapters, objectives, events, decisions, blockers, verdicts
 - Portable JSON and Markdown exports, plus idempotent JSON import.
 - Immutable journal synchronization through Google Drive or Dropbox.
 - Token and cost analytics, including clearly labelled API-equivalent estimates from local session counters.
+- Read-only system health for SQLite integrity, schema, WAL, backup inventory, and evidence debt.
 
 ## Architecture
 
@@ -129,11 +138,20 @@ Important read endpoints:
 
 ```text
 GET /api/health
+GET /api/system/health
 GET /api/projects
 GET /api/portfolio
+GET /api/attention
+GET /api/search?q=:query&limit=40
 GET /api/projects/:slug
 GET /api/projects/:slug/timeline
 GET /api/projects/:slug/resume
+GET /api/briefing
+GET /api/briefing/export/json
+GET /api/briefing/export/markdown
+GET /api/projects/:slug/confidence
+GET /api/projects/:slug/snapshot
+POST /api/snapshots/compare
 GET /api/projects/:slug/evidence
 GET /api/projects/:slug/coordination
 GET /api/projects/:slug/diagram
@@ -145,9 +163,35 @@ GET /api/sync
 
 There are no run, queue, claim, cancel, worker, agent-launch, process-control, or Git-execution routes.
 
+## Per-project tracking commands
+
+From a project repository, Codex, Claude, or a human can explicitly enable passive tracking:
+
+```bash
+orchestrator enable my-project --name "My Project"
+orchestrator status
+orchestrator record ./observation.json
+orchestrator evidence add ./path/to/proof.png \
+  --objective objective-uid \
+  --pass pass-42 \
+  --type render \
+  --origin codex
+orchestrator disable
+```
+
+`enable` creates a portable `.orchestrator.json` contract in the current repository and marks the project active in the local registry. The contract uses `evidence_mode: "declared-only"`: Orchestrator never scans the repository for artifacts. `record` sends a declared JSON observation such as a cost, decision, blocker, transition, Git state, cleanup, or verdict and supplies the configured project automatically. `evidence add` hashes and measures only the explicitly supplied file, then sends its manifest to the local ingestion API. Both commands are idempotent for identical input. `disable` archives tracking and rejects further ingestion without deleting prior history or evidence references. `status` reports the local contract and registry state.
+
+Codex and Claude integrations should check `orchestrator status` before reporting work and use the ingestion API for events, transitions, Git observations, verdicts, decisions, blockers, cleanups, token usage, and costs. These commands never start an agent, task, watcher, Git command, browser, or project process.
+
 ## Human judgment
 
 A judgment form is derived from an active `human_judgment.requested` event. The reviewer only selects a verdict and writes the judgment; project, chapter, and objective context are already known by the interface. Proven objectives and cancelled requests never display a stale judgment form.
+
+Standing human authorization recorded on 2026-08-06: after the requested verdict cycle is exhausted, an external agent may perform a local correction strictly bounded to the already identified defect without requesting another judgment first. This authorization does not cover a new product decision, external spending, push or publication, irreversible action, or material scope expansion. Those cases still require explicit authorization. Orchestrator only records this policy and the resulting observations; it never performs the correction.
+
+Standing continuity rule recorded on 2026-08-06 for Nationfall, Blockrise, and Atlas: external work does not stop after a verdict, cleanup, report, closure, or lock release. The next safe step and any heavy-work slot transfer must already be started or handed off before the external thread reports completion. Exceptions are limited to an undocumented product decision, external spending, push or publication, irreversible action, or a blocker that cannot be corrected locally. Orchestrator stores this rule as passive memory only and never launches the next step itself.
+
+External collaboration rule recorded on 2026-08-06: Claude is a coproductor for divisible missions, with a target of 40–50% of useful work assigned through an explicit scope and exclusive file ownership while Codex advances on a separate path. Codex retains integration, heavy tests, UI/browser validation, evidence, judgment, and cleanup. Only one Claude slot may be active across projects; an empty result, quota failure, or authentication error is diagnosed once and then reallocated without blocking. Analysis is timeboxed to 15 minutes and bounded implementation to 45 minutes. Orchestrator records this policy only and never launches either agent.
 
 ## Multi-machine coordination
 
@@ -194,6 +238,12 @@ orchestrator export --markdown
 External clients can include `input_tokens`, `output_tokens`, `cached_tokens`, `total_tokens`, `model`, `duration_ms`, `requests`, and `cost_basis` in `cost.recorded`.
 
 For current local Codex sessions, Orchestrator reads the latest local token counters and model name without contacting OpenAI. It can display a public API-equivalent estimate using a dated pricing table. This is **not** the actual cost of a Codex or Claude subscription and is never presented as an invoice. Sessions opened at a parent directory remain machine-wide unless they can be reliably attributed to a project.
+
+## Register health
+
+`GET /api/system/health` performs read-only SQLite integrity and foreign-key checks, reports the active database and WAL sizes, schema version, latest recorded event, evidence-manifest debt, and an inventory of adjacent database files whose names identify them as backups. The dashboard exposes the same information under **System health**.
+
+This endpoint never repairs, vacuums, backs up, restores, hashes every evidence file, or starts a background job. Evidence bytes remain verified only through the explicit per-manifest verification endpoint.
 
 ## Backup and restore
 

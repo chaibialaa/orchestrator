@@ -1,6 +1,6 @@
 {
   "name": "@chaibialaa/orchestrator",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "An auditable project dashboard and persistent memory for work performed outside Orchestrator.",
   "type": "module",
   "bin": {
