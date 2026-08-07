@@ -104,6 +104,83 @@ CREATE TABLE IF NOT EXISTS sync_shards (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(provider, shard_name)
 );
+CREATE TABLE IF NOT EXISTS evidence_cloud (
+  id INTEGER PRIMARY KEY,
+  provider TEXT NOT NULL CHECK(provider IN ('gdrive','dropbox')),
+  sha256 TEXT NOT NULL,
+  remote_id TEXT NOT NULL,
+  remote_name TEXT NOT NULL,
+  bytes INTEGER,
+  mime TEXT,
+  status TEXT NOT NULL DEFAULT 'available' CHECK(status IN ('available','missing')),
+  uploaded_at TEXT,
+  discovered_at TEXT NOT NULL DEFAULT (datetime('now')),
+  downloaded_at TEXT,
+  local_path TEXT,
+  UNIQUE(provider, sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_cloud_sha ON evidence_cloud(sha256);
+CREATE TABLE IF NOT EXISTS work_proposals (
+  id INTEGER PRIMARY KEY,
+  uid TEXT NOT NULL UNIQUE,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  objective_id INTEGER REFERENCES objectives(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('chapter','task','instruction','corrective')),
+  title TEXT NOT NULL,
+  body TEXT,
+  success_criteria TEXT,
+  rationale TEXT NOT NULL,
+  source_kind TEXT NOT NULL CHECK(source_kind IN ('codex_memory','claude_memory','project_state','rejected_ticket','human')),
+  source_ref TEXT,
+  fingerprint TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'proposed' CHECK(status IN ('proposed','approved','rejected','published','superseded')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  reviewed_at TEXT,
+  reviewed_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_work_proposals_project ON work_proposals(project_id,status,created_at DESC);
+CREATE TABLE IF NOT EXISTS clickup_connections (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+  workspace_id TEXT,
+  list_id TEXT NOT NULL,
+  tag_name TEXT,
+  token TEXT,
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+  last_status TEXT NOT NULL DEFAULT 'unknown' CHECK(last_status IN ('ok','error','unknown')),
+  last_detail TEXT,
+  last_sync_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS clickup_ticket_links (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  proposal_id INTEGER REFERENCES work_proposals(id) ON DELETE SET NULL,
+  objective_id INTEGER REFERENCES objectives(id) ON DELETE SET NULL,
+  ticket_id TEXT NOT NULL,
+  ticket_url TEXT,
+  ticket_status TEXT,
+  sync_hash TEXT,
+  fingerprint TEXT NOT NULL UNIQUE,
+  last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS clickup_sync_runs (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  trigger TEXT NOT NULL CHECK(trigger IN ('manual','scheduled')),
+  status TEXT NOT NULL CHECK(status IN ('running','ok','error')),
+  percent INTEGER NOT NULL DEFAULT 0,
+  message TEXT,
+  created INTEGER NOT NULL DEFAULT 0,
+  updated INTEGER NOT NULL DEFAULT 0,
+  attachments INTEGER NOT NULL DEFAULT 0,
+  rejected_imported INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_clickup_sync_runs_project ON clickup_sync_runs(project_id,started_at DESC);
 CREATE TABLE IF NOT EXISTS blockers (
   id INTEGER PRIMARY KEY, uid TEXT NOT NULL UNIQUE, event_id INTEGER NOT NULL UNIQUE REFERENCES events(id) ON DELETE RESTRICT,
   project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE, objective_id INTEGER REFERENCES objectives(id) ON DELETE SET NULL,

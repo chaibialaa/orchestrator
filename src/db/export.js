@@ -1,6 +1,6 @@
 import { base, json } from './index.js'
 
-const TABLES = ['projects','chapters','objectives','events','evidence_manifests','decisions','blockers','verdicts','costs','cleanups']
+const TABLES = ['projects','chapters','objectives','events','evidence_manifests','decisions','blockers','verdicts','costs','cleanups','work_proposals','clickup_ticket_links']
 export function exportObject(projectId = null) {
   const out = { format: 'orchestrator-memory', version: 1, exported_at: new Date().toISOString(), scope: projectId ? 'project' : 'complete', tables: {} }
   for (const table of TABLES) {
@@ -33,5 +33,7 @@ export function exportMarkdown(projectId = null) {
   }
   lines.push('## Evidence manifest','')
   for (const proof of data.tables.evidence_manifests) lines.push(`- ${proof.label}: ${proof.status}; sha256=${proof.sha256 || 'unknown'}; ${proof.locator || 'no locator'}`)
+  lines.push('','## Planning proposals','')
+  for (const proposal of data.tables.work_proposals) lines.push(`- [${proposal.status}] ${proposal.kind}: ${proposal.title} — ${proposal.rationale}`)
   return lines.join('\n')
 }

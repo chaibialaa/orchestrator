@@ -6,13 +6,14 @@ import { exportJson, exportMarkdown } from './db/export.js'
 import { addDeclaredEvidence, recordObservation, setTracking, trackingStatus } from './tracking.js'
 import { base } from './db/index.js'
 import { deriveAiWorkspace, handoffMarkdown } from './intelligence.js'
+import { startClickupScheduler } from './planning.js'
 
 const localWorkspace=()=>{const status=trackingStatus();if(!status.configured||!status.project)throw new Error('Orchestrator is not configured for this project. Run: orchestrator enable');const project=base().prepare('SELECT * FROM projects WHERE slug=?').get(status.config.project);return deriveAiWorkspace(project)}
 
 const [command = 'serve', ...args] = process.argv.slice(2)
 if (command === 'serve') {
   const port = Number(args[0] || process.env.PORT || 4173)
-  createServer().listen(port, '127.0.0.1', () => console.log(`Orchestrator observation dashboard: http://127.0.0.1:${port}`))
+  createServer().listen(port, '127.0.0.1', () => {startClickupScheduler();console.log(`Orchestrator observation dashboard: http://127.0.0.1:${port}`)})
 } else if (command === 'migrate') {
   console.log(JSON.stringify(migrate(), null, 2))
 } else if (command === 'export') {

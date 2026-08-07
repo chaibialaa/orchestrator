@@ -25,7 +25,49 @@ export function migrate(path = dbPath()) {
   db.pragma('busy_timeout = 5000')
   db.pragma('foreign_keys = OFF')
   const current = hasTable(db, 'schema_migrations') ? db.prepare('SELECT max(version) version FROM schema_migrations').get()?.version : null
-  if (current === 3) { db.close(); return { migrated: false, version: 3 } }
+  if (current === 8) { db.close(); return { migrated: false, version: 8 } }
+  if (current === 7) {
+    const columns=new Set(db.prepare('PRAGMA table_info(clickup_ticket_links)').all().map(row=>row.name))
+    if(!columns.has('sync_hash'))db.exec('ALTER TABLE clickup_ticket_links ADD COLUMN sync_hash TEXT;')
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(8,?)').run(schemaChecksum())
+    db.close()
+    return { migrated: true, version: 8, counts: {} }
+  }
+  if (current === 6) {
+    db.exec(schemaSql())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(7,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(8,?)').run(schemaChecksum())
+    db.close()
+    return { migrated: true, version: 8, counts: {} }
+  }
+  if (current === 5) {
+    const columns=new Set(db.prepare('PRAGMA table_info(clickup_connections)').all().map(row=>row.name))
+    if(!columns.has('tag_name'))db.exec('ALTER TABLE clickup_connections ADD COLUMN tag_name TEXT;')
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(6,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(7,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(8,?)').run(schemaChecksum())
+    db.close()
+    return { migrated: true, version: 8, counts: {} }
+  }
+  if (current === 4) {
+    db.exec(schemaSql())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(5,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(6,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(7,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(8,?)').run(schemaChecksum())
+    db.close()
+    return { migrated: true, version: 8, counts: {} }
+  }
+  if (current === 3) {
+    db.exec(schemaSql())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(4,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(5,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(6,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(7,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(8,?)').run(schemaChecksum())
+    db.close()
+    return { migrated: true, version: 8, counts: {} }
+  }
   if (current === 2) {
     const eventColumns=new Set(db.prepare('PRAGMA table_info(events)').all().map(row=>row.name)),syncColumns=new Set(db.prepare('PRAGMA table_info(sync_connections)').all().map(row=>row.name))
     if(!eventColumns.has('machine_id'))db.exec('ALTER TABLE events ADD COLUMN machine_id TEXT;')
@@ -35,15 +77,25 @@ export function migrate(path = dbPath()) {
     db.prepare('UPDATE events SET machine_id=? WHERE machine_id IS NULL').run(machineId())
     db.exec(schemaSql())
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(3,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(4,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(5,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(6,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(7,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(8,?)').run(schemaChecksum())
     db.close()
-    return { migrated: true, version: 3, counts: {} }
+    return { migrated: true, version: 8, counts: {} }
   }
   if (current === 1) {
     db.exec(schemaSql())
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(2,?)').run(schemaChecksum())
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(3,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(4,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(5,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(6,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(7,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(8,?)').run(schemaChecksum())
     db.close()
-    return { migrated: true, version: 3, counts: {} }
+    return { migrated: true, version: 8, counts: {} }
   }
   if (current != null) throw new Error(`Unsupported schema version: ${current}`)
 
@@ -57,6 +109,11 @@ export function migrate(path = dbPath()) {
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(1,?)').run(schemaChecksum())
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(2,?)').run(schemaChecksum())
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(3,?)').run(schemaChecksum())
+      db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(4,?)').run(schemaChecksum())
+      db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(5,?)').run(schemaChecksum())
+      db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(6,?)').run(schemaChecksum())
+      db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(7,?)').run(schemaChecksum())
+      db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(8,?)').run(schemaChecksum())
       return
     }
 
@@ -104,6 +161,11 @@ export function migrate(path = dbPath()) {
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(1,?)').run(schemaChecksum())
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(2,?)').run(schemaChecksum())
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(3,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(4,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(5,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(6,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(7,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(8,?)').run(schemaChecksum())
   })
   tx()
   db.pragma('foreign_keys = ON')
@@ -112,5 +174,5 @@ export function migrate(path = dbPath()) {
   const counts = Object.fromEntries(['projects','objectives','events','evidence_manifests','decisions','blockers','verdicts','costs'].map((table) => [table, db.prepare(`SELECT count(*) count FROM ${table}`).get().count]))
   db.close()
   if (integrity !== 'ok' || foreignKeys.length) throw new Error(`Migration validation failed: ${integrity}, ${foreignKeys.length} foreign key errors`)
-  return { migrated: true, version: 3, counts }
+  return { migrated: true, version: 8, counts }
 }

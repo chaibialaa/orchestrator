@@ -53,6 +53,8 @@ type Evidence = {
   created_at: string;
   objective_title: string | null;
   pass_ref: string | null;
+  cloud_providers: string[];
+  local_available: boolean;
 };
 type Detail = Omit<Project, "objectives"> & {
   objectives: Objective[];
@@ -76,6 +78,7 @@ type SyncConnection = {
   last_push_at: string | null;
   shard_count: number;
   pending_events: number;
+  cloud_evidence: number;
 };
 type SavedView = { id: string; label: string; context: string; url: string; saved_at: string };
 type DiagramNode = {
@@ -124,19 +127,28 @@ const diagram = ref<Diagram | null>(null),
   briefingBusy = ref(false),
   systemHealth = ref<any>(null),
   systemHealthBusy = ref(false),
+  syncCenter = ref<any>(null),
+  syncCenterBusy = ref(false),
   analytics = ref<any>(null),
   analyticsBusy = ref(false),
   aiWorkspace = ref<any>(null),
   aiWorkspaceBusy = ref(false),
+  planning = ref<any>(null),
+  planningBusy = ref(false),
   memoryBusy = ref(false);
+const clickupForm=ref({workspace_id:"",list_id:"",tag_name:"",token:"",enabled:true})
+const clickupResourcesData=ref<any>({workspaces:[],lists:[]})
+const clickupSync=ref<any>({active:false,percent:0,message:"Ready"})
+const planningNeed=ref("")
+const clickupLists=computed(()=>clickupResourcesData.value.lists.filter((row:any)=>!clickupForm.value.workspace_id||row.workspace_id===clickupForm.value.workspace_id))
 const analyticsDays = ref(30),
   analyticsScope = ref<"project" | "global">("project");
 const shareState = ref("Copy context link");
 const focusedEvidence = ref(""), pendingEvidence = ref("");
 const savedViews = ref<SavedView[]>([]), saveState = ref("Save shortcut");
 const savedViewsKey = "orchestrator:saved-views";
-const allowedViews = new Set(["search", "briefing", "attention", "health", "projects", "overview", "ai", "chapters", "evidence", "diagram", "snapshots", "analytics", "memory"]);
-const globalViews = new Set(["search", "briefing", "attention", "health", "projects"]);
+const allowedViews = new Set(["search", "briefing", "attention", "health", "sync-center", "projects", "overview", "ai", "planning", "chapters", "evidence", "diagram", "snapshots", "analytics", "memory"]);
+const globalViews = new Set(["search", "briefing", "attention", "health", "sync-center", "projects"]);
 const isGlobalView = (view: string) => globalViews.has(view);
 let restoringNavigation = true;
 function applyUrlState() {
@@ -199,7 +211,7 @@ function removeSavedView(id: string) {
   persistSavedViews();
 }
 const activeView = ref<
-    "search" | "briefing" | "attention" | "health" | "projects" | "overview" | "ai" | "chapters" | "evidence" | "diagram" | "snapshots" | "analytics" | "memory"
+    "search" | "briefing" | "attention" | "health" | "sync-center" | "projects" | "overview" | "ai" | "planning" | "chapters" | "evidence" | "diagram" | "snapshots" | "analytics" | "memory"
   >("overview"),
   selectedChapter = ref(""),
   selectedPass = ref(""),
@@ -247,6 +259,8 @@ async function loadPortfolio() {
 async function loadAttention(){attentionBusy.value=true;try{attention.value=await api('/attention')}catch(e:any){error.value=e.message}finally{attentionBusy.value=false}}
 async function loadBriefing(){briefingBusy.value=true;try{const since=localStorage.getItem('orchestrator:briefing-reviewed')||new Date(Date.now()-86400000).toISOString();briefing.value=await api(`/briefing?since=${encodeURIComponent(since)}`)}catch(e:any){error.value=e.message}finally{briefingBusy.value=false}}
 async function loadSystemHealth(){systemHealthBusy.value=true;try{systemHealth.value=await api('/system/health')}catch(e:any){error.value=e.message}finally{systemHealthBusy.value=false}}
+async function loadSyncCenter(){syncCenterBusy.value=true;try{syncCenter.value=await api('/clickup/sync-center')}catch(e:any){error.value=e.message}finally{syncCenterBusy.value=false}}
+async function syncAllProjects(){syncCenterBusy.value=true;error.value="";try{const request=fetch('/api/clickup/sync-all',{method:'POST'});const poll=window.setInterval(loadSyncCenter,800);const response=await request;window.clearInterval(poll);if(!response.ok)throw new Error((await response.json()).message);await loadSyncCenter()}catch(e:any){error.value=e.message}finally{syncCenterBusy.value=false}}
 function markBriefingReviewed(){localStorage.setItem('orchestrator:briefing-reviewed',new Date().toISOString());loadBriefing()}
 function openBriefingItem(item:any){selected.value=item.project.slug;window.setTimeout(()=>{selectedChapter.value=item.target.objective_uid||'';selectedPass.value=item.target.pass_ref||'';pendingEvidence.value=item.target.evidence_uid||'';focusedEvidence.value=pendingEvidence.value;activeView.value=item.target.view||'overview'},0)}
 function openAttention(item:any){selected.value=item.project.slug;window.setTimeout(()=>{selectedChapter.value=item.target.objective_uid||'';selectedPass.value=item.target.pass_ref||'';activeView.value=item.target.view||'overview'},0)}
@@ -280,6 +294,12 @@ async function loadAiWorkspace() {
   catch (e: any) { error.value = e.message; }
   finally { aiWorkspaceBusy.value = false; }
 }
+async function loadPlanning(){if(!selected.value)return;planningBusy.value=true;try{planning.value=await api(`/projects/${selected.value}/planning`);const connection=planning.value?.clickup;if(connection)clickupForm.value={workspace_id:connection.workspace_id||"",list_id:connection.list_id||"",tag_name:connection.tag_name||selected.value,token:"",enabled:connection.enabled!==0}}catch(e:any){error.value=e.message}finally{planningBusy.value=false}}
+async function loadClickupResources(){planningBusy.value=true;try{clickupResourcesData.value=await api(`/projects/${selected.value}/clickup/resources`);if(!clickupForm.value.workspace_id&&clickupResourcesData.value.workspaces[0])clickupForm.value.workspace_id=clickupResourcesData.value.workspaces[0].id}catch(e:any){error.value=e.message}finally{planningBusy.value=false}}
+async function connectPersonalToken(){planningBusy.value=true;error.value="";try{const response=await fetch(`/api/projects/${selected.value}/clickup/token`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:clickupForm.value.token})});if(!response.ok)throw new Error((await response.json()).message);const data=await response.json();clickupForm.value.token="";clickupResourcesData.value=data.resources;await loadPlanning();if(!clickupForm.value.workspace_id&&data.resources.workspaces[0])clickupForm.value.workspace_id=data.resources.workspaces[0].id}catch(e:any){error.value=e.message}finally{planningBusy.value=false}}
+async function runClickupSync(){planningBusy.value=true;error.value="";clickupSync.value={active:true,percent:1,message:"Starting synchronization"};const poll=window.setInterval(async()=>{try{clickupSync.value=await api(`/projects/${selected.value}/clickup/progress`)}catch{}},350);try{const response=await fetch(`/api/projects/${selected.value}/clickup/sync`,{method:'POST'});if(!response.ok)throw new Error((await response.json()).message);clickupSync.value={active:false,percent:100,message:"Synchronization complete"};await loadPlanning();await loadProject()}catch(e:any){error.value=e.message;clickupSync.value={active:false,percent:0,message:e.message,error:true}}finally{window.clearInterval(poll);planningBusy.value=false}}
+async function planningAction(path:string,body:any={}){planningBusy.value=true;error.value="";try{const response=await fetch(`/api/projects/${selected.value}/${path}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!response.ok)throw new Error((await response.json()).message);await loadPlanning();await loadProject()}catch(e:any){error.value=e.message}finally{planningBusy.value=false}}
+async function saveClickup(){planningBusy.value=true;try{const response=await fetch(`/api/projects/${selected.value}/clickup`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(clickupForm.value)});if(!response.ok)throw new Error((await response.json()).message);clickupForm.value.token="";await loadPlanning()}catch(e:any){error.value=e.message}finally{planningBusy.value=false}}
 function openAiTarget(target:any){if(!target)return;selectedChapter.value=target.objective_uid||'';activeView.value=target.view||'overview'}
 const compactNumber=(value:number)=>new Intl.NumberFormat("en",{notation:"compact",maximumFractionDigits:1}).format(value||0)
 const money=(value:number)=>new Intl.NumberFormat("en",{style:"currency",currency:"USD",maximumFractionDigits:2}).format(value||0)
@@ -367,16 +387,20 @@ watch(selected, () => {
   loadProject();
   if(activeView.value==='analytics')loadAnalytics()
   if(activeView.value==='ai')loadAiWorkspace()
+  if(activeView.value==='planning')loadPlanning()
 });
 watch([selected, activeView, selectedChapter, selectedPass, previewImage, openPreview], syncContextUrl);
 watch(activeView, (view) => {
   if (view === "briefing" && !briefing.value) loadBriefing();
   if (view === "health" && !systemHealth.value) loadSystemHealth();
+  if (view === "sync-center") loadSyncCenter();
   if (view === "projects" && !portfolio.value) loadPortfolio();
   if (view === "analytics" && !analytics.value) loadAnalytics();
   if (view === "ai") loadAiWorkspace();
+  if (view === "planning") loadPlanning();
 });
 let timer: number;
+let clickupProgressTimer: number;
 watch([query, assertion, selectedChapter, selectedPass], () => {
   clearTimeout(timer);
   timer = window.setTimeout(loadMemory, 200);
@@ -395,6 +419,7 @@ onMounted(async () => {
     loadSavedViews();
     restoringNavigation = false;
     window.history.replaceState(null, "", urlForContext());
+    clickupProgressTimer=window.setInterval(async()=>{if(activeView.value==='planning'&&selected.value)try{clickupSync.value=await api(`/projects/${selected.value}/clickup/progress`)}catch{}},1500)
   } catch (e: any) {
     error.value = e.message;
     loading.value = false;
@@ -406,6 +431,7 @@ function restoreFromHistory() {
   window.setTimeout(() => restoringNavigation = false, 0);
 }
 onBeforeUnmount(() => {
+  window.clearInterval(clickupProgressTimer);
   window.removeEventListener("keydown", closeOnEscape);
   window.removeEventListener("popstate", restoreFromHistory);
 });
@@ -478,6 +504,15 @@ async function verifyProof(proof: Evidence) {
     verifying.value = "";
   }
 }
+async function downloadProof(proof: Evidence) {
+  verifying.value = proof.uid;
+  try {
+    const response = await fetch(`/api/evidence/${proof.uid}/download`, { method: "POST" });
+    if (!response.ok) throw new Error((await response.json()).message);
+    await loadMemory();
+  } catch (e: any) { error.value = e.message; }
+  finally { verifying.value = ""; }
+}
 const scopedEvidence = computed(() =>
   evidence.value.filter(
     (p) =>
@@ -549,7 +584,10 @@ const passGroups = computed(() => {
     groups.set(k, [...(groups.get(k) || []), proof]);
   }
   return [...groups.entries()]
-    .map(([id, proofs]) => ({ id, proofs, images: proofs.filter(isImage) }))
+    .map(([id, proofs]) => {
+      const ordered = [...proofs].sort((a,b) => String(a.created_at).localeCompare(String(b.created_at)));
+      return { id, proofs, images: proofs.filter(isImage), started_at: ordered[0]?.created_at || null, latest_at: ordered.at(-1)?.created_at || null };
+    })
     .sort((a, b) => Number(b.id) - Number(a.id));
 });
 const passPages = computed(() =>
@@ -747,6 +785,7 @@ async function recordJudgment() {
           <button class="all-projects" :class="{ active: activeView === 'briefing' }" @click="activeView = 'briefing'; loadBriefing()"><span>Recent briefing</span><small>What changed</small></button>
           <button class="all-projects" :class="{ active: activeView === 'attention' }" @click="activeView = 'attention'; loadAttention()"><span>Attention center</span><small>{{ attentionItems.length }} signals</small></button>
           <button class="all-projects" :class="{ active: activeView === 'health' }" @click="activeView = 'health'; loadSystemHealth()"><span>System health</span><small>Read-only checks</small></button>
+          <button class="all-projects" :class="{ active: activeView === 'sync-center' }" @click="activeView = 'sync-center'; loadSyncCenter()"><span>Sync center</span><small>ClickUp portfolio</small></button>
           <button class="all-projects" :class="{ active: activeView === 'search' }" @click="activeView = 'search'"><span>Search memory</span><small>All records</small></button>
           <button class="all-projects" :class="{ active: activeView === 'projects' }" @click="activeView = 'projects'; loadPortfolio()"><span>All projects</span><small>Global view</small></button>
         </nav>
@@ -783,11 +822,11 @@ async function recordJudgment() {
     <main id="main-content" tabindex="-1">
       <header>
         <div>
-          <p class="eyebrow">{{ activeView === "search" ? "Universal search" : activeView === "briefing" ? "Global resume" : activeView === "attention" ? "Global attention" : activeView === "health" ? "Register integrity" : activeView === "projects" ? "Global portfolio" : "Project record" }}</p>
-          <h1>{{ activeView === "search" ? "Search memory" : activeView === "briefing" ? "Recent briefing" : activeView === "attention" ? "Attention center" : activeView === "health" ? "System health" : activeView === "projects" ? "Projects" : detail?.name || "Project memory" }}</h1>
+          <p class="eyebrow">{{ activeView === "search" ? "Universal search" : activeView === "briefing" ? "Global resume" : activeView === "attention" ? "Global attention" : activeView === "health" ? "Register integrity" : activeView === "sync-center" ? "Passive connectors" : activeView === "projects" ? "Global portfolio" : "Project record" }}</p>
+          <h1>{{ activeView === "search" ? "Search memory" : activeView === "briefing" ? "Recent briefing" : activeView === "attention" ? "Attention center" : activeView === "health" ? "System health" : activeView === "sync-center" ? "Sync center" : activeView === "projects" ? "Projects" : detail?.name || "Project memory" }}</h1>
           <p>
             {{
-              activeView === "search" ? "Projects, objectives, events, decisions, evidence, paths and hashes." : activeView === "briefing" ? "Changes across every active project since your last review." : activeView === "attention" ? "Decisions and risks that require a closer look." : activeView === "health" ? "Read-only integrity, backup and evidence-retention checks." : activeView === "projects"
+              activeView === "search" ? "Projects, objectives, events, decisions, evidence, paths and hashes." : activeView === "briefing" ? "Changes across every active project since your last review." : activeView === "attention" ? "Decisions and risks that require a closer look." : activeView === "health" ? "Read-only integrity, backup and evidence-retention checks." : activeView === "sync-center" ? "Scheduled ClickUp registry synchronization across every connected project." : activeView === "projects"
                 ? "Tracked work, local discoveries and multi-machine state."
                 : detail?.description ||
               "Auditable history and conversation handoff."
@@ -816,6 +855,7 @@ async function recordJudgment() {
             'projects',
             'overview',
             'ai',
+            'planning',
             'chapters',
             'evidence',
             'diagram',
@@ -829,7 +869,7 @@ async function recordJudgment() {
           role="tab"
           :aria-selected="activeView === view"
           :aria-label="`${view} view`"
-          @click="activeView = view as any; view === 'projects' && loadPortfolio(); view === 'analytics' && loadAnalytics(); view === 'ai' && loadAiWorkspace()"
+          @click="activeView = view as any; view === 'projects' && loadPortfolio(); view === 'analytics' && loadAnalytics(); view === 'ai' && loadAiWorkspace(); view === 'planning' && loadPlanning()"
         >
           {{ view }}
         </button>
@@ -845,6 +885,15 @@ async function recordJudgment() {
         </template>
       </section>
       <SystemHealthPanel v-else-if="activeView === 'health'" :health="systemHealth" :busy="systemHealthBusy" @refresh="loadSystemHealth" />
+      <section v-else-if="activeView === 'sync-center'" class="sync-center-screen">
+        <div v-if="syncCenterBusy && !syncCenter" class="panel empty" role="status">Loading connector state…</div>
+        <template v-else-if="syncCenter">
+          <section class="panel sync-center-hero"><div><p class="eyebrow">Portfolio schedule</p><h2>{{ syncCenter.scheduler.enabled ? `Every ${syncCenter.scheduler.minutes} minutes` : 'Scheduled sync disabled' }}</h2><p>Next cycle: {{ date(syncCenter.scheduler.next_run_at) }} · Last started: {{ date(syncCenter.scheduler.last_started_at) }}</p></div><button :disabled="syncCenterBusy || syncCenter.all_progress.active" @click="syncAllProjects">{{ syncCenter.all_progress.active ? `${syncCenter.all_progress.percent}% · ${syncCenter.all_progress.message}` : 'Sync all projects now' }}</button></section>
+          <section v-if="syncCenter.all_progress.active || syncCenter.all_progress.percent" class="panel portfolio-sync-progress"><div><span>{{ syncCenter.all_progress.message }}</span><strong>{{ syncCenter.all_progress.percent }}%</strong></div><progress :value="syncCenter.all_progress.percent" max="100"></progress></section>
+          <section class="sync-project-grid"><article v-for="connection in syncCenter.connections" :key="connection.slug" class="panel sync-project-card" :data-status="connection.last_status"><div class="panel-head"><div><p class="eyebrow">{{ connection.tag_name || connection.slug }}</p><h2>{{ connection.name }}</h2></div><span class="status" :data-status="connection.last_status">{{ connection.last_status }}</span></div><p>{{ connection.last_detail || 'Never synchronized' }}</p><div class="sync-project-meta"><span>Last {{ date(connection.last_sync_at) }}</span><span>List {{ connection.list_id }}</span></div><div v-if="connection.progress.active" class="mini-sync"><i :style="{width:`${connection.progress.percent}%`}"></i><small>{{ connection.progress.message }}</small></div><button @click="selected=connection.slug;activeView='planning'">Open project settings →</button></article></section>
+          <section class="panel sync-history"><div class="panel-head"><div><p class="eyebrow">Audit history</p><h2>Latest synchronization runs</h2></div><button class="secondary" :disabled="syncCenterBusy" @click="loadSyncCenter">Refresh</button></div><p v-if="!syncCenter.history.length" class="empty">No recorded run yet.</p><article v-for="run in syncCenter.history" :key="run.id"><span class="status" :data-status="run.status">{{ run.status }}</span><div><strong>{{ run.project_name }}</strong><p>{{ run.message }}</p></div><span>{{ run.trigger }}</span><span>{{ run.created }} created · {{ run.updated }} updated · {{ run.attachments }} files</span><time>{{ date(run.started_at) }}</time></article></section>
+        </template>
+      </section>
       <section v-else-if="activeView === 'projects'" class="portfolio-screen">
         <div v-if="portfolioBusy && !portfolio" class="panel empty" role="status" aria-live="polite">Loading local project inventory…</div>
         <template v-else-if="portfolio">
@@ -978,6 +1027,7 @@ async function recordJudgment() {
                   <p>{{ connection.last_detail || "Never synchronized" }}</p>
                   <small
                     >{{ connection.shard_count }} known journals ·
+                    {{ connection.cloud_evidence }} cloud evidence ·
                     {{ connection.pending_events }} local events pending · Last
                     push: {{ date(connection.last_push_at) }}</small
                   >
@@ -989,7 +1039,7 @@ async function recordJudgment() {
                   {{
                     syncing === connection.provider
                       ? "Synchronizing…"
-                      : "Sync journals"
+                      : "Sync memory + evidence"
                   }}
                 </button>
               </article>
@@ -1239,7 +1289,7 @@ async function recordJudgment() {
                 ><span
                   >{{ pass.proofs.length }} evidence records ·
                   {{ pass.images.length }} images</span
-                >
+                ><time>{{ date(pass.started_at) }}<template v-if="pass.latest_at && pass.latest_at !== pass.started_at"> → {{ date(pass.latest_at) }}</template></time>
               </button>
               <div class="pass-thumbs">
                 <button
@@ -1408,6 +1458,8 @@ async function recordJudgment() {
                     <span class="status" :data-status="proof.status">{{
                       proof.status
                     }}</span>
+                    <span v-if="proof.local_available" class="status" data-status="available">local</span>
+                    <span v-else-if="proof.cloud_providers.length" class="status" data-status="cloud">cloud-only</span>
                     <h3>{{ proof.label }}</h3>
                     <p>
                       {{ proof.objective_title || "Project-level evidence" }} ·
@@ -1417,6 +1469,7 @@ async function recordJudgment() {
                           : "No pass reference"
                       }}
                     </p>
+                    <time>Recorded {{ date(proof.created_at) }}</time>
                   </div>
                 </div>
                 <dl>
@@ -1436,6 +1489,10 @@ async function recordJudgment() {
                     <dt>Retention</dt>
                     <dd>{{ proof.retention }}</dd>
                   </div>
+                  <div>
+                    <dt>Date and time</dt>
+                    <dd>{{ date(proof.created_at) }}</dd>
+                  </div>
                 </dl>
                 <div class="proof-ref">
                   <code :title="proof.sha256 || ''">{{
@@ -1451,6 +1508,12 @@ async function recordJudgment() {
                   >
                     {{ verifying === proof.uid ? "Verifying…" : "Verify file" }}
                   </button
+                  ><button
+                    v-if="!proof.local_available && proof.cloud_providers.length"
+                    class="text-button"
+                    :disabled="verifying === proof.uid"
+                    @click="downloadProof(proof)"
+                  >{{ verifying === proof.uid ? "Downloading…" : "Download evidence" }}</button
                   ><button
                     v-if="proof.status === 'available' && isText(proof)"
                     class="text-button"
@@ -1613,6 +1676,31 @@ async function recordJudgment() {
             </p>
           </section>
         </section>
+        <section v-else-if="activeView === 'planning'" class="planning-screen">
+          <div v-if="planningBusy && !planning" class="panel empty" role="status">Analysing recorded work…</div>
+          <template v-else-if="planning">
+            <section class="panel planning-hero"><div><p class="eyebrow">Human-approved planning</p><h2>Proposed chapters and tasks</h2><p>Describe a need or analyse recorded project state and local Codex/Claude memory. Orchestrator never starts the work.</p><textarea v-model="planningNeed" rows="3" placeholder="What outcome, correction or instruction does this project need?"></textarea></div><div class="planning-hero-actions"><button :disabled="planningBusy || !planningNeed.trim()" @click="planningAction('planning/generate',{need:planningNeed});planningNeed=''">Propose from this need</button><button class="secondary" :disabled="planningBusy" @click="planningAction('planning/generate')">{{ planningBusy ? 'Analysing…' : 'Analyse existing work' }}</button></div></section>
+            <section class="planning-grid">
+              <div class="panel proposal-list"><div class="panel-head"><div><p class="eyebrow">Review queue</p><h2>{{ planning.proposals.filter((p:any)=>p.status==='proposed').length }} proposals</h2></div></div><p v-if="!planning.proposals.length" class="empty">Run the analysis to create deduplicated suggestions.</p>
+                <article v-for="proposal in planning.proposals" :key="proposal.uid" class="proposal-card" :data-status="proposal.status"><div><span class="status" :data-status="proposal.status">{{ proposal.status }}</span><small>{{ proposal.kind }} · {{ proposal.source_kind.replace('_',' ') }}</small><h3>{{ proposal.title }}</h3><p>{{ proposal.body || proposal.rationale }}</p><small v-if="proposal.success_criteria">Done when: {{ proposal.success_criteria }}</small><a v-if="proposal.ticket_url" :href="proposal.ticket_url" target="_blank" rel="noreferrer">Open ClickUp ticket →</a></div><div v-if="proposal.status==='proposed'" class="proposal-actions"><button @click="planningAction(`planning/${proposal.uid}/review`,{status:'approved',reviewer:'dashboard'})">Approve</button><button class="secondary" @click="planningAction(`planning/${proposal.uid}/review`,{status:'rejected',reviewer:'dashboard'})">Reject</button></div></article>
+              </div>
+              <form class="panel clickup-settings" @submit.prevent="saveClickup">
+                <div><p class="eyebrow">Optional external registry</p><h2>ClickUp connection</h2><p>Connect once, choose a destination, then publish only approved proposals.</p></div>
+                <a v-if="planning.clickup.oauth.available && !planning.clickup.connected" class="clickup-connect" :href="`/api/clickup/oauth/start?project=${selected}`">Connect with ClickUp <span>↗</span></a>
+                <div v-if="planning.clickup.connected" class="connected-badge"><span>✓</span><div><strong>ClickUp authorized</strong><small>Token stored locally and never exported</small></div><button type="button" class="secondary" @click="loadClickupResources">Load destinations</button></div>
+                <section v-if="planning.clickup.progress.tickets || planning.clickup.progress.proposals.length" class="clickup-progress"><div><span>Published tickets</span><strong>{{ planning.clickup.progress.tickets }}</strong></div><div v-for="item in planning.clickup.progress.statuses" :key="item.status"><span>{{ item.status }}</span><strong>{{ item.count }}</strong></div><small v-if="planning.clickup.last_sync_at">Updated {{ date(planning.clickup.last_sync_at) }}</small></section>
+                <label v-if="clickupResourcesData.workspaces.length">Workspace<select v-model="clickupForm.workspace_id" @change="clickupForm.list_id=''" required><option value="" disabled>Choose workspace</option><option v-for="workspace in clickupResourcesData.workspaces" :key="workspace.id" :value="workspace.id">{{ workspace.name }}</option></select></label>
+                <label v-if="clickupResourcesData.lists.length">Destination list<select v-model="clickupForm.list_id" required><option value="" disabled>Choose list</option><option v-for="list in clickupLists" :key="list.id" :value="list.id">{{ list.space_name }}<template v-if="list.folder_name"> / {{ list.folder_name }}</template> / {{ list.name }}</option></select></label>
+                <label v-if="planning.clickup.connected">Project tag<input v-model="clickupForm.tag_name" required maxlength="80" placeholder="Project label"><small>Created automatically in the selected ClickUp Space when missing.</small></label>
+                <details class="manual-token" :open="!planning.clickup.connected"><summary>{{ planning.clickup.connected ? 'Replace personal token' : 'Connect with a personal token' }}</summary><label>Personal API token<input v-model="clickupForm.token" type="password" placeholder="pk_…" autocomplete="new-password"></label><button type="button" class="token-connect" :disabled="planningBusy || !clickupForm.token.startsWith('pk_')" @click="connectPersonalToken">Connect token and load destinations</button></details>
+                <label class="check"><input v-model="clickupForm.enabled" type="checkbox"><span>Enable passive synchronization</span></label>
+                <section v-if="clickupSync.active || clickupSync.percent" class="sync-progress" :data-error="Boolean(clickupSync.error)" role="status" aria-live="polite"><div><span>{{ clickupSync.message }}</span><strong>{{ clickupSync.percent }}%</strong></div><progress :value="clickupSync.percent" max="100">{{ clickupSync.percent }}%</progress></section>
+                <div class="clickup-actions"><button class="primary" :disabled="planningBusy || !clickupForm.list_id">Save destination</button><button type="button" class="secondary" :disabled="planningBusy || !planning.clickup?.enabled || !planning.clickup?.list_id" @click="runClickupSync">Sync full registry</button></div>
+                <p v-if="planning.clickup?.last_detail" class="sync-detail" :data-status="planning.clickup.last_status">{{ planning.clickup.last_detail }}</p>
+              </form>
+            </section>
+          </template>
+        </section>
         <section v-else-if="activeView === 'ai'" class="ai-workspace-screen">
           <div v-if="aiWorkspaceBusy && !aiWorkspace" class="panel empty" role="status">Building AI workspace…</div>
           <template v-else-if="aiWorkspace">
@@ -1749,7 +1837,7 @@ async function recordJudgment() {
                 previewImage.pass_ref
                   ? `Pass ${previewImage.pass_ref}`
                   : "No pass reference"
-              }}</span
+              }} · {{ date(previewImage.created_at) }}</span
             >
           </figcaption>
         </figure>

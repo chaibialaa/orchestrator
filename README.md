@@ -21,6 +21,8 @@ It records projects, chapters, objectives, events, decisions, blockers, verdicts
 - Human-judgment forms shown only when a judgment has explicitly been requested.
 - Multi-machine coordination records for concurrent passes and observed Git state.
 - Read-only discovery of local Codex and Claude memory.
+- Human-reviewed planning proposals derived from local AI memory, blockers, failed verdicts, and project state.
+- Optional, explicit ClickUp synchronization for approved work and rejected-ticket feedback.
 - Portable JSON and Markdown exports, plus idempotent JSON import.
 - Immutable journal synchronization through Google Drive or Dropbox.
 - Token and cost analytics, including clearly labelled API-equivalent estimates from local session counters.
@@ -175,6 +177,11 @@ GET /api/evidence/:uid/verify
 GET /api/analytics?project=:slug&days=30
 GET /api/memory/local
 GET /api/sync
+GET /api/projects/:project/planning
+POST /api/projects/:project/planning/generate
+POST /api/projects/:project/planning/:proposal/review
+PUT /api/projects/:project/clickup
+POST /api/projects/:project/clickup/sync
 ```
 
 There are no run, queue, claim, cancel, worker, agent-launch, process-control, or Git-execution routes.
@@ -232,6 +239,22 @@ orchestrator-journal--<machine>--<cursor>--<hash>.json
 
 Synchronization imports remote shards and publishes new local shards without deleting or overwriting history. OAuth credentials remain in `~/.orchestrator/oauth.json`; refresh tokens are encrypted in SQLite using `~/.orchestrator/secret.key`. Large evidence files are not uploaded by default.
 
+Small local evidence files are synchronized with Drive or Dropbox by content hash. The default per-file limit is 50 MB and can be changed with `ORCHESTRATOR_EVIDENCE_CLOUD_MAX_MB`. Each sync uploads at most 100 files and 100 MB; tune these safeguards with `ORCHESTRATOR_EVIDENCE_CLOUD_BATCH_FILES` and `ORCHESTRATOR_EVIDENCE_CLOUD_BATCH_MB`. A sync indexes existing remote blobs, uploads only hashes that are absent, and never overwrites another version. Evidence above the limit remains referenced only.
+
+## Planning proposals and ClickUp
+
+The **Planning** view accepts a user need and turns it, or existing records, into deduplicated proposals for chapters, tasks, instructions, or bounded corrections. Sources are explicit: local Codex/Claude memory, current project state, failed verdicts, open blockers, a rejected ClickUp ticket, or a human. Generation is deterministic and local; Orchestrator does not call a model or launch an agent. Every proposal must be approved or rejected by a human before it can become an objective.
+
+ClickUp is optional and project-scoped. The preferred connection uses OAuth: create a ClickUp OAuth app once, register `http://127.0.0.1:4173/api/clickup/oauth/callback`, then set `CLICKUP_CLIENT_ID` and `CLICKUP_CLIENT_SECRET` (or override the callback with `CLICKUP_REDIRECT_URI`). A personal token can instead connect directly and discover authorized Workspaces, Spaces, Folders, and Lists. Tokens and client secrets are never returned by the API or included in exports. The full proposal registry is synchronized: proposed work is tagged `orchestrator-backlog`, approved work `orchestrator-ready`, rejected work `orchestrator-rejected`, and superseded work accordingly. Each ticket carries source, rationale, description, success criteria, proof manifests, hashes, remote proof URLs, and up to ten available local evidence files of 10 MB or less on first creation. Stable fingerprints update the same ticket rather than duplicating it. Remote rejected/refused/declined/failed tickets return as corrective proposals linked to the original.
+
+While the server is running, a passive connector cycle synchronizes every enabled ClickUp project every five minutes. Set `ORCHESTRATOR_CLICKUP_SYNC_MINUTES` to another positive number, or `0` to disable scheduled synchronization. Projects are processed sequentially, overlapping cycles are rejected, and this connector only exchanges records and evidence; it never starts project work, an agent, Git, or a browser.
+
+The global **Sync center** shows every connected project, configured label and List, live progress, the next scheduled cycle, the latest result, rate-limit or authentication failures, and an auditable run history. **Sync all projects now** provides a bounded manual retry. ClickUp 429 responses honor the provider reset window, and content hashes prevent unchanged tickets or attachments from being rewritten.
+
+This is passive synchronization, not task execution. Orchestrator never assigns an agent, changes Git, starts work, or reacts continuously in the background. The ClickUp action is explicit, auditable, and safe to repeat.
+
+On another machine, cloud-backed evidence appears as `cloud-only`. Use **Download evidence** to fetch it into `~/.orchestrator/evidence-cache`, verify its SHA-256, and make it available to previews. A failed hash check rejects the download; the original manifest and event remain auditable.
+
 ## Import and export
 
 ```text
@@ -284,14 +307,14 @@ npm run build
 npm test
 ```
 
-The test suite covers migration idempotence, append-only history, ingestion idempotency, evidence integrity, import/export round trips, immutable sync journals, multi-machine pass conflicts, derived-state consistency, analytics, the 41-capability AI workspace, portable handoffs, and the absence of execution capabilities in the published runtime.
+The test suite covers migration idempotence, append-only history, ingestion idempotency, evidence integrity, import/export round trips, immutable sync journals, multi-machine pass conflicts, derived-state consistency, planning review, credential redaction, analytics, the 41-capability AI workspace, portable handoffs, and the absence of execution capabilities in the published runtime.
 
 ## Security and limits
 
 - The default server is local-only and has no authentication. Add TLS, authentication, and an explicit CORS policy before exposing it to a network.
 - Local records trust the host machine that produced them.
 - Evidence verification is on demand, not a background watcher.
-- Cloud synchronization covers structured memory, not large evidence artifacts.
+- Cloud evidence synchronization is bounded; files above the configured limit remain hash-addressed references.
 - Cleanup records describe an observed state; they never delete resources.
 - API-equivalent cost estimates depend on reported token categories and the dated local rate table.
 
