@@ -19,7 +19,8 @@
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
-    "express": "^4.21.1"
+    "express": "^4.21.1",
+    "sharp": "^0.35.3"
   },
   "license": "PolyForm-Noncommercial-1.0.0",
   "author": "Chaibi Alaa",
