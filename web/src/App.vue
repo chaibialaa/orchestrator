@@ -37,6 +37,7 @@ type Event = {
   occurred_at: string;
   actor: string;
   objective_title: string | null;
+  payload: Record<string, unknown>;
 };
 type Evidence = {
   uid: string;
@@ -125,6 +126,8 @@ const diagram = ref<Diagram | null>(null),
   systemHealthBusy = ref(false),
   analytics = ref<any>(null),
   analyticsBusy = ref(false),
+  aiWorkspace = ref<any>(null),
+  aiWorkspaceBusy = ref(false),
   memoryBusy = ref(false);
 const analyticsDays = ref(30),
   analyticsScope = ref<"project" | "global">("project");
@@ -132,7 +135,7 @@ const shareState = ref("Copy context link");
 const focusedEvidence = ref(""), pendingEvidence = ref("");
 const savedViews = ref<SavedView[]>([]), saveState = ref("Save shortcut");
 const savedViewsKey = "orchestrator:saved-views";
-const allowedViews = new Set(["search", "briefing", "attention", "health", "projects", "overview", "chapters", "evidence", "diagram", "snapshots", "analytics", "memory"]);
+const allowedViews = new Set(["search", "briefing", "attention", "health", "projects", "overview", "ai", "chapters", "evidence", "diagram", "snapshots", "analytics", "memory"]);
 const globalViews = new Set(["search", "briefing", "attention", "health", "projects"]);
 const isGlobalView = (view: string) => globalViews.has(view);
 let restoringNavigation = true;
@@ -196,7 +199,7 @@ function removeSavedView(id: string) {
   persistSavedViews();
 }
 const activeView = ref<
-    "search" | "briefing" | "attention" | "health" | "projects" | "overview" | "chapters" | "evidence" | "diagram" | "snapshots" | "analytics" | "memory"
+    "search" | "briefing" | "attention" | "health" | "projects" | "overview" | "ai" | "chapters" | "evidence" | "diagram" | "snapshots" | "analytics" | "memory"
   >("overview"),
   selectedChapter = ref(""),
   selectedPass = ref(""),
@@ -270,6 +273,14 @@ async function loadAnalytics() {
     analyticsBusy.value = false;
   }
 }
+async function loadAiWorkspace() {
+  if (!selected.value) return;
+  aiWorkspaceBusy.value = true;
+  try { aiWorkspace.value = await api(`/projects/${selected.value}/ai-workspace`); }
+  catch (e: any) { error.value = e.message; }
+  finally { aiWorkspaceBusy.value = false; }
+}
+function openAiTarget(target:any){if(!target)return;selectedChapter.value=target.objective_uid||'';activeView.value=target.view||'overview'}
 const compactNumber=(value:number)=>new Intl.NumberFormat("en",{notation:"compact",maximumFractionDigits:1}).format(value||0)
 const money=(value:number)=>new Intl.NumberFormat("en",{style:"currency",currency:"USD",maximumFractionDigits:2}).format(value||0)
 const maxDailyCost=computed(()=>Math.max(0,...(analytics.value?.daily||[]).map((row:any)=>row.cost)))
@@ -355,6 +366,7 @@ watch(selected, () => {
   loadSnapshots();
   loadProject();
   if(activeView.value==='analytics')loadAnalytics()
+  if(activeView.value==='ai')loadAiWorkspace()
 });
 watch([selected, activeView, selectedChapter, selectedPass, previewImage, openPreview], syncContextUrl);
 watch(activeView, (view) => {
@@ -362,6 +374,7 @@ watch(activeView, (view) => {
   if (view === "health" && !systemHealth.value) loadSystemHealth();
   if (view === "projects" && !portfolio.value) loadPortfolio();
   if (view === "analytics" && !analytics.value) loadAnalytics();
+  if (view === "ai") loadAiWorkspace();
 });
 let timer: number;
 watch([query, assertion, selectedChapter, selectedPass], () => {
@@ -411,6 +424,14 @@ const assertionLabel = (v: string) =>
     human_judgment: "Human judgment",
     system_record: "System record",
   })[v] || v;
+const eventLabel = (event: Event) =>
+  event.kind === "cleanup.recorded" ? "Cleanup completed" : assertionLabel(event.assertion);
+const cleanupDetail = (event: Event) => {
+  if (event.kind !== "cleanup.recorded") return "";
+  const removed = Array.isArray(event.payload?.removed) ? event.payload.removed.join(", ") : "generated artifacts";
+  const preserved = typeof event.payload?.preserved === "string" ? event.payload.preserved : "source and retained evidence";
+  return `Removed: ${removed}. Preserved: ${preserved}.`;
+};
 const date = (v: string | null) =>
   v
     ? new Date(v).toLocaleString("en-GB", {
@@ -794,6 +815,7 @@ async function recordJudgment() {
           v-for="view in [
             'projects',
             'overview',
+            'ai',
             'chapters',
             'evidence',
             'diagram',
@@ -807,7 +829,7 @@ async function recordJudgment() {
           role="tab"
           :aria-selected="activeView === view"
           :aria-label="`${view} view`"
-          @click="activeView = view as any; view === 'projects' && loadPortfolio(); view === 'analytics' && loadAnalytics()"
+          @click="activeView = view as any; view === 'projects' && loadPortfolio(); view === 'analytics' && loadAnalytics(); view === 'ai' && loadAiWorkspace()"
         >
           {{ view }}
         </button>
@@ -887,10 +909,11 @@ async function recordJudgment() {
               <li v-for="event in events.slice(0, 20)" :key="event.uid">
                 <time>{{ date(event.occurred_at) }}</time>
                 <div>
-                  <span class="tag" :data-kind="event.assertion">{{
-                    assertionLabel(event.assertion)
+                  <span class="tag" :data-kind="event.kind === 'cleanup.recorded' ? 'cleanup' : event.assertion">{{
+                    eventLabel(event)
                   }}</span>
                   <h3>{{ event.summary }}</h3>
+                  <p v-if="cleanupDetail(event)" class="event-detail">{{ cleanupDetail(event) }}</p>
                   <p>
                     {{ event.objective_title || event.kind }} ·
                     {{ event.actor }}
@@ -1170,10 +1193,11 @@ async function recordJudgment() {
               <li v-for="event in pagedEvents" :key="event.uid">
                 <time>{{ date(event.occurred_at) }}</time>
                 <div>
-                  <span class="tag" :data-kind="event.assertion">{{
-                    assertionLabel(event.assertion)
+                  <span class="tag" :data-kind="event.kind === 'cleanup.recorded' ? 'cleanup' : event.assertion">{{
+                    eventLabel(event)
                   }}</span>
                   <h3>{{ event.summary }}</h3>
+                  <p v-if="cleanupDetail(event)" class="event-detail">{{ cleanupDetail(event) }}</p>
                   <p>
                     {{ event.objective_title || event.kind }} ·
                     {{ event.actor }}
@@ -1588,6 +1612,22 @@ async function recordJudgment() {
               {{ diagram?.nodes.find((n) => n.id === edge.to)?.label }}
             </p>
           </section>
+        </section>
+        <section v-else-if="activeView === 'ai'" class="ai-workspace-screen">
+          <div v-if="aiWorkspaceBusy && !aiWorkspace" class="panel empty" role="status">Building AI workspace…</div>
+          <template v-else-if="aiWorkspace">
+            <section class="panel ai-next" :data-kind="aiWorkspace.next.kind"><div><p class="eyebrow">What should I work on next?</p><h2>{{ aiWorkspace.next.title }}</h2><p>{{ aiWorkspace.next.reason }}</p></div><button @click="openAiTarget(aiWorkspace.next.target)">Open context →</button></section>
+            <section class="ai-summary" aria-label="AI workspace summary"><article><span>Professional capabilities</span><strong>{{ aiWorkspace.summary.features }}</strong></article><article><span>Ready</span><strong>{{ aiWorkspace.summary.ready }}</strong></article><article><span>Need attention</span><strong>{{ aiWorkspace.summary.attention }}</strong></article><article><span>Confidence</span><strong>{{ aiWorkspace.summary.confidence }}</strong></article></section>
+            <section class="panel ai-toolbar"><div><p class="eyebrow">Conversation continuity</p><h2>Agent-ready handoff</h2><p>Immutable memory, current Git context and next safe action. Orchestrator does not execute it.</p></div><div><a :href="`/api/projects/${selected}/handoff.md`">Download Markdown</a><a :href="`/api/projects/${selected}/handoff.json`">Download JSON</a><button :disabled="aiWorkspaceBusy" @click="loadAiWorkspace">Refresh</button></div></section>
+            <section class="ai-feature-grid">
+              <article v-for="feature in aiWorkspace.features" :key="feature.id" class="panel ai-feature" :data-status="feature.status">
+                <div class="ai-feature-head"><span class="ai-feature-state">{{ feature.status }}</span><strong v-if="feature.metric !== null">{{ feature.metric }}</strong></div>
+                <h3>{{ feature.title }}</h3><p>{{ feature.summary }}</p>
+                <ul v-if="feature.items.length"><li v-for="(item,index) in feature.items.slice(0,4)" :key="index"><strong>{{ item.title || item.name || item.agent || item.command || item.summary || item.kind }}</strong><small v-if="item.status || item.detail || item.reason">{{ item.status || item.detail || item.reason }}</small></li></ul>
+                <p v-else class="empty compact">No recorded item.</p>
+              </article>
+            </section>
+          </template>
         </section>
         <section v-else-if="activeView === 'snapshots'" class="snapshots-screen"><section class="panel snapshot-actions"><div><p class="eyebrow">Portable checkpoints</p><h2>Project snapshots</h2><p>Metadata and derived state only. Evidence files remain referenced.</p></div><button :disabled="snapshotBusy" @click="captureSnapshot">{{ snapshotBusy ? 'Capturing…' : 'Capture snapshot' }}</button></section><section v-if="snapshotDiff" class="panel snapshot-diff"><div class="panel-head"><div><p class="eyebrow">Latest comparison</p><h2>{{ snapshotDiff.identical ? 'No state change' : 'Changes detected' }}</h2></div><span>{{ snapshotDiff.before.state_hash.slice(7,15) }} → {{ snapshotDiff.after.state_hash.slice(7,15) }}</span></div><div class="snapshot-metrics"><article><strong>{{ snapshotDiff.summary.status_changes }}</strong><span>Status changes</span></article><article><strong>{{ snapshotDiff.summary.added_evidence }}</strong><span>New evidence</span></article><article><strong>{{ snapshotDiff.summary.opened_blockers }}</strong><span>Opened blockers</span></article><article><strong>{{ snapshotDiff.summary.confidence_delta > 0 ? '+' : '' }}{{ snapshotDiff.summary.confidence_delta }}</strong><span>Confidence</span></article></div><ul><li v-for="change in snapshotDiff.status_changes" :key="change.uid"><strong>{{ change.title }}</strong><span>{{ change.before || 'new' }} → {{ change.after }}</span></li></ul></section><section class="panel snapshot-list"><div class="panel-head"><div><p class="eyebrow">Local browser archive</p><h2>Captured states</h2></div><span>{{ snapshots.length }} / 10</span></div><p v-if="!snapshots.length" class="empty">No snapshot captured in this browser.</p><article v-for="snapshot in snapshots" :key="snapshot.state_hash"><div><strong>{{ date(snapshot.captured_at) }}</strong><code>{{ snapshot.state_hash }}</code><p>Event {{ snapshot.cursor.event_id }} · Confidence {{ snapshot.confidence.score }}</p></div><button @click="downloadSnapshot(snapshot)">Download JSON</button></article></section></section>
         <section v-else-if="activeView === 'analytics'" class="analytics-screen">

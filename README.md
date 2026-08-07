@@ -73,6 +73,22 @@ npm start
 
 The default database is `~/.orchestrator/orchestrator.db`. Override it with `ORCHESTRATOR_DB=/absolute/path/orchestrator.db`.
 
+## AI workspace
+
+The project-level **AI** view consolidates 41 passive capabilities for AI-assisted development. The first group covers work inbox, conversation handoff, Git freshness guard, evidence quality, failure intelligence, AI budget, decision queue, project pulse, context drift, agent SDK, session replay, definition-of-done contracts, proof expiry, impact map, branch comparison, prompt registry, model scorecard, risk register, release readiness, memory hygiene, and **What should I work on next?**.
+
+The professional traceability group adds architecture decision records, dependency radar, test coverage mapping, regression watchlists, evidence comparison series, commit-to-objective traceability, requirement coverage, assumption register, technical-debt ledger, security evidence, performance baselines, environment matrix, ownership map, review coverage, independent-verification policy, knowledge gaps, release narrative, incident timelines, inferred project templates, and cross-project portfolio intelligence.
+
+Every result is derived from recorded events and manifests. Recommendations never launch work, reserve files, modify Git, or contact an agent. Codex and Claude remain responsible for reading the handoff, verifying current Git state, doing the work externally, and reporting observations back.
+
+```bash
+orchestrator next
+orchestrator handoff
+orchestrator handoff --json
+```
+
+The same data is available through `GET /api/projects/:project/ai-workspace`, with portable handoffs at `GET /api/projects/:project/handoff.md` and `.json`.
+
 ## Safe migration
 
 Migration never runs automatically when the server starts. Back up the database first:
@@ -268,7 +284,7 @@ npm run build
 npm test
 ```
 
-The test suite covers migration idempotence, append-only history, ingestion idempotency, evidence integrity, import/export round trips, immutable sync journals, multi-machine pass conflicts, derived-state consistency, analytics, and the absence of execution capabilities in the published runtime.
+The test suite covers migration idempotence, append-only history, ingestion idempotency, evidence integrity, import/export round trips, immutable sync journals, multi-machine pass conflicts, derived-state consistency, analytics, the 41-capability AI workspace, portable handoffs, and the absence of execution capabilities in the published runtime.
 
 ## Security and limits
 

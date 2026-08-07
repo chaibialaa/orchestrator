@@ -1281,6 +1281,17 @@ header p:not(.eyebrow) {
   background: #e8edf8;
   color: #3d578a;
 }
+.tag[data-kind="cleanup"] {
+  background: #edf0ee;
+  color: #435249;
+}
+.timeline .event-detail {
+  color: #4f6157;
+  margin-bottom: 4px;
+}
+.ai-workspace-screen{display:grid;gap:16px}.ai-next,.ai-toolbar{display:flex;justify-content:space-between;align-items:center;gap:24px;padding:22px}.ai-next h2,.ai-toolbar h2{margin:4px 0 6px}.ai-next p,.ai-toolbar p{margin:0;color:#6d7b74}.ai-toolbar>div:last-child{display:flex;gap:8px;flex-wrap:wrap}.ai-toolbar a{border:1px solid #cad4ce;border-radius:7px;padding:8px 11px;color:#294c3c;text-decoration:none;white-space:nowrap}.ai-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.ai-summary article{background:#fff;border:1px solid #dde3df;border-radius:12px;padding:17px}.ai-summary span{display:block;color:#728078;font-size:11px}.ai-summary strong{display:block;font-size:24px;margin-top:6px}.ai-feature-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.ai-feature{padding:17px;border-top:3px solid #97a39d}.ai-feature[data-status="ready"]{border-top-color:#3d8868}.ai-feature[data-status="attention"]{border-top-color:#bd6b52}.ai-feature[data-status="warning"]{border-top-color:#d1a23d}.ai-feature-head{display:flex;justify-content:space-between;align-items:center}.ai-feature-state{text-transform:uppercase;letter-spacing:.08em;font-size:9px;font-weight:700;color:#64736b}.ai-feature h3{margin:10px 0 6px;font-size:15px}.ai-feature>p{color:#718078;font-size:11px;line-height:1.5;min-height:34px}.ai-feature ul{list-style:none;margin:12px 0 0;padding:0;border-top:1px solid #edf0ee}.ai-feature li{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid #edf0ee;font-size:10px}.ai-feature li strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ai-feature li small{color:#7b8781;text-align:right}.empty.compact{min-height:0;padding:10px 0}
+@media(max-width:1100px){.ai-feature-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:700px){.ai-feature-grid,.ai-summary{grid-template-columns:1fr}.ai-next,.ai-toolbar{align-items:flex-start;flex-direction:column}}
 .stack {
   display: grid;
   gap: 16px;

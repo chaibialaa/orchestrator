@@ -4,6 +4,10 @@ import { readFileSync } from 'node:fs'
 import { migrate } from './db/migrate.js'
 import { exportJson, exportMarkdown } from './db/export.js'
 import { addDeclaredEvidence, recordObservation, setTracking, trackingStatus } from './tracking.js'
+import { base } from './db/index.js'
+import { deriveAiWorkspace, handoffMarkdown } from './intelligence.js'
+
+const localWorkspace=()=>{const status=trackingStatus();if(!status.configured||!status.project)throw new Error('Orchestrator is not configured for this project. Run: orchestrator enable');const project=base().prepare('SELECT * FROM projects WHERE slug=?').get(status.config.project);return deriveAiWorkspace(project)}
 
 const [command = 'serve', ...args] = process.argv.slice(2)
 if (command === 'serve') {
@@ -25,8 +29,12 @@ if (command === 'serve') {
 } else if (command === 'record') {
   if(!args[0])throw new Error('Usage: orchestrator record <observation.json>')
   console.log(JSON.stringify(await recordObservation(JSON.parse(readFileSync(args[0],'utf8'))),null,2))
+} else if(command==='next'){
+  console.log(JSON.stringify(localWorkspace().next,null,2))
+} else if(command==='handoff'){
+  const workspace=localWorkspace();process.stdout.write(args.includes('--json')?`${JSON.stringify(workspace.handoff,null,2)}\n`:handoffMarkdown(workspace))
 } else if (command === 'help' || command === '--help' || command === '-h') {
-  console.log('orchestrator serve [port]\norchestrator migrate\norchestrator export [--markdown]\norchestrator enable [project-slug] [--name name]\norchestrator disable [project-slug]\norchestrator status\norchestrator record <observation.json>\norchestrator evidence add <file> [--objective uid] [--pass ref] [--label text] [--type type] [--origin source] [--actor-kind codex|claude] [--actor name]')
+  console.log('orchestrator serve [port]\norchestrator migrate\norchestrator export [--markdown]\norchestrator enable [project-slug] [--name name]\norchestrator disable [project-slug]\norchestrator status\norchestrator next\norchestrator handoff [--json]\norchestrator record <observation.json>\norchestrator evidence add <file> [--objective uid] [--pass ref] [--label text] [--type type] [--origin source] [--actor-kind codex|claude] [--actor name]')
 } else {
   console.error(`Unknown command: ${command}`)
   process.exitCode = 1
