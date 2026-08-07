@@ -25,7 +25,14 @@ export function migrate(path = dbPath()) {
   db.pragma('busy_timeout = 5000')
   db.pragma('foreign_keys = OFF')
   const current = hasTable(db, 'schema_migrations') ? db.prepare('SELECT max(version) version FROM schema_migrations').get()?.version : null
-  if (current === 8) { db.close(); return { migrated: false, version: 8 } }
+  if (current === 9) { db.close(); return { migrated: false, version: 9 } }
+  if (current === 8) {
+    const columns=new Set(db.prepare('PRAGMA table_info(clickup_connections)').all().map(row=>row.name))
+    if(!columns.has('status_mapping'))db.exec('ALTER TABLE clickup_connections ADD COLUMN status_mapping TEXT;')
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(9,?)').run(schemaChecksum())
+    db.close()
+    return { migrated: true, version: 9, counts: {} }
+  }
   if (current === 7) {
     const columns=new Set(db.prepare('PRAGMA table_info(clickup_ticket_links)').all().map(row=>row.name))
     if(!columns.has('sync_hash'))db.exec('ALTER TABLE clickup_ticket_links ADD COLUMN sync_hash TEXT;')
@@ -114,6 +121,7 @@ export function migrate(path = dbPath()) {
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(6,?)').run(schemaChecksum())
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(7,?)').run(schemaChecksum())
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(8,?)').run(schemaChecksum())
+      db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(9,?)').run(schemaChecksum())
       return
     }
 
@@ -166,6 +174,7 @@ export function migrate(path = dbPath()) {
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(6,?)').run(schemaChecksum())
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(7,?)').run(schemaChecksum())
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(8,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(9,?)').run(schemaChecksum())
   })
   tx()
   db.pragma('foreign_keys = ON')
@@ -174,5 +183,5 @@ export function migrate(path = dbPath()) {
   const counts = Object.fromEntries(['projects','objectives','events','evidence_manifests','decisions','blockers','verdicts','costs'].map((table) => [table, db.prepare(`SELECT count(*) count FROM ${table}`).get().count]))
   db.close()
   if (integrity !== 'ok' || foreignKeys.length) throw new Error(`Migration validation failed: ${integrity}, ${foreignKeys.length} foreign key errors`)
-  return { migrated: true, version: 8, counts }
+  return { migrated: true, version: 9, counts }
 }

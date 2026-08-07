@@ -145,6 +145,7 @@ CREATE TABLE IF NOT EXISTS clickup_connections (
   workspace_id TEXT,
   list_id TEXT NOT NULL,
   tag_name TEXT,
+  status_mapping TEXT,
   token TEXT,
   enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
   last_status TEXT NOT NULL DEFAULT 'unknown' CHECK(last_status IN ('ok','error','unknown')),
