@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import SystemHealthPanel from "./components/SystemHealthPanel.vue";
+import orchestratorMark from "./assets/orchestrator-mark.svg";
 
 type Project = {
   uid: string;
@@ -783,7 +784,7 @@ async function recordJudgment() {
   <div class="shell">
     <aside>
       <a class="brand" href="#" @click.prevent="activeView = 'projects'; loadPortfolio()"
-        ><span>O</span>
+        ><img :src="orchestratorMark" alt="" width="40" height="40">
         <div>Orchestrator<small>Project memory</small></div></a
       >
       <section class="nav-section nav-section-global">

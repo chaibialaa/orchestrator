@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/orchestrator-logo.svg" alt="Orchestrator — Project Memory" width="520"></p>
+
 # Orchestrator
 
 Orchestrator is an observation-only project dashboard and persistent memory for work performed by humans, Codex, Claude, and other tools outside Orchestrator.
@@ -22,11 +24,21 @@ It records projects, chapters, objectives, events, decisions, blockers, verdicts
 - Multi-machine coordination records for concurrent passes and observed Git state.
 - Read-only discovery of local Codex and Claude memory.
 - Human-reviewed planning proposals derived from local AI memory, blockers, failed verdicts, and project state.
-- Optional, explicit ClickUp synchronization for approved work and rejected-ticket feedback.
+- Optional passive ClickUp synchronization for the complete proposal registry, evidence attachments, rejected-ticket feedback, and project-specific workflow mapping.
 - Portable JSON and Markdown exports, plus idempotent JSON import.
 - Immutable journal synchronization through Google Drive or Dropbox.
 - Token and cost analytics, including clearly labelled API-equivalent estimates from local session counters.
 - Read-only system health for SQLite integrity, schema, WAL, backup inventory, and evidence debt.
+
+## Dashboard
+
+The interface keeps project state, progress, proposals, evidence, decisions, costs, and navigation in one observation-only workspace.
+
+![Orchestrator project planning dashboard](docs/dashboard-overview.png)
+
+Each project can retain the recommended semantic ClickUp routing or map Orchestrator states to its own list workflow.
+
+![Project-specific ClickUp status mapping](docs/clickup-status-mapping.png)
 
 ## Architecture
 
