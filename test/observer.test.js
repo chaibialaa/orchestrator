@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 import Database from 'better-sqlite3'
 import { estimateTokenCost } from '../src/pricing.js'
+import { clickupStatusFor } from '../src/planning.js'
 
 const dir = mkdtempSync(join(tmpdir(), 'orchestrator-test-'))
 const path = join(dir, 'test.db')
@@ -21,6 +22,8 @@ const { addDeclaredEvidence, readTracking, recordObservation, setTracking, track
 let server, origin, project
 
 test('public rate card estimates API-equivalent costs',()=>{assert.equal(estimateTokenCost('gpt-5.6-sol',{input_tokens:1_000_000,cached_tokens:500_000,output_tokens:100_000}).amount,5.75);assert.equal(estimateTokenCost('claude-sonnet-4',{input_tokens:1_000_000,output_tokens:100_000}).amount,4.5);assert.equal(estimateTokenCost('unknown-model',{input_tokens:1_000_000}),null)})
+
+test('ClickUp proposals map to real workflow statuses',()=>{const statuses=[{status:'backlog',type:'open'},{status:'scoping',type:'custom'},{status:'ready for development',type:'custom'},{status:'shipped',type:'done'},{status:'cancelled',type:'closed'}];assert.equal(clickupStatusFor('proposed',statuses),'scoping');assert.equal(clickupStatusFor('approved',statuses),'ready for development');assert.equal(clickupStatusFor('published',statuses),'shipped');assert.equal(clickupStatusFor('rejected',statuses),'cancelled');assert.equal(clickupStatusFor('superseded',statuses),'cancelled')})
 
 before(async () => {
   project = { uid: uid(), slug: 'test', name: 'Test' }
