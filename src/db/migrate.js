@@ -25,7 +25,16 @@ export function migrate(path = dbPath()) {
   db.pragma('busy_timeout = 5000')
   db.pragma('foreign_keys = OFF')
   const current = hasTable(db, 'schema_migrations') ? db.prepare('SELECT max(version) version FROM schema_migrations').get()?.version : null
-  if (current === 9) { db.close(); return { migrated: false, version: 9 } }
+  if (current === 10) { db.close(); return { migrated: false, version: 10 } }
+  if (current === 9) {
+    db.exec("CREATE TABLE IF NOT EXISTS clickup_accounts(id INTEGER PRIMARY KEY CHECK(id=1),token TEXT NOT NULL,auth_kind TEXT NOT NULL DEFAULT 'personal' CHECK(auth_kind IN ('personal','oauth')),workspace_id TEXT,updated_at TEXT NOT NULL DEFAULT (datetime('now')))")
+    const legacy=db.prepare("SELECT token,workspace_id FROM clickup_connections WHERE token IS NOT NULL AND trim(token)!='' ORDER BY updated_at DESC,id DESC LIMIT 1").get()
+    if(legacy)db.prepare("INSERT OR REPLACE INTO clickup_accounts(id,token,auth_kind,workspace_id,updated_at) VALUES(1,?,'personal',?,?)").run(legacy.token,legacy.workspace_id,nowStamp())
+    db.prepare('UPDATE clickup_connections SET token=NULL').run()
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(10,?)').run(schemaChecksum())
+    db.close()
+    return { migrated: true, version: 10, counts: {} }
+  }
   if (current === 8) {
     const columns=new Set(db.prepare('PRAGMA table_info(clickup_connections)').all().map(row=>row.name))
     if(!columns.has('status_mapping'))db.exec('ALTER TABLE clickup_connections ADD COLUMN status_mapping TEXT;')
@@ -122,6 +131,7 @@ export function migrate(path = dbPath()) {
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(7,?)').run(schemaChecksum())
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(8,?)').run(schemaChecksum())
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(9,?)').run(schemaChecksum())
+      db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(10,?)').run(schemaChecksum())
       return
     }
 
@@ -175,6 +185,7 @@ export function migrate(path = dbPath()) {
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(7,?)').run(schemaChecksum())
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(8,?)').run(schemaChecksum())
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(9,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(10,?)').run(schemaChecksum())
   })
   tx()
   db.pragma('foreign_keys = ON')
@@ -183,5 +194,5 @@ export function migrate(path = dbPath()) {
   const counts = Object.fromEntries(['projects','objectives','events','evidence_manifests','decisions','blockers','verdicts','costs'].map((table) => [table, db.prepare(`SELECT count(*) count FROM ${table}`).get().count]))
   db.close()
   if (integrity !== 'ok' || foreignKeys.length) throw new Error(`Migration validation failed: ${integrity}, ${foreignKeys.length} foreign key errors`)
-  return { migrated: true, version: 9, counts }
+  return { migrated: true, version: 10, counts }
 }

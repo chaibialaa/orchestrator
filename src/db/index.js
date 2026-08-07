@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const here = dirname(fileURLToPath(import.meta.url))
-export const schemaVersion = 9
+export const schemaVersion = 10
 export const uid = () => randomUUID()
 export const nowStamp = () => new Date().toISOString()
 export const json = {

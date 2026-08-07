@@ -139,6 +139,13 @@ CREATE TABLE IF NOT EXISTS work_proposals (
   reviewed_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_work_proposals_project ON work_proposals(project_id,status,created_at DESC);
+CREATE TABLE IF NOT EXISTS clickup_accounts (
+  id INTEGER PRIMARY KEY CHECK(id=1),
+  token TEXT NOT NULL,
+  auth_kind TEXT NOT NULL DEFAULT 'personal' CHECK(auth_kind IN ('personal','oauth')),
+  workspace_id TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS clickup_connections (
   id INTEGER PRIMARY KEY,
   project_id INTEGER NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
