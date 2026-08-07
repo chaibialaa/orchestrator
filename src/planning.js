@@ -20,7 +20,8 @@ export function clickupStatusFor(proposalStatus,statuses=[]){
 const statusMapping=value=>{try{const parsed=JSON.parse(value||'{}');return Object.fromEntries(['proposed','approved','published','rejected','superseded'].filter(key=>typeof parsed[key]==='string'&&parsed[key].trim()).map(key=>[key,parsed[key].trim()]))}catch{return{}}}
 
 export function proposals(project){
-  return base().prepare(`SELECT w.*,o.uid objective_uid,o.title objective_title,l.ticket_id,l.ticket_url,l.ticket_status
+  return base().prepare(`SELECT w.*,o.uid objective_uid,o.title objective_title,l.ticket_id,l.ticket_url,l.ticket_status,
+    (SELECT count(*) FROM evidence_manifests e WHERE e.project_id=w.project_id AND e.objective_id=w.objective_id) evidence_count
     FROM work_proposals w LEFT JOIN objectives o ON o.id=w.objective_id LEFT JOIN clickup_ticket_links l ON l.proposal_id=w.id
     WHERE w.project_id=? ORDER BY CASE w.status WHEN 'proposed' THEN 0 ELSE 1 END,w.created_at DESC`).all(project.id)
 }
