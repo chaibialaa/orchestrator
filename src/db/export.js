@@ -1,6 +1,6 @@
 import { base, json } from './index.js'
 
-const TABLES = ['projects','chapters','objectives','events','evidence_manifests','decisions','blockers','verdicts','costs','cleanups','work_proposals','clickup_ticket_links']
+const TABLES = ['projects','chapters','objectives','objective_dependencies','events','evidence_manifests','decisions','blockers','verdicts','costs','cleanups','work_proposals','clickup_ticket_links']
 export function exportObject(projectId = null) {
   const out = { format: 'orchestrator-memory', version: 1, exported_at: new Date().toISOString(), scope: projectId ? 'project' : 'complete', tables: {} }
   for (const table of TABLES) {

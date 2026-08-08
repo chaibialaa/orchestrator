@@ -103,6 +103,12 @@ orchestrator handoff --json
 
 The same data is available through `GET /api/projects/:project/ai-workspace`, with portable handoffs at `GET /api/projects/:project/handoff.md` and `.json`.
 
+## Engineering management cockpit
+
+The global **Management cockpit** aggregates active projects across machines into a 30–365 day reporting window. It includes a GitHub-style activity calendar, recorded progress, blocker aging, evidence coverage, reported AI cost, latest Git state, and provenance by machine or agent. Metrics describe delivery flow and audit coverage; they are not individual productivity scores.
+
+`GET /api/management` returns the portable dataset. `GET /api/management/report/json` and `/markdown` generate management reports. While the server is open, a portable snapshot is archived every 24 hours; tune this with `ORCHESTRATOR_REPORT_HOURS` and `ORCHESTRATOR_REPORT_DAYS`. `GET` and `POST /api/management/reports` list or capture snapshots. Commits are deduplicated from observed `post-commit` hashes, push attempts come from `pre-push`, and a verified push requires the passively read upstream tracking ref to equal local HEAD or an equivalent explicit provider event.
+
 ## Safe migration
 
 Migration never runs automatically when the server starts. Back up the database first:
@@ -184,16 +190,27 @@ GET /api/projects/:slug/snapshot
 POST /api/snapshots/compare
 GET /api/projects/:slug/evidence
 GET /api/projects/:slug/coordination
+GET /api/projects/:slug/git-guard
+GET|PUT /api/projects/:slug/profile
 GET /api/projects/:slug/diagram
 GET /api/evidence/:uid/verify
 GET /api/analytics?project=:slug&days=30
 GET /api/memory/local
+POST /api/memory/local/index
+GET /api/memory/local/index
 GET /api/sync
 GET /api/projects/:project/planning
 POST /api/projects/:project/planning/generate
 POST /api/projects/:project/planning/:proposal/review
+PUT /api/projects/:project/planning/order
+POST /api/projects/:project/planning/dependencies
+DELETE /api/projects/:project/planning/dependencies
 PUT /api/projects/:project/clickup
 POST /api/projects/:project/clickup/sync
+GET /api/projects/:project/clickup/preview
+POST /api/security/pair
+GET /api/security/tokens
+POST /api/security/tokens/:uid/revoke
 ```
 
 There are no run, queue, claim, cancel, worker, agent-launch, process-control, or Git-execution routes.
@@ -204,6 +221,7 @@ From a project repository, Codex, Claude, or a human can explicitly enable passi
 
 ```bash
 orchestrator enable my-project --name "My Project"
+orchestrator hooks install
 orchestrator status
 orchestrator record ./observation.json
 orchestrator evidence add ./path/to/proof.png \
@@ -214,9 +232,22 @@ orchestrator evidence add ./path/to/proof.png \
 orchestrator disable
 ```
 
-`enable` creates a portable `.orchestrator.json` contract in the current repository and marks the project active in the local registry. The contract uses `evidence_mode: "declared-only"`: Orchestrator never scans the repository for artifacts. `record` sends a declared JSON observation such as a cost, decision, blocker, transition, Git state, cleanup, or verdict and supplies the configured project automatically. `evidence add` hashes and measures only the explicitly supplied file, then sends its manifest to the local ingestion API. Both commands are idempotent for identical input. `disable` archives tracking and rejects further ingestion without deleting prior history or evidence references. `status` reports the local contract and registry state.
+`enable` creates a portable `.orchestrator.json` contract in the current repository and marks the project active in the local registry. `hooks install` adds reversible Git lifecycle hooks while preserving existing hook content. Git invokes them before commits and after commits, checkouts, merges, and rewrites; they only report the branch, commit, machine, and dirty state to a running local Orchestrator. Use `orchestrator hooks status` or `orchestrator hooks uninstall` to inspect or remove them.
 
-Codex and Claude integrations should check `orchestrator status` before reporting work and use the ingestion API for events, transitions, Git observations, verdicts, decisions, blockers, cleanups, token usage, and costs. These commands never start an agent, task, watcher, Git command, browser, or project process.
+The contract uses `evidence_mode: "declared-only"`: Orchestrator never treats an arbitrary repository file as proof. Its passive filesystem follower batches changed paths, excludes generated/cache-heavy directories, refreshes versioned plans, and records the local Git head as dirty after a change. It does not read file contents into evidence, run Git, execute tests, or start project processes. Explicit evidence still requires `evidence add`, which hashes and measures only the supplied file. `record` sends a declared cost, decision, blocker, transition, Git state, cleanup, or verdict. `disable` archives tracking, stops the follower on the next reconciliation, and rejects further ingestion without deleting history.
+
+Git hooks observe `pre-commit`, `post-commit`, `pre-push`, checkout, merge and rewrite lifecycle events. A `pre-push` event is reported only as a **push attempt**; a successful push is counted only after an explicit remote/provider verification event.
+
+Codex and Claude integrations should check `orchestrator status` before reporting work and use the ingestion API for events, transitions, Git observations, verdicts, decisions, blockers, cleanups, token usage, and costs. Reporting commands never start an agent, task, Git command, browser, or project process. The dashboard server owns only the passive repository follower; optional hooks are launched by Git and invoke only the reporting command.
+
+Claude Code can install a project command or a user-wide slash command:
+
+```bash
+orchestrator integrate claude
+orchestrator integrate claude --global
+```
+
+Restart Claude Code, then use `/orchestrator`. The command asks Claude to read the approved next objective and handoff, independently verify Git and feasibility, execute externally, and report proofs and transitions. A proposal awaiting human review never grants execution authority.
 
 ## Human judgment
 
@@ -237,11 +268,13 @@ External clients may report:
 - `work.heartbeat`: continued activity for a recorded session.
 - `work.finished`: completed, failed, or cancelled outcome.
 
-Orchestrator derives overlapping scopes, stale Git bases, and abandoned passes after 15 minutes without a finish or heartbeat. These are observations only: it does not reserve a worker, lock a repository, or run Git commands.
+Orchestrator derives overlapping scopes, stale Git bases, and abandoned passes after 15 minutes without a finish or heartbeat. Planning also stores an explicit objective order and an acyclic prerequisite graph; next-work recommendations skip blocked objectives and objectives whose prerequisites are not proven. These are observations only: it does not reserve a worker, lock a repository, or run Git commands.
+
+`GET /api/projects/:slug/git-guard` returns `current`, `dirty`, `divergent`, or `unknown` with a required external action. Agents call it before `work.started`, after reporting their local Git state. A divergent result means the external agent must fetch and reconcile Git itself; Orchestrator never performs or locks that operation.
 
 ## Local memory and cloud synchronization
 
-`GET /api/memory/local` scans local Codex and Claude histories read-only, groups sessions by working directory, and identifies projects that are not yet tracked. Adding a detected project remains an explicit human action.
+`GET /api/memory/local` scans local Codex and Claude histories read-only through versioned adapters, groups sessions by working directory, and identifies projects that are not yet tracked. `POST /api/memory/local/index` stores only an auditable manifest (source, adapter version, sampled-content hash, parse status and error count); raw conversations remain in their original local files. Adding a detected project remains an explicit human action.
 
 Google Drive and Dropbox synchronization exchange immutable, content-addressed journal shards named like:
 
@@ -250,6 +283,8 @@ orchestrator-journal--<machine>--<cursor>--<hash>.json
 ```
 
 Synchronization imports remote shards and publishes new local shards without deleting or overwriting history. OAuth credentials remain in `~/.orchestrator/oauth.json`; refresh tokens are encrypted in SQLite using `~/.orchestrator/secret.key`. Large evidence files are not uploaded by default.
+
+If two machines publish different mutable planning fields for the same objective UID, the incoming record is preserved as an explicit sync conflict. The Sync center lets a human keep local state, accept incoming state, or ignore the divergence; neither side silently overwrites the other. `GET /api/sync/conflicts` exposes the queue. Objective dependencies are included in portable exports and machine journals.
 
 Small local evidence files are synchronized with Drive or Dropbox by content hash. Before upload, PNG, JPEG, WebP, TIFF, and AVIF images are auto-oriented, limited to 1920 px, and encoded as WebP quality 82 when that produces a smaller file. The original stays local and remains the authoritative proof; the cloud record stores the original hash plus the derivative transport hash and both sizes. `ORCHESTRATOR_IMAGE_MAX_PX` and `ORCHESTRATOR_IMAGE_QUALITY` tune this behavior. GIF and non-image evidence remain unchanged. The default per-file limit is 50 MB and can be changed with `ORCHESTRATOR_EVIDENCE_CLOUD_MAX_MB`. Each sync uploads at most 100 files and 100 MB; tune these safeguards with `ORCHESTRATOR_EVIDENCE_CLOUD_BATCH_FILES` and `ORCHESTRATOR_EVIDENCE_CLOUD_BATCH_MB`. A sync indexes existing remote blobs, uploads only hashes that are absent, and never overwrites another version. Evidence above the limit remains referenced only.
 
@@ -288,7 +323,9 @@ orchestrator export --markdown
 
 External clients can include `input_tokens`, `output_tokens`, `cached_tokens`, `total_tokens`, `model`, `duration_ms`, `requests`, and `cost_basis` in `cost.recorded`.
 
-For current local Codex sessions, Orchestrator reads the latest local token counters and model name without contacting OpenAI. It can display a public API-equivalent estimate using a dated pricing table. This is **not** the actual cost of a Codex or Claude subscription and is never presented as an invoice. Sessions opened at a parent directory remain machine-wide unless they can be reliably attributed to a project.
+For current local Codex and Claude sessions, Orchestrator reads local token counters and model names without contacting either provider. It can display a public API-equivalent estimate using a dated pricing table. This is **not** the actual cost of a subscription and is never presented as an invoice. Sessions opened at a parent directory remain machine-wide unless they can be reliably attributed to a project.
+
+Each project also has a validation profile (`software`, `game`, `web`, `api`, `mobile`, `ai`, `infrastructure`, `documentation`, or `other`). Its editable definition-of-done criteria guide external agents and reviews; Orchestrator records them but never runs the checks.
 
 ## Register health
 
@@ -319,14 +356,15 @@ npm run build
 npm test
 ```
 
-The test suite covers migration idempotence, append-only history, ingestion idempotency, evidence integrity, import/export round trips, immutable sync journals, multi-machine pass conflicts, derived-state consistency, planning review, credential redaction, analytics, the 41-capability AI workspace, portable handoffs, and the absence of execution capabilities in the published runtime.
+The test suite covers migration idempotence, append-only history, ingestion idempotency, evidence integrity, import/export round trips, immutable sync journals, multi-machine merge conflicts, cycle-safe objective prerequisites, planning order and review, archived management reports, credential redaction, analytics, the 41-capability AI workspace, portable handoffs, and the absence of execution capabilities in the published runtime.
 
 ## Security and limits
 
-- The default server is local-only and has no authentication. Add TLS, authentication, and an explicit CORS policy before exposing it to a network.
+- Localhost remains passwordless for fast installation. Non-local API clients must use a scoped bearer token created once from localhost with `POST /api/security/pair`; tokens are stored hashed, shown once, individually auditable, and revocable. TLS is still required before exposing the service beyond a trusted private network.
 - Local records trust the host machine that produced them.
 - Evidence verification is on demand, not a background watcher.
 - Cloud evidence synchronization is bounded; files above the configured limit remain hash-addressed references.
+- Failed Drive/Dropbox cycles retain their cursor and expose exponential retry timing; successful cycles reset the failure state. Never place the live SQLite file itself in a synchronized folder.
 - Cleanup records describe an observed state; they never delete resources.
 - API-equivalent cost estimates depend on reported token categories and the dated local rate table.
 

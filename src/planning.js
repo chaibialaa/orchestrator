@@ -12,6 +12,9 @@ const activeSyncs=new Set()
 const projectTagColors=['#247a5a','#6554c0','#d97706','#2563eb','#be185d','#0f766e','#7c3aed','#b45309','#0369a1','#9f1239']
 export const defaultProjectTagColor=project=>projectTagColors[parseInt(digest(String(project.slug||project.name)).slice(0,8),16)%projectTagColors.length]
 const validColor=(value,fallback)=>/^#[0-9a-f]{6}$/i.test(String(value||''))?String(value).toLowerCase():fallback
+const repositoryPath=project=>String(project.description||'').match(/Repository:\s*(.+)/i)?.[1]?.trim()||null
+const planFiles=project=>{const root=repositoryPath(project);if(!root)return[];return['UnityClient/docs/UNITY-CHAPTER-PLAN.md','docs/PLAN-ORCHESTRATOR.md'].map(relative=>({relative,path:`${root}/${relative}`})).filter(row=>existsSync(row.path)&&statSync(row.path).isFile())}
+const planSections=({relative,path})=>{const source=readFileSync(path,'utf8'),matches=[...source.matchAll(/^##\s+((?:U\d{2}|C\d{2}(?:-V)?)\s+[—-]\s+.+)$/gm)];return matches.map((match,index)=>{const body=source.slice(match.index+match[0].length,matches[index+1]?.index||source.length).trim(),lines=body.split('\n').map(line=>line.replace(/^[-*]\s*/,'').trim()).filter(Boolean),statusLine=lines.find(line=>/^Status:/i.test(line)),gate=lines.find(line=>/^Gate:/i.test(line));return{title:match[1].trim(),body:lines.filter(line=>!/^Gate:|^Status:/i.test(line)).join(' ').slice(0,4000),success_criteria:(gate||'Gate: Reviewable evidence satisfies the chapter contract.').replace(/^Gate:\s*/i,''),rationale:`Discovered in the versioned project plan ${relative}${statusLine?` (${statusLine})`:''}. Human approval is required before this becomes an active chapter.`,source_ref:`plan:${relative}#${match[1].split(/\s/)[0]}`}})}
 
 export function clickupStatusFor(proposalStatus,statuses=[]){
   const rows=statuses.map(row=>({name:String(row.status||'').trim(),type:String(row.type||'').toLowerCase()})).filter(row=>row.name),find=(names,types=[])=>names.map(name=>rows.find(row=>row.name.toLowerCase()===name)).find(Boolean)?.name||rows.find(row=>types.includes(row.type))?.name
@@ -29,13 +32,48 @@ export function proposals(project){
     WHERE w.project_id=? ORDER BY CASE w.status WHEN 'proposed' THEN 0 ELSE 1 END,w.created_at DESC`).all(project.id)
 }
 
+export function objectivePlan(project){
+  const db=base(),objectives=db.prepare(`SELECT o.*,
+    (SELECT count(*) FROM objective_dependencies d WHERE d.objective_id=o.id) dependency_count,
+    (SELECT count(*) FROM objective_dependencies d JOIN objectives prerequisite ON prerequisite.id=d.depends_on_id WHERE d.objective_id=o.id AND prerequisite.status!='proven') unmet_dependencies
+    FROM objectives o WHERE o.project_id=? ORDER BY o.priority,o.id`).all(project.id)
+  const dependencies=db.prepare(`SELECT d.id,o.uid objective_uid,o.title objective_title,p.uid depends_on_uid,p.title depends_on_title,p.status depends_on_status
+    FROM objective_dependencies d JOIN objectives o ON o.id=d.objective_id JOIN objectives p ON p.id=d.depends_on_id
+    WHERE d.project_id=? ORDER BY o.priority,p.priority,d.id`).all(project.id)
+  return{objectives:objectives.map(row=>({...row,feasible:!['proven','abandoned','blocked'].includes(row.status)&&row.unmet_dependencies===0})),dependencies}
+}
+
+export function reorderObjectives(project,orderedUids){
+  const db=base(),current=db.prepare('SELECT uid FROM objectives WHERE project_id=? ORDER BY priority,id').all(project.id).map(row=>row.uid),requested=[...new Set((orderedUids||[]).map(String))]
+  if(requested.length!==current.length||requested.some(uid=>!current.includes(uid)))throw new Error('Order must contain every project objective exactly once.')
+  db.transaction(()=>requested.forEach((uid,index)=>db.prepare('UPDATE objectives SET priority=?,updated_at=? WHERE uid=? AND project_id=?').run((index+1)*10,nowStamp(),uid,project.id)))()
+  return objectivePlan(project)
+}
+
+function dependencyWouldCycle(db,objectiveId,dependsOnId){
+  const seen=new Set(),visit=id=>{if(id===objectiveId)return true;if(seen.has(id))return false;seen.add(id);return db.prepare('SELECT depends_on_id FROM objective_dependencies WHERE objective_id=?').all(id).some(row=>visit(row.depends_on_id))};return visit(dependsOnId)
+}
+export function addObjectiveDependency(project,objectiveUid,dependsOnUid){
+  const db=base(),objective=db.prepare('SELECT id FROM objectives WHERE uid=? AND project_id=?').get(objectiveUid,project.id),prerequisite=db.prepare('SELECT id FROM objectives WHERE uid=? AND project_id=?').get(dependsOnUid,project.id)
+  if(!objective||!prerequisite)throw new Error('Both objectives must belong to this project.')
+  if(objective.id===prerequisite.id)throw new Error('An objective cannot depend on itself.')
+  if(dependencyWouldCycle(db,objective.id,prerequisite.id))throw new Error('This dependency would create a cycle.')
+  db.prepare('INSERT OR IGNORE INTO objective_dependencies(project_id,objective_id,depends_on_id) VALUES(?,?,?)').run(project.id,objective.id,prerequisite.id)
+  return objectivePlan(project)
+}
+export function removeObjectiveDependency(project,objectiveUid,dependsOnUid){
+  base().prepare(`DELETE FROM objective_dependencies WHERE project_id=? AND objective_id=(SELECT id FROM objectives WHERE uid=? AND project_id=?) AND depends_on_id=(SELECT id FROM objectives WHERE uid=? AND project_id=?)`).run(project.id,objectiveUid,project.id,dependsOnUid,project.id)
+  return objectivePlan(project)
+}
+
 export function generateProposals(project,input={}){
   const db=base(),created=[],insert=db.prepare(`INSERT OR IGNORE INTO work_proposals
     (uid,project_id,objective_id,kind,title,body,success_criteria,rationale,source_kind,source_ref,fingerprint)
     VALUES(@uid,@project_id,@objective_id,@kind,@title,@body,@success_criteria,@rationale,@source_kind,@source_ref,@fingerprint)`)
-  const add=input=>{const row={uid:uid(),project_id:project.id,objective_id:null,body:null,success_criteria:null,source_ref:null,...input};row.title=clean(row.title);row.fingerprint=fingerprint(project,row.kind,row.title,row.source_ref||'');const result=insert.run(row);if(result.changes)created.push(row)}
+  const add=input=>{const row={uid:uid(),project_id:project.id,objective_id:null,body:null,success_criteria:null,source_ref:null,...input};row.title=clean(row.title);row.fingerprint=fingerprint(project,row.kind,row.title,row.source_ref||'');const result=insert.run(row);if(result.changes)created.push(row);else db.prepare("UPDATE work_proposals SET title=?,body=?,success_criteria=?,rationale=? WHERE fingerprint=? AND status='proposed'").run(row.title,row.body,row.success_criteria,row.rationale,row.fingerprint)}
   const need=clean(input.need)
   if(need){const title=clean(need.split(/[.!?\n]/)[0]).slice(0,140)||'User-requested project chapter';add({kind:'chapter',title,body:need,success_criteria:clean(input.success_criteria)||'The requested outcome is demonstrated by reviewable evidence.',rationale:'The user explicitly requested a new planning scope. Human approval is still required before it becomes a chapter.',source_kind:'human',source_ref:`need:${digest(need)}`})}
+  for(const file of planFiles(project))for(const section of planSections(file))add({kind:'chapter',...section,source_kind:'project_state'})
   const unfinished=db.prepare("SELECT * FROM objectives WHERE project_id=? AND status IN ('draft','ready','in_progress','blocked') ORDER BY priority,id").all(project.id)
   for(const objective of unfinished.filter(row=>row.status==='blocked'))add({objective_id:objective.id,kind:'corrective',title:`Unblock: ${objective.title}`,body:objective.intent,success_criteria:objective.success_criteria,rationale:'The current project state records this objective as blocked.',source_kind:'project_state',source_ref:`objective:${objective.uid}`})
   const blockers=db.prepare("SELECT b.uid,b.title,b.detail,b.objective_id,o.uid objective_uid,o.success_criteria FROM blockers b LEFT JOIN objectives o ON o.id=b.objective_id WHERE b.project_id=? AND b.status='open' ORDER BY b.created_at DESC").all(project.id)
@@ -75,6 +113,8 @@ export function clickupOauthConfig(origin='http://127.0.0.1:4173'){return{availa
 export async function exchangeClickupCode(code,redirectUri){const response=await fetch('https://api.clickup.com/api/v2/oauth/token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({client_id:process.env.CLICKUP_CLIENT_ID,client_secret:process.env.CLICKUP_CLIENT_SECRET,code,redirect_uri:redirectUri})}),text=await response.text();if(!response.ok)throw new Error(`ClickUp OAuth ${response.status}: ${text.slice(0,300)}`);return JSON.parse(text).access_token}
 export async function connectClickupOauth(project,token,authKind='personal'){const teams=await clickup('/team',token),workspace=teams.teams?.[0];saveClickupAccount(token,workspace?.id||null,authKind);base().prepare(`INSERT INTO clickup_connections(project_id,workspace_id,list_id,enabled,last_status,last_detail,updated_at) VALUES(?,?,?,1,'ok',?,?) ON CONFLICT(project_id) DO UPDATE SET workspace_id=excluded.workspace_id,enabled=1,last_status='ok',last_detail=excluded.last_detail,updated_at=excluded.updated_at`).run(project.id,workspace?.id||null,'','ClickUp account connected globally. Choose this project destination list.',nowStamp());return clickupConnection(project)}
 export function clickupConnection(project,origin){const row=base().prepare('SELECT * FROM clickup_connections WHERE project_id=?').get(project.id),account=storedClickupAccount(),oauth=clickupOauthConfig(origin),statuses=base().prepare("SELECT COALESCE(ticket_status,'unknown') status,count(*) count FROM clickup_ticket_links WHERE project_id=? GROUP BY COALESCE(ticket_status,'unknown') ORDER BY count DESC").all(project.id),proposalCounts=base().prepare('SELECT status,count(*) count FROM work_proposals WHERE project_id=? GROUP BY status').all(project.id),credential=process.env.CLICKUP_API_TOKEN?'environment':account?'configured':null,tagColor=validColor(row?.tag_color,defaultProjectTagColor(project));return row?{...row,tag_color:tagColor,token:credential,account_scope:'global',status_mapping:statusMapping(row.status_mapping),tag_name:row.tag_name||project.slug,connected:Boolean(credential),oauth,progress:{tickets:statuses.reduce((sum,item)=>sum+item.count,0),statuses,proposals:proposalCounts}}:{connected:Boolean(credential),account_scope:'global',status_mapping:{},tag_name:project.slug,tag_color:tagColor,token:credential,oauth,progress:{tickets:0,statuses:[],proposals:proposalCounts}}}
+
+export function clickupPreview(project){const rows=proposals(project),create=rows.filter(row=>!row.ticket_id),linked=rows.filter(row=>row.ticket_id),remoteStatuses=base().prepare("SELECT COALESCE(ticket_status,'unknown') status,count(*) count FROM clickup_ticket_links WHERE project_id=? GROUP BY COALESCE(ticket_status,'unknown') ORDER BY count DESC").all(project.id);return{generated_at:nowStamp(),execution:false,dry_run:true,summary:{proposals:rows.length,would_create:create.length,linked:linked.length,with_evidence:rows.filter(row=>row.evidence_count>0).length},changes:[...create.map(row=>({action:'create',proposal:row.uid,title:row.title,status:row.status,evidence_count:row.evidence_count})),...linked.map(row=>({action:'reconcile',proposal:row.uid,title:row.title,status:row.status,ticket_id:row.ticket_id,ticket_status:row.ticket_status,evidence_count:row.evidence_count}))],remote_statuses:remoteStatuses,warnings:rows.length?[]:['No proposal is available for synchronization.']}}
 
 export async function clickupResources(){const token=clickupToken();if(!token)throw new Error('Connect ClickUp first.');const teams=(await clickup('/team',token)).teams||[],workspaces=teams.map(team=>({id:String(team.id),name:team.name})),lists=[];for(const team of teams){const spaces=(await clickup(`/team/${encodeURIComponent(team.id)}/space?archived=false`,token)).spaces||[];for(const space of spaces){const direct=(await clickup(`/space/${encodeURIComponent(space.id)}/list?archived=false`,token)).lists||[];for(const list of direct)lists.push({id:String(list.id),name:list.name,statuses:list.statuses||[],workspace_id:String(team.id),workspace_name:team.name,space_name:space.name,folder_name:null});const folders=(await clickup(`/space/${encodeURIComponent(space.id)}/folder?archived=false`,token)).folders||[];for(const folder of folders)for(const list of folder.lists||[])lists.push({id:String(list.id),name:list.name,statuses:list.statuses||[],workspace_id:String(team.id),workspace_name:team.name,space_name:space.name,folder_name:folder.name})}}return{workspaces,lists}}
 export async function clickupListStatuses(_project,listId){const token=clickupToken();if(!token)throw new Error('Connect ClickUp first.');const list=await clickup(`/list/${encodeURIComponent(clean(listId))}`,token);return{list_id:String(list.id),statuses:(list.statuses||[]).map(row=>({status:row.status,type:row.type,orderindex:row.orderindex}))}}

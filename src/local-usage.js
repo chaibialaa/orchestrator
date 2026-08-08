@@ -15,3 +15,10 @@ export function scanCodexUsageToday(project){
   totals.models=[...projectModels.values()];totals.machine_total.models=[...machineModels.values()]
   return totals
 }
+
+export function scanClaudeUsageToday(project){
+  const root=join(homedir(),'.claude','projects'),empty={source:'claude-local',sessions:0,input_tokens:0,output_tokens:0,cached_tokens:0,total_tokens:0,estimated_cost:0,cost_basis:'api_equivalent',pricing_version:pricingVersion,models:[]};if(!existsSync(root))return empty
+  const expected=String(project.description||'').match(/(?:Repository:|·)\s*(\/[^\n]+)/)?.[1]?.trim(),models=new Map()
+  for(const directory of readdirSync(root)){const folder=join(root,directory);if(!statSync(folder).isDirectory())continue;for(const name of readdirSync(folder)){if(!name.endsWith('.jsonl'))continue;const path=join(folder,name),stat=statSync(path);if(stat.mtime.toDateString()!==new Date().toDateString())continue;const text=chunk(path,0,Math.min(stat.size,2*1024*1024)),cwd=text.match(/"cwd"\s*:\s*"([^"]+)"/)?.[1],matches=expected?cwd===expected||cwd?.startsWith(`${expected}/`):basename(cwd||'').toLowerCase()===project.name.toLowerCase();if(!matches)continue;let latest=null;for(const line of text.split('\n'))try{const row=JSON.parse(line),usage=row?.message?.usage;if(usage)latest={usage,model:row.message.model||'unknown'}}catch{}if(!latest)continue;const usage={input_tokens:Number(latest.usage.input_tokens||0),output_tokens:Number(latest.usage.output_tokens||0),cached_tokens:Number(latest.usage.cache_read_input_tokens||0),total_tokens:Number(latest.usage.input_tokens||0)+Number(latest.usage.output_tokens||0)},estimate=estimateTokenCost(latest.model,usage),item=models.get(latest.model)||{model:latest.model,sessions:0,input_tokens:0,output_tokens:0,cached_tokens:0,total_tokens:0,estimated_cost:0};empty.sessions++;for(const key of ['input_tokens','output_tokens','cached_tokens','total_tokens']){empty[key]+=usage[key];item[key]+=usage[key]}empty.estimated_cost+=estimate?.amount||0;item.estimated_cost+=estimate?.amount||0;item.sessions++;models.set(latest.model,item)}}
+  empty.models=[...models.values()];return empty
+}

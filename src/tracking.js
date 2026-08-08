@@ -1,10 +1,13 @@
 import { createHash } from 'node:crypto'
-import { createReadStream, existsSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { chmodSync, createReadStream, existsSync, mkdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { hostname } from 'node:os'
 import { base, json, nowStamp, uid } from './db/index.js'
 import { estimateTokenCost } from './pricing.js'
 
 const filename = '.orchestrator.json'
+const hookNames=['pre-commit','post-commit','pre-push','post-checkout','post-merge','post-rewrite']
+const hookStart='# orchestrator-observer:start',hookEnd='# orchestrator-observer:end'
 const slugify = value => String(value).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')
 const digestFile = path => new Promise((resolve,reject)=>{const hash=createHash('sha256'),stream=createReadStream(path);stream.on('data',chunk=>hash.update(chunk));stream.on('error',reject);stream.on('end',()=>resolve(hash.digest('hex')))})
 export const trackingPath = (root=process.cwd()) => join(root,filename)
@@ -53,4 +56,41 @@ export async function recordObservation(input,{root=process.cwd(),endpoint=proce
   const result=await response.json()
   if(!response.ok)throw new Error(result.message||`Orchestrator returned ${response.status}.`)
   return{project:status.config.project,duplicate:Boolean(result.events?.[0]?.duplicate),response:result}
+}
+
+function gitDirectory(root=process.cwd()){
+  const dot=join(realpathSync(root),'.git')
+  if(!existsSync(dot))throw new Error('Git metadata was not found in this project.')
+  if(statSync(dot).isDirectory())return dot
+  const match=readFileSync(dot,'utf8').match(/^gitdir:\s*(.+)\s*$/m)
+  if(!match)throw new Error('Unsupported .git metadata file.')
+  return realpathSync(isAbsolute(match[1])?match[1]:resolve(dirname(dot),match[1]))
+}
+const withoutHookBlock=text=>text.replace(new RegExp(`\\n?${hookStart.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}[\\s\\S]*?${hookEnd.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\n?`,'g'),'\n').replace(/^\n+|\n+$/g,'')
+export function gitHookStatus(root=process.cwd()){
+  let directory
+  try{directory=gitDirectory(root)}catch(error){return{available:false,installed:false,error:error.message,hooks:[]}}
+  const hooks=hookNames.map(name=>{const path=join(directory,'hooks',name),text=existsSync(path)?readFileSync(path,'utf8'):'';return{name,path,installed:text.includes(hookStart)&&text.includes(hookEnd)}})
+  return{available:true,installed:hooks.every(row=>row.installed),directory,hooks}
+}
+export function installGitHooks({root=process.cwd(),command='orchestrator'}={}){
+  const status=trackingStatus(root)
+  if(!status.configured||!status.enabled)throw new Error('Enable Orchestrator tracking before installing hooks.')
+  const directory=gitDirectory(root),hooksDir=join(directory,'hooks'),helper=join(hooksDir,'orchestrator-observe'),quotedCommand=`'${String(command).replace(/'/g,"'\\''")}'`
+  mkdirSync(hooksDir,{recursive:true})
+  const helperBody=`#!/bin/sh\ntrigger=\"\${1:-git-hook}\"\nbranch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf detached)\nhead_commit=$(git rev-parse HEAD 2>/dev/null || printf unborn)\ndirty=false\nif [ -n \"$(git status --porcelain --untracked-files=normal 2>/dev/null)\" ]; then dirty=true; fi\nORCHESTRATOR_HOOK_TRIGGER=\"$trigger\" ORCHESTRATOR_HOOK_BRANCH=\"$branch\" ORCHESTRATOR_HOOK_HEAD=\"$head_commit\" ORCHESTRATOR_HOOK_DIRTY=\"$dirty\" ${quotedCommand} hook git >/dev/null 2>&1 || true\n`
+  writeFileSync(helper,helperBody,{mode:0o755});chmodSync(helper,0o755)
+  for(const name of hookNames){const path=join(hooksDir,name),current=existsSync(path)?readFileSync(path,'utf8'):'#!/bin/sh\n',clean=withoutHookBlock(current),block=`${hookStart}\nhook_dir=$(git rev-parse --git-path hooks 2>/dev/null)\nif [ -x \"$hook_dir/orchestrator-observe\" ]; then \"$hook_dir/orchestrator-observe\" ${name}; fi\n${hookEnd}`;writeFileSync(path,`${clean.trimEnd()}\n${block}\n`,{mode:0o755});chmodSync(path,0o755)}
+  return{...gitHookStatus(root),helper,command,passive:true}
+}
+export function uninstallGitHooks({root=process.cwd()}={}){
+  const directory=gitDirectory(root),helper=join(directory,'hooks','orchestrator-observe')
+  for(const name of hookNames){const path=join(directory,'hooks',name);if(!existsSync(path))continue;const clean=withoutHookBlock(readFileSync(path,'utf8'));writeFileSync(path,clean?`${clean.trimEnd()}\n`:'#!/bin/sh\n',{mode:0o755});chmodSync(path,0o755)}
+  if(existsSync(helper))unlinkSync(helper)
+  return{...gitHookStatus(root),helper_removed:!existsSync(helper),passive:true}
+}
+export async function recordGitHook({root=process.cwd(),endpoint=process.env.ORCHESTRATOR_URL||'http://127.0.0.1:4173',environment=process.env}={}){
+  const branch=String(environment.ORCHESTRATOR_HOOK_BRANCH||'').trim(),head=String(environment.ORCHESTRATOR_HOOK_HEAD||'').trim(),dirty=String(environment.ORCHESTRATOR_HOOK_DIRTY||'').trim().toLowerCase(),trigger=String(environment.ORCHESTRATOR_HOOK_TRIGGER||'git-hook').trim()
+  if(!branch||!head||!['true','false'].includes(dirty))throw new Error('Git hook state is incomplete.')
+  return recordObservation({kind:'git.state',actor_kind:'system',actor:'Git hook',assertion:'measured_fact',summary:`Git state observed after ${trigger}`,payload:{machine:hostname(),branch,head_commit:head,dirty:dirty==='true',trigger},source:'external git hook',idempotency_key:`git-hook:${trigger}:${branch}:${head}:${dirty}`},{root,endpoint})
 }

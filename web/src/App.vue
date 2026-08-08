@@ -3,6 +3,24 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import SystemHealthPanel from "./components/SystemHealthPanel.vue";
 import orchestratorMark from "./assets/orchestrator-mark.svg";
 
+type ThemePreference = "light" | "dark" | "system";
+const themeKey = "orchestrator:theme";
+const storedTheme = localStorage.getItem(themeKey);
+const themePreference = ref<ThemePreference>(storedTheme === "light" || storedTheme === "dark" ? storedTheme : "system");
+const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
+function applyTheme() {
+  const resolved = themePreference.value === "system" ? (systemTheme.matches ? "dark" : "light") : themePreference.value;
+  document.documentElement.dataset.theme = resolved;
+  document.documentElement.style.colorScheme = resolved;
+}
+function setTheme(theme: ThemePreference) {
+  themePreference.value = theme;
+  localStorage.setItem(themeKey, theme);
+  applyTheme();
+}
+const followSystemTheme = () => { if (themePreference.value === "system") applyTheme(); };
+applyTheme();
+
 type Project = {
   uid: string;
   slug: string;
@@ -91,6 +109,7 @@ type DiagramNode = {
   evidence_count: number;
   fail_count: number;
   blocker_count: number;
+  proposal?: boolean;
 };
 type Diagram = {
   project: { name: string };
@@ -114,6 +133,8 @@ const diagram = ref<Diagram | null>(null),
   }),
   resume = ref<any>(null),
   confidence = ref<any>(null),
+  projectProfile = ref<any>(null),
+  gitGuard = ref<any>(null),
   searchResults = ref<any[]>([]),
   searchBusy = ref(false),
   snapshots = ref<any[]>([]),
@@ -129,7 +150,11 @@ const diagram = ref<Diagram | null>(null),
   systemHealth = ref<any>(null),
   systemHealthBusy = ref(false),
   syncCenter = ref<any>(null),
+  syncConflicts = ref<any>({open:[],resolved:[]}),
   syncCenterBusy = ref(false),
+  management = ref<any>(null),
+  managementReports = ref<any[]>([]),
+  managementBusy = ref(false),
   analytics = ref<any>(null),
   analyticsBusy = ref(false),
   aiWorkspace = ref<any>(null),
@@ -145,6 +170,13 @@ const clickupBusy=ref(false)
 const clickupActivity=ref("")
 const clickupMappingOpen=ref(false)
 const planningNeed=ref("")
+const dependencyDraft=ref<Record<string,string>>({})
+const lastAutoRefresh=ref<Date|null>(null)
+const autoRefreshBusy=ref(false)
+const followerState=ref<any>(null)
+const managementDays=ref(90)
+const managementMaxActivity=computed(()=>Math.max(1,...(management.value?.activity||[]).map((row:any)=>row.events)))
+const managementLevel=(row:any)=>row.events===0?0:Math.max(1,Math.ceil(row.events/managementMaxActivity.value*4))
 const clickupLists=computed(()=>clickupResourcesData.value.lists.filter((row:any)=>!clickupForm.value.workspace_id||row.workspace_id===clickupForm.value.workspace_id))
 const clickupStatuses=computed(()=>clickupListStatusesData.value.length?clickupListStatusesData.value:clickupResourcesData.value.lists.find((row:any)=>row.id===clickupForm.value.list_id)?.statuses||[])
 const statusKinds=[['proposed','Proposed'],['approved','Approved'],['published','Published'],['rejected','Rejected'],['superseded','Superseded']]
@@ -156,8 +188,8 @@ const shareState = ref("Copy context link");
 const focusedEvidence = ref(""), pendingEvidence = ref("");
 const savedViews = ref<SavedView[]>([]), saveState = ref("Save shortcut");
 const savedViewsKey = "orchestrator:saved-views";
-const allowedViews = new Set(["search", "briefing", "attention", "health", "sync-center", "projects", "overview", "ai", "planning", "chapters", "evidence", "diagram", "snapshots", "analytics", "memory"]);
-const globalViews = new Set(["search", "briefing", "attention", "health", "sync-center", "projects"]);
+const allowedViews = new Set(["search", "management", "briefing", "attention", "health", "sync-center", "projects", "overview", "ai", "planning", "chapters", "evidence", "diagram", "snapshots", "analytics", "memory"]);
+const globalViews = new Set(["search", "management", "briefing", "attention", "health", "sync-center", "projects"]);
 const isGlobalView = (view: string) => globalViews.has(view);
 let restoringNavigation = true;
 function applyUrlState() {
@@ -220,7 +252,7 @@ function removeSavedView(id: string) {
   persistSavedViews();
 }
 const activeView = ref<
-    "search" | "briefing" | "attention" | "health" | "sync-center" | "projects" | "overview" | "ai" | "planning" | "chapters" | "evidence" | "diagram" | "snapshots" | "analytics" | "memory"
+    "search" | "management" | "briefing" | "attention" | "health" | "sync-center" | "projects" | "overview" | "ai" | "planning" | "chapters" | "evidence" | "diagram" | "snapshots" | "analytics" | "memory"
   >("overview"),
   selectedChapter = ref(""),
   selectedPass = ref(""),
@@ -268,7 +300,10 @@ async function loadPortfolio() {
 async function loadAttention(){attentionBusy.value=true;try{attention.value=await api('/attention')}catch(e:any){error.value=e.message}finally{attentionBusy.value=false}}
 async function loadBriefing(){briefingBusy.value=true;try{const since=localStorage.getItem('orchestrator:briefing-reviewed')||new Date(Date.now()-86400000).toISOString();briefing.value=await api(`/briefing?since=${encodeURIComponent(since)}`)}catch(e:any){error.value=e.message}finally{briefingBusy.value=false}}
 async function loadSystemHealth(){systemHealthBusy.value=true;try{systemHealth.value=await api('/system/health')}catch(e:any){error.value=e.message}finally{systemHealthBusy.value=false}}
-async function loadSyncCenter(){syncCenterBusy.value=true;try{syncCenter.value=await api('/clickup/sync-center')}catch(e:any){error.value=e.message}finally{syncCenterBusy.value=false}}
+async function loadSyncCenter(){syncCenterBusy.value=true;try{[syncCenter.value,syncConflicts.value]=await Promise.all([api('/clickup/sync-center'),api('/sync/conflicts')])}catch(e:any){error.value=e.message}finally{syncCenterBusy.value=false}}
+async function resolveSyncConflict(uid:string,action:string){syncCenterBusy.value=true;try{const response=await fetch(`/api/sync/conflicts/${uid}/resolve`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action})});if(!response.ok)throw new Error((await response.json()).message);await Promise.all([loadSyncCenter(),loadProject(true)])}catch(e:any){error.value=e.message}finally{syncCenterBusy.value=false}}
+async function loadManagement(){managementBusy.value=true;try{[management.value,managementReports.value]=await Promise.all([api<any>(`/management?days=${managementDays.value}`),api<any[]>('/management/reports')])}catch(e:any){error.value=e.message}finally{managementBusy.value=false}}
+async function captureManagement(){managementBusy.value=true;try{const response=await fetch('/api/management/reports',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({days:managementDays.value})});if(!response.ok)throw new Error((await response.json()).message);await loadManagement()}catch(e:any){error.value=e.message}finally{managementBusy.value=false}}
 async function syncAllProjects(){syncCenterBusy.value=true;error.value="";try{const request=fetch('/api/clickup/sync-all',{method:'POST'});const poll=window.setInterval(loadSyncCenter,800);const response=await request;window.clearInterval(poll);if(!response.ok)throw new Error((await response.json()).message);await loadSyncCenter()}catch(e:any){error.value=e.message}finally{syncCenterBusy.value=false}}
 function markBriefingReviewed(){localStorage.setItem('orchestrator:briefing-reviewed',new Date().toISOString());loadBriefing()}
 function openBriefingItem(item:any){selected.value=item.project.slug;window.setTimeout(()=>{selectedChapter.value=item.target.objective_uid||'';selectedPass.value=item.target.pass_ref||'';pendingEvidence.value=item.target.evidence_uid||'';focusedEvidence.value=pendingEvidence.value;activeView.value=item.target.view||'overview'},0)}
@@ -309,6 +344,9 @@ async function loadClickupStatuses(){clickupListStatusesData.value=[];if(!clicku
 async function connectPersonalToken(){clickupBusy.value=true;clickupActivity.value="Connecting the global ClickUp account…";error.value="";try{const response=await fetch(`/api/projects/${selected.value}/clickup/token`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:clickupForm.value.token})});if(!response.ok)throw new Error((await response.json()).message);const data=await response.json();clickupForm.value.token="";clickupResourcesData.value=data.resources;await loadPlanning(false);if(!clickupForm.value.workspace_id&&data.resources.workspaces[0])clickupForm.value.workspace_id=data.resources.workspaces[0].id;clickupActivity.value="ClickUp connected · choose this project's destination"}catch(e:any){error.value=e.message;clickupActivity.value=`ClickUp connection failed: ${e.message}`}finally{clickupBusy.value=false}}
 async function runClickupSync(){clickupBusy.value=true;clickupActivity.value="Synchronizing this registry and reading ClickUp feedback…";error.value="";clickupSync.value={active:true,percent:1,message:"Starting synchronization"};const poll=window.setInterval(async()=>{try{clickupSync.value=await api(`/projects/${selected.value}/clickup/progress`)}catch{}},350);try{const response=await fetch(`/api/projects/${selected.value}/clickup/sync`,{method:'POST'});if(!response.ok)throw new Error((await response.json()).message);clickupSync.value={active:false,percent:100,message:"Registry and feedback synchronized"};clickupActivity.value="ClickUp registry and rejected-ticket feedback are up to date";await loadPlanning(false);await loadProject()}catch(e:any){error.value=e.message;clickupActivity.value=`ClickUp synchronization failed: ${e.message}`;clickupSync.value={active:false,percent:0,message:e.message,error:true}}finally{window.clearInterval(poll);clickupBusy.value=false}}
 async function planningAction(path:string,body:any={}){planningBusy.value=true;error.value="";try{const response=await fetch(`/api/projects/${selected.value}/${path}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!response.ok)throw new Error((await response.json()).message);await loadPlanning();await loadProject()}catch(e:any){error.value=e.message}finally{planningBusy.value=false}}
+async function moveObjective(uid:string,direction:number){const rows=[...(planning.value?.plan?.objectives||[])],index=rows.findIndex((row:any)=>row.uid===uid),target=index+direction;if(index<0||target<0||target>=rows.length)return;[rows[index],rows[target]]=[rows[target],rows[index]];planningBusy.value=true;try{const response=await fetch(`/api/projects/${selected.value}/planning/order`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({objectives:rows.map((row:any)=>row.uid)})});if(!response.ok)throw new Error((await response.json()).message);await loadPlanning(false);await loadProject(true)}catch(e:any){error.value=e.message}finally{planningBusy.value=false}}
+async function addDependency(uid:string){const dependsOn=dependencyDraft.value[uid];if(!dependsOn)return;planningBusy.value=true;try{const response=await fetch(`/api/projects/${selected.value}/planning/dependencies`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({objective:uid,depends_on:dependsOn})});if(!response.ok)throw new Error((await response.json()).message);dependencyDraft.value[uid]='';await loadPlanning(false);await loadProject(true)}catch(e:any){error.value=e.message}finally{planningBusy.value=false}}
+async function removeDependency(objective:string,dependsOn:string){planningBusy.value=true;try{const response=await fetch(`/api/projects/${selected.value}/planning/dependencies`,{method:'DELETE',headers:{'content-type':'application/json'},body:JSON.stringify({objective,depends_on:dependsOn})});if(!response.ok)throw new Error((await response.json()).message);await loadPlanning(false);await loadProject(true)}catch(e:any){error.value=e.message}finally{planningBusy.value=false}}
 async function saveClickup(){clickupBusy.value=true;clickupActivity.value="Saving this project's ClickUp destination…";try{const response=await fetch(`/api/projects/${selected.value}/clickup`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(clickupForm.value)});if(!response.ok)throw new Error((await response.json()).message);clickupForm.value.token="";await loadPlanning(false);clickupActivity.value="Project destination saved"}catch(e:any){error.value=e.message;clickupActivity.value=`Destination save failed: ${e.message}`}finally{clickupBusy.value=false}}
 function openAiTarget(target:any){if(!target)return;selectedChapter.value=target.objective_uid||'';activeView.value=target.view||'overview'}
 function openProposalEvidence(proposal:any){if(!proposal.objective_uid)return;selectedChapter.value=proposal.objective_uid;selectedPass.value="";activeView.value="evidence"}
@@ -345,27 +383,30 @@ async function setPortfolioTracking(project: any) {
     portfolioBusy.value = false;
   }
 }
-async function loadProject() {
+async function loadProject(silent=false) {
   if (!selected.value) return;
-  loading.value = true;
+  if(!silent)loading.value = true;
   error.value = "";
   try {
     const visitKey=`orchestrator:last-visit:${selected.value}`,since=localStorage.getItem(visitKey)||new Date(Date.now()-86400000).toISOString();
-    [detail.value, diagram.value, coordination.value, resume.value, confidence.value] = await Promise.all([
+    [detail.value, diagram.value, coordination.value, resume.value, confidence.value, projectProfile.value, gitGuard.value] = await Promise.all([
       api<Detail>(`/projects/${selected.value}`),
       api<Diagram>(`/projects/${selected.value}/diagram`),
       api<any>(`/projects/${selected.value}/coordination`),
       api<any>(`/projects/${selected.value}/resume?since=${encodeURIComponent(since)}`),
       api<any>(`/projects/${selected.value}/confidence`),
+      api<any>(`/projects/${selected.value}/profile`),
+      api<any>(`/projects/${selected.value}/git-guard`),
     ]);
     localStorage.setItem(visitKey,new Date().toISOString())
     await loadMemory();
   } catch (e: any) {
     error.value = e.message;
   } finally {
-    loading.value = false;
+    if(!silent)loading.value = false;
   }
 }
+async function saveProjectProfile(){if(!projectProfile.value)return;const response=await fetch(`/api/projects/${selected.value}/profile`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({type:projectProfile.value.type,criteria:projectProfile.value.criteria})});if(!response.ok)throw new Error((await response.json()).message);projectProfile.value=await response.json()}
 async function loadMemory() {
   if (!selected.value) return;
   const p = new URLSearchParams();
@@ -402,6 +443,7 @@ watch(selected, () => {
 });
 watch([selected, activeView, selectedChapter, selectedPass, previewImage, openPreview], syncContextUrl);
 watch(activeView, (view) => {
+  if (view === "management") loadManagement();
   if (view === "briefing" && !briefing.value) loadBriefing();
   if (view === "health" && !systemHealth.value) loadSystemHealth();
   if (view === "sync-center") loadSyncCenter();
@@ -411,7 +453,8 @@ watch(activeView, (view) => {
   if (view === "planning") loadPlanning();
 });
 let timer: number;
-let clickupProgressTimer: number;
+let clickupProgressTimer: number, projectRefreshTimer: number;
+async function autoRefreshProject(){if(!selected.value||document.hidden||autoRefreshBusy.value||isGlobalView(activeView.value))return;autoRefreshBusy.value=true;try{await fetch(`/api/projects/${selected.value}/planning/generate`,{method:'POST',headers:{'content-type':'application/json'},body:'{}'});[followerState.value]=await Promise.all([api('/followers'),loadProject(true)]);if(activeView.value==='planning')await loadPlanning(false);lastAutoRefresh.value=new Date()}catch{}finally{autoRefreshBusy.value=false}}
 watch([query, assertion, selectedChapter, selectedPass], () => {
   clearTimeout(timer);
   timer = window.setTimeout(loadMemory, 200);
@@ -422,6 +465,7 @@ const closeOnEscape = (event: KeyboardEvent) => {
   if (event.key === "ArrowRight" && previewImage.value) moveImage(1);
 };
 onMounted(async () => {
+  systemTheme.addEventListener("change", followSystemTheme);
   window.addEventListener("keydown", closeOnEscape);
   window.addEventListener("popstate", restoreFromHistory);
   try {
@@ -431,6 +475,8 @@ onMounted(async () => {
     restoringNavigation = false;
     window.history.replaceState(null, "", urlForContext());
     clickupProgressTimer=window.setInterval(async()=>{if(activeView.value==='planning'&&selected.value)try{clickupSync.value=await api(`/projects/${selected.value}/clickup/progress`)}catch{}},1500)
+    projectRefreshTimer=window.setInterval(autoRefreshProject,15000)
+    await autoRefreshProject()
   } catch (e: any) {
     error.value = e.message;
     loading.value = false;
@@ -442,7 +488,9 @@ function restoreFromHistory() {
   window.setTimeout(() => restoringNavigation = false, 0);
 }
 onBeforeUnmount(() => {
+  systemTheme.removeEventListener("change", followSystemTheme);
   window.clearInterval(clickupProgressTimer);
+  window.clearInterval(projectRefreshTimer);
   window.removeEventListener("keydown", closeOnEscape);
   window.removeEventListener("popstate", restoreFromHistory);
 });
@@ -656,7 +704,7 @@ const flowSummary=computed(()=>{const roots=graphNodes.value,current=roots.find(
 const graphNode = (id: string) =>
   graphNodes.value.find((node) => node.id === id);
 const edgeCritical=(edge:{from:string;to:string;type:string})=>{const from=graphNode(edge.from),to=graphNode(edge.to);return edge.type==='precedes'&&Boolean(from&&to&&['active','blocked'].includes(from.phase)&&to.phase==='planned')}
-function inspectGraphNode(id:string){const chapter=detail.value?.chapters.find(row=>row.uid===id);if(chapter)inspectChapter(chapter)}
+function inspectGraphNode(id:string){if(id.startsWith('proposal:')){activeView.value='planning';return}const chapter=detail.value?.chapters.find(row=>row.uid===id);if(chapter)inspectChapter(chapter)}
 function graphPath(edge: { from: string; to: string; type: string }) {
   const a = graphNode(edge.from),
     b = graphNode(edge.to);
@@ -793,6 +841,7 @@ async function recordJudgment() {
       <section class="nav-section nav-section-global">
         <div class="nav-heading"><span>Workspace</span><small>Global</small></div>
         <nav aria-label="Workspace" class="workspace-nav">
+          <button class="all-projects" :class="{ active: activeView === 'management' }" @click="activeView = 'management'; loadManagement()"><span>Management cockpit</span><small>Portfolio intelligence</small></button>
           <button class="all-projects" :class="{ active: activeView === 'briefing' }" @click="activeView = 'briefing'; loadBriefing()"><span>Recent briefing</span><small>What changed</small></button>
           <button class="all-projects" :class="{ active: activeView === 'attention' }" @click="activeView = 'attention'; loadAttention()"><span>Attention center</span><small>{{ attentionItems.length }} signals</small></button>
           <button class="all-projects" :class="{ active: activeView === 'health' }" @click="activeView = 'health'; loadSystemHealth()"><span>System health</span><small>Read-only checks</small></button>
@@ -833,18 +882,23 @@ async function recordJudgment() {
     <main id="main-content" tabindex="-1">
       <header>
         <div>
-          <p class="eyebrow">{{ activeView === "search" ? "Universal search" : activeView === "briefing" ? "Global resume" : activeView === "attention" ? "Global attention" : activeView === "health" ? "Register integrity" : activeView === "sync-center" ? "Passive connectors" : activeView === "projects" ? "Global portfolio" : "Project record" }}</p>
-          <h1>{{ activeView === "search" ? "Search memory" : activeView === "briefing" ? "Recent briefing" : activeView === "attention" ? "Attention center" : activeView === "health" ? "System health" : activeView === "sync-center" ? "Sync center" : activeView === "projects" ? "Projects" : detail?.name || "Project memory" }}</h1>
+          <p class="eyebrow">{{ activeView === "search" ? "Universal search" : activeView === "management" ? "Engineering management" : activeView === "briefing" ? "Global resume" : activeView === "attention" ? "Global attention" : activeView === "health" ? "Register integrity" : activeView === "sync-center" ? "Passive connectors" : activeView === "projects" ? "Global portfolio" : "Project record" }}</p>
+          <h1>{{ activeView === "search" ? "Search memory" : activeView === "management" ? "Management cockpit" : activeView === "briefing" ? "Recent briefing" : activeView === "attention" ? "Attention center" : activeView === "health" ? "System health" : activeView === "sync-center" ? "Sync center" : activeView === "projects" ? "Projects" : detail?.name || "Project memory" }}</h1>
           <p>
             {{
-              activeView === "search" ? "Projects, objectives, events, decisions, evidence, paths and hashes." : activeView === "briefing" ? "Changes across every active project since your last review." : activeView === "attention" ? "Decisions and risks that require a closer look." : activeView === "health" ? "Read-only integrity, backup and evidence-retention checks." : activeView === "sync-center" ? "Scheduled ClickUp registry synchronization across every connected project." : activeView === "projects"
+              activeView === "search" ? "Projects, objectives, events, decisions, evidence, paths and hashes." : activeView === "management" ? "Delivery flow, Git activity, blockers, evidence and contributors across every machine." : activeView === "briefing" ? "Changes across every active project since your last review." : activeView === "attention" ? "Decisions and risks that require a closer look." : activeView === "health" ? "Read-only integrity, backup and evidence-retention checks." : activeView === "sync-center" ? "Scheduled ClickUp registry synchronization across every connected project." : activeView === "projects"
                 ? "Tracked work, local discoveries and multi-machine state."
                 : detail?.description ||
               "Auditable history and conversation handoff."
             }}
           </p>
         </div>
-        <form class="global-search" role="search" @submit.prevent="runSearch"><input v-model="globalQuery" aria-label="Search all project memory" placeholder="Search memory…" minlength="2"><button :disabled="searchBusy || globalQuery.trim().length < 2">{{ searchBusy ? 'Searching…' : 'Search' }}</button></form>
+        <div class="header-tools">
+          <form class="global-search" role="search" @submit.prevent="runSearch"><input v-model="globalQuery" aria-label="Search all project memory" placeholder="Search memory…" minlength="2"><button :disabled="searchBusy || globalQuery.trim().length < 2">{{ searchBusy ? 'Searching…' : 'Search' }}</button></form>
+          <div class="theme-switcher" role="group" aria-label="Color theme">
+            <button v-for="theme in (['light','dark','system'] as ThemePreference[])" :key="theme" type="button" :class="{ active: themePreference === theme }" :aria-pressed="themePreference === theme" @click="setTheme(theme)">{{ theme === 'light' ? 'Light' : theme === 'dark' ? 'Dark' : 'System' }}</button>
+          </div>
+        </div>
         <div v-if="!isGlobalView(activeView)" class="exports">
           <button @click="copyContextLink">{{ shareState }}</button>
           <button @click="saveCurrentView">{{ saveState }}</button>
@@ -885,8 +939,19 @@ async function recordJudgment() {
           {{ view }}
         </button>
       </div>
+      <div v-if="!isGlobalView(activeView)" class="live-refresh" role="status" aria-live="polite"><span :class="{ pulse: autoRefreshBusy }"></span><strong>{{ autoRefreshBusy ? 'Refreshing project state…' : followerState?.active ? 'Automatic follower active' : 'Follower unavailable' }}</strong><small>{{ followerState?.projects?.find((row:any)=>row.slug===selected)?.last_change_at ? `Change detected ${date(followerState.projects.find((row:any)=>row.slug===selected).last_change_at)}` : lastAutoRefresh ? `Checked ${lastAutoRefresh.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}` : 'Watching local changes' }}</small><button class="secondary" :disabled="autoRefreshBusy" @click="autoRefreshProject">Refresh now</button></div>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <section v-if="activeView === 'search'" class="search-screen"><section class="panel search-results"><div class="panel-head"><div><p class="eyebrow">{{ filteredSearchResults.length }} results</p><h2>“{{ globalQuery }}”</h2></div><select v-model="searchType" aria-label="Filter search results by type"><option value="all">All types</option><option v-for="type in [...new Set(searchResults.map(item=>item.type))]" :key="type" :value="type">{{ type }}</option></select></div><p v-if="!searchBusy && !filteredSearchResults.length" class="empty">No matching memory records.</p><button v-for="item in pagedSearchResults" :key="item.id" class="search-row" @click="openSearchResult(item)"><span class="attention-kind">{{ item.type }}</span><div><strong>{{ item.title }}</strong><p>{{ item.project.name }} · {{ item.subtitle }}</p></div><time>{{ date(item.occurred_at) }}</time><span>Open →</span></button><div v-if="filteredSearchResults.length" class="pagination"><button :disabled="searchPage===1" @click="searchPage--">Previous</button><span>{{ filteredSearchResults.length }} results · Page {{ searchPage }} / {{ searchPages }}</span><button :disabled="searchPage===searchPages" @click="searchPage++">Next</button></div></section></section>
+      <section v-else-if="activeView === 'management'" class="management-screen">
+        <div v-if="managementBusy && !management" class="panel empty" role="status">Building management cockpit…</div>
+        <template v-else-if="management">
+          <section class="panel management-hero"><div><p class="eyebrow">Recorded delivery flow</p><h2>{{ management.summary.projects }} active projects · {{ management.summary.average_progress }}% average progress</h2><p>Technical management based on auditable events, Git observations and proof manifests—not commit-count productivity scoring.</p><small v-if="managementReports[0]">Latest archived report {{ date(managementReports[0].generated_at) }} · generated automatically every 24 hours</small></div><div class="management-actions"><select v-model="managementDays" aria-label="Management reporting period" @change="loadManagement"><option :value="30">30 days</option><option :value="90">90 days</option><option :value="180">180 days</option><option :value="365">365 days</option></select><a :href="`/api/management/report/json?days=${managementDays}`">Export JSON</a><a :href="`/api/management/report/markdown?days=${managementDays}`">Export report</a><button :disabled="managementBusy" @click="captureManagement">Archive now</button><button class="secondary" :disabled="managementBusy" @click="loadManagement">Refresh</button></div></section>
+          <section class="management-summary" aria-label="Management summary"><article><span>Portfolio progress</span><strong>{{ management.summary.average_progress }}%</strong></article><article><span>Open blockers</span><strong>{{ management.summary.open_blockers }}</strong><small>{{ management.summary.blocked_projects }} affected projects</small></article><article><span>Observed commits</span><strong>{{ management.summary.commits }}</strong><small>{{ management.summary.pushes_verified }} verified pushes</small></article><article><span>Trusted evidence</span><strong>{{ management.summary.trusted_evidence }} / {{ management.summary.evidence }}</strong></article><article><span>Recorded AI cost</span><strong>{{ money(management.summary.cost) }}</strong></article></section>
+          <section class="panel activity-calendar"><div class="panel-head"><div><p class="eyebrow">{{ management.days }}-day heartbeat</p><h2>Engineering activity</h2></div><div class="heat-legend"><span>Less</span><i v-for="level in [0,1,2,3,4]" :key="level" :data-level="level"></i><span>More</span></div></div><div class="heatmap" :style="{gridTemplateColumns:`repeat(${Math.ceil(management.activity.length/7)}, 13px)`}"><span v-for="day in management.activity" :key="day.date" :data-level="managementLevel(day)" :title="`${day.date}: ${day.events} events, ${day.commits} commits, ${day.evidence} evidence, ${day.push_attempts} push attempts, ${day.pushes_verified} verified pushes`"></span></div><p class="provenance-note">Commits come from post-commit observations. Push attempts are not successful pushes; only provider/remote verification is counted as verified.</p></section>
+          <section class="panel management-projects"><div class="panel-head"><div><p class="eyebrow">Delivery portfolio</p><h2>Projects, flow and risk</h2></div></div><div class="management-table" role="table"><div class="management-table-head" role="row"><span>Project</span><span>Progress</span><span>Blockers</span><span>Git activity</span><span>Evidence</span><span>Latest state</span></div><button v-for="project in management.projects" :key="project.slug" role="row" @click="selected=project.slug;activeView='overview'"><span><strong>{{ project.name }}</strong><small>{{ project.objectives }} objectives · {{ project.in_progress }} active</small></span><span><strong>{{ project.progress }}%</strong><i><b :style="{width:`${project.progress}%`}"></b></i></span><span :class="{risk:project.blocked}"><strong>{{ project.blocked }}</strong><small>{{ project.oldest_blocker_days ? `oldest ${project.oldest_blocker_days}d` : 'clear' }}</small></span><span><strong>{{ project.commits }} commits</strong><small>{{ project.pushes_verified }} verified · {{ project.push_attempts }} attempted</small></span><span><strong>{{ project.evidence_coverage }}%</strong><small>{{ project.trusted_evidence }}/{{ project.evidence }} trusted</small></span><span><strong>{{ project.git ? `${project.git.branch} · ${project.git.dirty ? 'dirty' : 'clean'}` : 'Git unknown' }}</strong><small>{{ date(project.last_activity) }}</small></span></button></div></section>
+          <section class="management-lower"><section class="panel management-blockers"><div class="panel-head"><div><p class="eyebrow">Blocker aging</p><h2>Management attention</h2></div></div><p v-if="!management.blockers.length" class="empty good">No open blocker recorded.</p><button v-for="blocker in management.blockers" :key="blocker.uid" @click="selected=blocker.slug;activeView='chapters';selectedChapter=blocker.objective_uid||''"><span :data-age="blocker.age_days>7?'old':'recent'">{{ blocker.age_days }}d</span><div><strong>{{ blocker.title }}</strong><p>{{ blocker.project_name }}<template v-if="blocker.objective_title"> · {{ blocker.objective_title }}</template></p></div><b>Open →</b></button></section><section class="panel management-contributors"><div class="panel-head"><div><p class="eyebrow">Provenance, not ranking</p><h2>Machines and agents</h2></div></div><article v-for="person in management.contributors.slice(0,12)" :key="person.id"><div><span>{{ person.kind }}</span><strong>{{ person.name }}</strong><small>{{ person.projects.join(', ') }}</small></div><dl><div><dt>Events</dt><dd>{{ person.events }}</dd></div><div><dt>Commits</dt><dd>{{ person.commits }}</dd></div><div><dt>Evidence</dt><dd>{{ person.evidence }}</dd></div></dl></article></section></section>
+        </template>
+      </section>
       <section v-else-if="activeView === 'briefing'" class="briefing-screen"><div v-if="briefingBusy && !briefing" class="panel empty">Building recent briefing…</div><template v-else-if="briefing"><section class="briefing-summary" aria-label="Briefing summary"><article><span>Changes</span><strong>{{ briefing.summary.events }}</strong></article><article><span>Active projects changed</span><strong>{{ briefing.summary.projects }}</strong></article><article><span>New evidence</span><strong>{{ briefing.summary.evidence }}</strong></article><article><span>Decisions and blockers</span><strong>{{ briefing.summary.decisions + briefing.summary.blockers }}</strong></article></section><section class="panel briefing-projects"><div class="panel-head"><div><p class="eyebrow">Since {{ date(briefing.since) }}</p><h2>Changes by project</h2></div><div class="briefing-actions"><a :href="`/api/briefing/export/json?since=${encodeURIComponent(briefing.since)}`">Export JSON</a><a :href="`/api/briefing/export/markdown?since=${encodeURIComponent(briefing.since)}`">Export Markdown</a><button class="text-button" :disabled="briefingBusy" @click="markBriefingReviewed">Mark all reviewed</button></div></div><p v-if="!briefing.projects.length" class="empty good">No changes since your last review.</p><button v-for="project in briefing.projects" :key="project.slug" class="briefing-project" @click="selected=project.slug;activeView='overview'"><div><strong>{{ project.name }}</strong><p>{{ project.latest_summary }}</p></div><span>{{ project.events }} changes · {{ project.evidence }} evidence · {{ project.decisions }} decisions</span></button></section><section v-if="briefing.recent.length" class="panel briefing-feed"><div class="panel-head"><div><p class="eyebrow">Latest records</p><h2>Activity feed</h2></div></div><button v-for="item in briefing.recent" :key="item.uid" @click="openBriefingItem(item)"><span class="attention-kind">{{ item.kind.replace('.recorded','').replace('.',' ') }}</span><div><strong>{{ item.summary }}</strong><p>{{ item.project.name }}<template v-if="item.objective_title"> · {{ item.objective_title }}</template> · {{ item.actor }}</p></div><time>{{ date(item.occurred_at) }}</time><span>Open →</span></button></section></template></section>
       <section v-else-if="activeView === 'attention'" class="attention-screen">
         <div v-if="attentionBusy && !attention" class="panel empty" role="status" aria-live="polite">Collecting attention signals…</div>
@@ -902,6 +967,7 @@ async function recordJudgment() {
           <section class="panel sync-center-hero"><div><p class="eyebrow">Portfolio schedule</p><h2>{{ syncCenter.scheduler.enabled ? `Every ${syncCenter.scheduler.minutes} minutes` : 'Scheduled sync disabled' }}</h2><p>Next cycle: {{ date(syncCenter.scheduler.next_run_at) }} · Last started: {{ date(syncCenter.scheduler.last_started_at) }}</p></div><button :disabled="syncCenterBusy || syncCenter.all_progress.active" @click="syncAllProjects">{{ syncCenter.all_progress.active ? `${syncCenter.all_progress.percent}% · ${syncCenter.all_progress.message}` : 'Sync all projects now' }}</button></section>
           <section v-if="syncCenter.all_progress.active || syncCenter.all_progress.percent" class="panel portfolio-sync-progress"><div><span>{{ syncCenter.all_progress.message }}</span><strong>{{ syncCenter.all_progress.percent }}%</strong></div><progress :value="syncCenter.all_progress.percent" max="100"></progress></section>
           <section class="sync-project-grid"><article v-for="connection in syncCenter.connections" :key="connection.slug" class="panel sync-project-card" :data-status="connection.last_status"><div class="panel-head"><div><p class="eyebrow">{{ connection.tag_name || connection.slug }}</p><h2>{{ connection.name }}</h2></div><span class="status" :data-status="connection.last_status">{{ connection.last_status }}</span></div><p>{{ connection.last_detail || 'Never synchronized' }}</p><div class="sync-project-meta"><span>Last {{ date(connection.last_sync_at) }}</span><span>List {{ connection.list_id }}</span></div><div v-if="connection.progress.active" class="mini-sync"><i :style="{width:`${connection.progress.percent}%`}"></i><small>{{ connection.progress.message }}</small></div><button @click="selected=connection.slug;activeView='planning'">Open project settings →</button></article></section>
+          <section v-if="syncConflicts.open.length" class="panel sync-conflicts"><div class="panel-head"><div><p class="eyebrow">Multi-machine merge</p><h2>{{ syncConflicts.open.length }} conflict{{ syncConflicts.open.length===1?'':'s' }} need review</h2><p>Incoming journals are preserved; Orchestrator never silently overwrites divergent planning state.</p></div></div><article v-for="conflict in syncConflicts.open" :key="conflict.uid"><div><strong>{{ conflict.entity_type }} · {{ conflict.entity_uid }}</strong><small>{{ conflict.incoming_machine_id || 'unknown machine' }} · {{ date(conflict.created_at) }}</small></div><dl><div><dt>Local</dt><dd>{{ conflict.local_value.status }} · {{ conflict.local_value.title }}</dd></div><div><dt>Incoming</dt><dd>{{ conflict.incoming_value.status }} · {{ conflict.incoming_value.title }}</dd></div></dl><div><button class="secondary" @click="resolveSyncConflict(conflict.uid,'keep_local')">Keep local</button><button @click="resolveSyncConflict(conflict.uid,'accept_incoming')">Accept incoming</button><button class="text-button" @click="resolveSyncConflict(conflict.uid,'ignore')">Ignore</button></div></article></section>
           <section class="panel sync-history"><div class="panel-head"><div><p class="eyebrow">Audit history</p><h2>Latest synchronization runs</h2></div><button class="secondary" :disabled="syncCenterBusy" @click="loadSyncCenter">Refresh</button></div><p v-if="!syncCenter.history.length" class="empty">No recorded run yet.</p><article v-for="run in syncCenter.history" :key="run.id"><span class="status" :data-status="run.status">{{ run.status }}</span><div><strong>{{ run.project_name }}</strong><p>{{ run.message }}</p></div><span>{{ run.trigger }}</span><span>{{ run.created }} created · {{ run.updated }} updated · {{ run.attachments }} files</span><time>{{ date(run.started_at) }}</time></article></section>
         </template>
       </section>
@@ -983,6 +1049,8 @@ async function recordJudgment() {
             </ol>
           </section>
           <div class="stack">
+            <section v-if="projectProfile" class="panel validation-profile"><div class="panel-head"><div><p class="eyebrow">Definition of done</p><h2>Validation profile</h2></div><select v-model="projectProfile.type" aria-label="Project type" @change="projectProfile.criteria=[...(projectProfile.templates?.[projectProfile.type] || [])]"><option v-for="(_,type) in projectProfile.templates" :key="type" :value="type">{{ String(type).replace('_',' ') }}</option></select></div><label v-for="(_,index) in projectProfile.criteria" :key="index"><span>{{ Number(index) + 1 }}</span><input v-model="projectProfile.criteria[index]" :aria-label="`Validation criterion ${Number(index) + 1}`"></label><button class="text-button" @click="saveProjectProfile">Save validation profile</button></section>
+            <section v-if="gitGuard" class="panel git-guard" :data-status="gitGuard.status"><div class="panel-head"><div><p class="eyebrow">Before starting work</p><h2>Git guard</h2></div><span class="status" :data-status="gitGuard.safe_to_start ? 'proven' : 'blocked'">{{ gitGuard.status }}</span></div><p>{{ gitGuard.safe_to_start ? 'Latest recorded Git state is suitable for a new pass.' : gitGuard.required_action }}</p><small v-if="gitGuard.expected_commit">Expected {{ gitGuard.expected_commit.slice(0,10) }} · {{ gitGuard.branch }}</small></section>
             <section v-if="confidence" class="panel confidence-card"><div class="confidence-head"><div><p class="eyebrow">Auditable confidence</p><h2>Project confidence</h2></div><strong :data-level="confidence.label">{{ confidence.score }}</strong></div><div class="confidence-components"><div v-for="(component,key) in confidence.components" :key="key"><span>{{ String(key).replace('_',' ') }}</span><i><b :style="{width:`${component.score}%`}"></b></i><strong>{{ component.score }}</strong></div></div><p>{{ confidence.components.evidence.coverage }}% evidence coverage · {{ confidence.components.blockers.active }} blockers · {{ confidence.components.coordination.conflicts }} pass conflicts</p></section>
             <section v-if="resume" class="panel resume-card"><div class="panel-head"><div><p class="eyebrow">Since your last visit</p><h2>{{ resume.summary.events ? `${resume.summary.events} changes` : 'No new changes' }}</h2></div><small>{{ date(resume.since) }}</small></div><div class="resume-metrics"><span><strong>{{ resume.summary.evidence }}</strong> evidence</span><span><strong>{{ resume.summary.decisions }}</strong> decisions</span><span><strong>{{ resume.summary.blockers }}</strong> blocker updates</span><span><strong>{{ resume.summary.changed_objectives }}</strong> objectives</span></div><p v-if="resume.recent[0]">Latest: {{ resume.recent[0].summary }}</p><p v-else>Your project state is unchanged since the previous visit.</p></section>
             <section class="panel">
@@ -1691,6 +1759,7 @@ async function recordJudgment() {
           <div v-if="planningBusy && !planning" class="panel empty" role="status">Analysing recorded work…</div>
           <template v-else-if="planning">
             <section class="panel planning-hero"><div><p class="eyebrow">Human-approved planning</p><h2>Propose work from a project need</h2><p>This prompt creates a reviewable proposal from your instruction. It does not read or synchronize ClickUp.</p><textarea v-model="planningNeed" rows="3" placeholder="What outcome, correction or instruction does this project need?"></textarea></div><div class="planning-hero-actions"><button :disabled="planningBusy || !planningNeed.trim()" @click="planningAction('planning/generate',{need:planningNeed});planningNeed=''">Create proposal</button><div class="recorded-analysis"><small>Separate local analysis</small><button class="secondary" :disabled="planningBusy" @click="planningAction('planning/generate')">{{ planningBusy ? 'Scanning recorded state…' : 'Scan recorded project state' }}</button></div></div></section>
+            <section class="panel plan-order"><div class="panel-head"><div><p class="eyebrow">Feasible sequence</p><h2>Objective order and prerequisites</h2><p>“What should I work on next?” only recommends unfinished objectives whose recorded prerequisites are proven.</p></div><span>{{ planning.plan.objectives.filter((row:any)=>row.feasible).length }} feasible now</span></div><ol><li v-for="(objective,index) in planning.plan.objectives" :key="objective.uid" :data-feasible="objective.feasible"><div class="plan-rank"><strong>{{ Number(index)+1 }}</strong><span><b>{{ objective.title }}</b><small>{{ objective.status }} · {{ objective.unmet_dependencies }} unmet prerequisite{{ objective.unmet_dependencies===1?'':'s' }}</small></span></div><div class="plan-controls"><button type="button" class="secondary" :disabled="Number(index)===0 || planningBusy" :aria-label="`Move ${objective.title} earlier`" @click="moveObjective(objective.uid,-1)">↑</button><button type="button" class="secondary" :disabled="Number(index)===planning.plan.objectives.length-1 || planningBusy" :aria-label="`Move ${objective.title} later`" @click="moveObjective(objective.uid,1)">↓</button><select v-model="dependencyDraft[objective.uid]" :aria-label="`Prerequisite for ${objective.title}`"><option value="">Add prerequisite…</option><option v-for="candidate in planning.plan.objectives.filter((row:any)=>row.uid!==objective.uid)" :key="candidate.uid" :value="candidate.uid">{{ candidate.title }}</option></select><button type="button" :disabled="!dependencyDraft[objective.uid] || planningBusy" @click="addDependency(objective.uid)">Add</button></div><div v-if="planning.plan.dependencies.some((row:any)=>row.objective_uid===objective.uid)" class="plan-dependencies"><span v-for="dependency in planning.plan.dependencies.filter((row:any)=>row.objective_uid===objective.uid)" :key="dependency.depends_on_uid">After {{ dependency.depends_on_title }} <button type="button" :aria-label="`Remove prerequisite ${dependency.depends_on_title}`" @click="removeDependency(objective.uid,dependency.depends_on_uid)">×</button></span></div></li></ol></section>
             <section class="planning-grid">
               <div class="panel proposal-list"><div class="panel-head"><div><p class="eyebrow">Review queue</p><h2>{{ planning.proposals.filter((p:any)=>p.status==='proposed').length }} proposals</h2></div></div><p v-if="!planning.proposals.length" class="empty">Run the analysis to create deduplicated suggestions.</p>
                 <article v-for="proposal in planning.proposals" :key="proposal.uid" class="proposal-card" :data-status="proposal.status"><div><span class="status" :data-status="proposal.status">{{ proposal.status }}</span><small>{{ proposal.kind }} · {{ proposal.source_kind.replace('_',' ') }}</small><h3>{{ proposal.title }}</h3><p>{{ proposal.body || proposal.rationale }}</p><small v-if="proposal.success_criteria">Done when: {{ proposal.success_criteria }}</small><div class="proposal-links"><button v-if="proposal.objective_uid" class="evidence-link" @click="openProposalEvidence(proposal)">View related evidence{{ proposal.evidence_count ? ` (${proposal.evidence_count})` : '' }} →</button><a v-if="proposal.ticket_url" :href="proposal.ticket_url" target="_blank" rel="noreferrer">Open ClickUp ticket →</a></div></div><div v-if="proposal.status==='proposed'" class="proposal-actions"><button @click="planningAction(`planning/${proposal.uid}/review`,{status:'approved',reviewer:'dashboard'})">Approve</button><button class="secondary" @click="planningAction(`planning/${proposal.uid}/review`,{status:'rejected',reviewer:'dashboard'})">Reject</button></div></article>
@@ -1745,7 +1814,7 @@ async function recordJudgment() {
             <section class="analytics-metrics">
               <article><span>Cost today</span><strong>{{ todayAnalytics && todayAnalytics.cost > 0 ? money(todayAnalytics.cost) : '—' }}</strong><small>{{ todayAnalytics?.unknown_costs ? `${todayAnalytics.unknown_costs} records have unknown cost` : 'No cost reported today' }}</small></article>
               <article><span>Reported cost · {{ analyticsDays }} days</span><strong>{{ money(analytics.totals.cost) }}</strong><small>{{ money(analytics.totals.measured_cost) }} measured · {{ money(analytics.totals.estimated_cost) }} estimated</small></article>
-              <article><span>Codex API equivalent · today</span><strong>{{ analyticsScope === 'project' ? money(analytics.local_today?.machine_total?.estimated_cost || 0) : '—' }}</strong><small>{{ analyticsScope === 'project' ? `Estimated from ${compactNumber(analytics.local_today?.machine_total?.total_tokens || 0)} local tokens · not an invoice` : 'Select one project for local usage' }}</small></article>
+              <article><span>Local AI API equivalent · today</span><strong>{{ analyticsScope === 'project' ? money((analytics.local_today?.codex?.machine_total?.estimated_cost || 0) + (analytics.local_today?.claude?.estimated_cost || 0)) : '—' }}</strong><small>{{ analyticsScope === 'project' ? `Codex ${compactNumber(analytics.local_today?.codex?.machine_total?.total_tokens || 0)} · Claude ${compactNumber(analytics.local_today?.claude?.total_tokens || 0)} tokens · not an invoice` : 'Select one project for local usage' }}</small></article>
               <article><span>Total tokens</span><strong>{{ compactNumber(analytics.totals.total_tokens) }}</strong><small>{{ compactNumber(analytics.totals.input_tokens) }} input · {{ compactNumber(analytics.totals.output_tokens) }} output</small></article>
               <article><span>Cached tokens</span><strong>{{ compactNumber(analytics.totals.cached_tokens) }}</strong><small>{{ analytics.totals.token_records }} records include token usage</small></article>
               <article><span>Efficiency</span><strong>{{ analytics.efficiency?.cost_per_proven == null ? '—' : money(analytics.efficiency.cost_per_proven) }}</strong><small>Cost per proven objective · {{ analytics.totals.unknown_costs }} unknown costs</small></article>
@@ -1754,7 +1823,7 @@ async function recordJudgment() {
               <section class="panel chart-panel"><div class="panel-head"><div><p class="eyebrow">Reported spend</p><h2>Cost by day</h2></div><span class="scope-note">Measured + estimated</span></div><p v-if="!analytics.daily.length" class="empty">No cost records in this period.</p><div v-else class="bar-chart" role="img" aria-label="Daily reported costs"><div v-for="day in analytics.daily" :key="day.key" class="bar-column"><span>{{ day.cost > 0 ? money(day.cost) : day.unknown_costs ? '—' : money(0) }}</span><i :style="{height:`${maxDailyCost && day.cost ? Math.max(3,day.cost/maxDailyCost*100) : 3}%`}"></i><small>{{ day.key.slice(5) }}</small></div></div></section>
               <section class="panel chart-panel"><div class="panel-head"><div><p class="eyebrow">Model usage</p><h2>Tokens by day</h2></div><span class="scope-note">Externally reported only</span></div><p v-if="!analytics.totals.token_records" class="empty">No token usage has been reported yet. Future Codex/Claude clients can publish it through cost.recorded.</p><div v-else class="bar-chart tokens" role="img" aria-label="Daily reported tokens"><div v-for="day in analytics.daily" :key="day.key" class="bar-column"><span>{{ compactNumber(day.tokens) }}</span><i :style="{height:`${maxDailyTokens ? Math.max(3,day.tokens/maxDailyTokens*100) : 3}%`}"></i><small>{{ day.key.slice(5) }}</small></div></div></section>
             </div>
-            <section class="panel analytics-table"><div class="panel-head"><div><p class="eyebrow">Attribution</p><h2>Models and sources</h2></div></div><p v-if="!analytics.models.length" class="empty">No attributed usage for this scope and period.</p><article v-for="model in analytics.models" :key="model.key"><strong>{{ model.key }}</strong><div><span>{{ money(model.cost) }}</span><span>{{ compactNumber(model.tokens) }} tokens</span><span>{{ model.records }} records</span><span>{{ model.unknown_costs }} unknown costs</span></div></article><article v-for="model in analytics.local_today?.machine_total?.models || []" :key="`local-${model.model}`"><strong>{{ model.model }} · local today</strong><div><span>≈ {{ money(model.estimated_cost) }}</span><span>{{ compactNumber(model.total_tokens) }} tokens</span><span>{{ model.sessions }} sessions</span><span>API equivalent</span></div></article><p class="analytics-note">Local estimates apply the public API token rate to observed Codex usage. They are not subscription charges or invoices. Pricing table: {{ analytics.local_today?.pricing_version || 'not applicable to this scope' }}. Orchestrator remains observation-only.</p></section>
+            <section class="panel analytics-table"><div class="panel-head"><div><p class="eyebrow">Attribution</p><h2>Models and sources</h2></div></div><p v-if="!analytics.models.length" class="empty">No attributed usage for this scope and period.</p><article v-for="model in analytics.models" :key="model.key"><strong>{{ model.key }}</strong><div><span>{{ money(model.cost) }}</span><span>{{ compactNumber(model.tokens) }} tokens</span><span>{{ model.records }} records</span><span>{{ model.unknown_costs }} unknown costs</span></div></article><article v-for="model in [...(analytics.local_today?.codex?.machine_total?.models || []), ...(analytics.local_today?.claude?.models || [])]" :key="`local-${model.model}`"><strong>{{ model.model }} · local today</strong><div><span>≈ {{ money(model.estimated_cost) }}</span><span>{{ compactNumber(model.total_tokens) }} tokens</span><span>{{ model.sessions }} sessions</span><span>API equivalent</span></div></article><p class="analytics-note">Local estimates apply public API token rates to observed Codex and Claude usage. They are not subscription charges or invoices. Pricing table: {{ analytics.local_today?.codex?.pricing_version || analytics.local_today?.claude?.pricing_version || 'not applicable to this scope' }}. Orchestrator remains observation-only.</p></section>
           </template>
         </section>
         <section v-else class="panel memory-import">

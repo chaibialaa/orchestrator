@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS projects (
   slug TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   description TEXT,
+  project_type TEXT NOT NULL DEFAULT 'software' CHECK(project_type IN ('software','game','web','api','mobile','ai','infrastructure','documentation','other')),
+  validation_profile TEXT NOT NULL DEFAULT '{}',
   status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused','completed','archived')),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -142,6 +144,40 @@ CREATE TABLE IF NOT EXISTS work_proposals (
   reviewed_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_work_proposals_project ON work_proposals(project_id,status,created_at DESC);
+CREATE TABLE IF NOT EXISTS objective_dependencies (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  objective_id INTEGER NOT NULL REFERENCES objectives(id) ON DELETE CASCADE,
+  depends_on_id INTEGER NOT NULL REFERENCES objectives(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK(objective_id != depends_on_id),
+  UNIQUE(objective_id, depends_on_id)
+);
+CREATE INDEX IF NOT EXISTS idx_objective_dependencies_project ON objective_dependencies(project_id,objective_id);
+CREATE TABLE IF NOT EXISTS sync_conflicts (
+  id INTEGER PRIMARY KEY,
+  uid TEXT NOT NULL UNIQUE,
+  provider TEXT,
+  entity_type TEXT NOT NULL,
+  entity_uid TEXT NOT NULL,
+  local_value TEXT NOT NULL,
+  incoming_value TEXT NOT NULL,
+  incoming_machine_id TEXT,
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved','ignored')),
+  resolution TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sync_conflicts_status ON sync_conflicts(status,created_at DESC);
+CREATE TABLE IF NOT EXISTS management_reports (
+  id INTEGER PRIMARY KEY,
+  uid TEXT NOT NULL UNIQUE,
+  period_days INTEGER NOT NULL,
+  summary TEXT NOT NULL,
+  report_json TEXT NOT NULL,
+  generated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_management_reports_generated ON management_reports(generated_at DESC);
 CREATE TABLE IF NOT EXISTS clickup_accounts (
   id INTEGER PRIMARY KEY CHECK(id=1),
   token TEXT NOT NULL,
@@ -232,6 +268,34 @@ CREATE TABLE IF NOT EXISTS sync_connections (
   last_push_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_local_event_id INTEGER NOT NULL DEFAULT 0
+  ,failure_count INTEGER NOT NULL DEFAULT 0
+  ,next_retry_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS memory_imports (
+  id INTEGER PRIMARY KEY,
+  source TEXT NOT NULL CHECK(source IN ('codex','claude')),
+  adapter_version INTEGER NOT NULL,
+  source_path TEXT NOT NULL,
+  source_sha256 TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('parsed','partial','unsupported','error')),
+  records_found INTEGER NOT NULL DEFAULT 0,
+  parse_errors INTEGER NOT NULL DEFAULT 0,
+  detail TEXT,
+  scanned_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(source,source_path,source_sha256)
+);
+
+CREATE TABLE IF NOT EXISTS access_tokens (
+  id INTEGER PRIMARY KEY,
+  uid TEXT NOT NULL UNIQUE,
+  label TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  scopes TEXT NOT NULL DEFAULT '["read"]',
+  machine_id TEXT,
+  last_used_at TEXT,
+  revoked_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;

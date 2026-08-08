@@ -25,7 +25,23 @@ export function migrate(path = dbPath()) {
   db.pragma('busy_timeout = 5000')
   db.pragma('foreign_keys = OFF')
   const current = hasTable(db, 'schema_migrations') ? db.prepare('SELECT max(version) version FROM schema_migrations').get()?.version : null
-  if (current === 12) { db.close(); return { migrated: false, version: 12 } }
+  if (current === 14) { db.close(); return { migrated: false, version: 14 } }
+  if (current === 13) {
+    db.exec(schemaSql())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(14,?)').run(schemaChecksum())
+    db.close()
+    return { migrated: true, version: 14, counts: {} }
+  }
+  if (current === 12) {
+    const projectColumns=new Set(db.prepare('PRAGMA table_info(projects)').all().map(row=>row.name)),syncColumns=new Set(db.prepare('PRAGMA table_info(sync_connections)').all().map(row=>row.name))
+    if(!projectColumns.has('project_type'))db.exec("ALTER TABLE projects ADD COLUMN project_type TEXT NOT NULL DEFAULT 'software' CHECK(project_type IN ('software','game','web','api','mobile','ai','infrastructure','documentation','other')); ALTER TABLE projects ADD COLUMN validation_profile TEXT NOT NULL DEFAULT '{}';")
+    if(!syncColumns.has('failure_count'))db.exec('ALTER TABLE sync_connections ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0; ALTER TABLE sync_connections ADD COLUMN next_retry_at TEXT;')
+    db.exec(schemaSql())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(13,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(14,?)').run(schemaChecksum())
+    db.close()
+    return { migrated: true, version: 14, counts: {} }
+  }
   if (current === 11) {
     const columns=new Set(db.prepare('PRAGMA table_info(clickup_connections)').all().map(row=>row.name))
     if(!columns.has('tag_color'))db.exec('ALTER TABLE clickup_connections ADD COLUMN tag_color TEXT;')
@@ -150,6 +166,8 @@ export function migrate(path = dbPath()) {
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(10,?)').run(schemaChecksum())
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(11,?)').run(schemaChecksum())
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(12,?)').run(schemaChecksum())
+      db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(13,?)').run(schemaChecksum())
+      db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(14,?)').run(schemaChecksum())
       return
     }
 
@@ -214,5 +232,5 @@ export function migrate(path = dbPath()) {
   const counts = Object.fromEntries(['projects','objectives','events','evidence_manifests','decisions','blockers','verdicts','costs'].map((table) => [table, db.prepare(`SELECT count(*) count FROM ${table}`).get().count]))
   db.close()
   if (integrity !== 'ok' || foreignKeys.length) throw new Error(`Migration validation failed: ${integrity}, ${foreignKeys.length} foreign key errors`)
-  return { migrated: true, version: 12, counts }
+  return { migrated: true, version: 13, counts }
 }
