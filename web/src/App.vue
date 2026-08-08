@@ -660,7 +660,8 @@ const passGroups = computed(() => {
   return [...groups.entries()]
     .map(([id, proofs]) => {
       const ordered = [...proofs].sort((a,b) => String(a.created_at).localeCompare(String(b.created_at)));
-      return { id, proofs, images: proofs.filter(isImage), started_at: ordered[0]?.created_at || null, latest_at: ordered.at(-1)?.created_at || null };
+      const imageProofs=proofs.filter(isImage),images=imageProofs.filter(proof => proof.status === "available");
+      return { id, proofs, images, unavailableImages:imageProofs.length-images.length, started_at: ordered[0]?.created_at || null, latest_at: ordered.at(-1)?.created_at || null };
     })
     .sort((a, b) => String(b.latest_at || "").localeCompare(String(a.latest_at || "")));
 });
@@ -1379,7 +1380,7 @@ async function recordJudgment() {
                 <strong>Pass {{ pass.id }}</strong
                 ><span
                   >{{ pass.proofs.length }} evidence records ·
-                  {{ pass.images.length }} images</span
+                  {{ pass.images.length }} available image{{ pass.images.length === 1 ? '' : 's' }}<template v-if="pass.unavailableImages"> · {{ pass.unavailableImages }} unavailable</template></span
                 ><time>{{ date(pass.started_at) }}<template v-if="pass.latest_at && pass.latest_at !== pass.started_at"> → {{ date(pass.latest_at) }}</template></time>
               </button>
               <div class="pass-thumbs">
