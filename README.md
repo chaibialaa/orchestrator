@@ -33,7 +33,7 @@ It records projects, chapters, objectives, events, decisions, blockers, verdicts
 
 ## Dashboard
 
-The interface keeps project state, progress, proposals, evidence, decisions, costs, and navigation in one observation-only workspace.
+The interface organizes each project into four task-oriented paths: **Pilot** for state and next action, **Plan** for sequence and dependencies, **Verify** for chapters, passes and proofs, and **History** for memory, snapshots and usage. Context shortcuts connect the project summary directly to the current chapter, latest proof, plan and recovery history.
 
 ![Orchestrator project planning dashboard](docs/dashboard-overview.png)
 

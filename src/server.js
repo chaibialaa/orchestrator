@@ -29,6 +29,7 @@ const evidenceCloudLimit=()=>Math.max(0,Number(process.env.ORCHESTRATOR_EVIDENCE
 const evidenceCloudBatchBytes=()=>Math.max(1,Number(process.env.ORCHESTRATOR_EVIDENCE_CLOUD_BATCH_MB)||100)*1024*1024
 const evidenceCloudBatchFiles=()=>Math.max(1,Number(process.env.ORCHESTRATOR_EVIDENCE_CLOUD_BATCH_FILES)||100)
 const cloudSha=name=>String(name).match(/^orchestrator-evidence--([a-f0-9]{64})/i)?.[1]?.toLowerCase()||null
+const inferredPassRef=locator=>{const normalized=String(locator||'').replaceAll('\\','/');return normalized.match(/\/(?:Proofs?|Review)\/([^/]+)/i)?.[1]||null}
 const validationTemplates={software:['Requirements are linked to objectives.','Automated tests pass.','Reviewable evidence is recorded.','No unresolved critical blocker remains.'],game:['Gameplay acceptance criteria pass.','PlayMode or standalone evidence is recorded.','Visual judgment is explicit when requested.','Performance budgets show no regression.'],web:['Responsive behavior is verified.','Accessibility basics pass.','API and UI tests pass.','Browser evidence is recorded.'],api:['Contract tests pass.','Authentication and authorization are verified.','Error behavior is documented.','Performance and migration risks are measured.'],mobile:['Target devices are recorded.','Offline and lifecycle behavior are verified.','Accessibility and responsive layouts pass.','Build evidence is recorded.'],ai:['Evaluation dataset and metric are named.','Model and prompt provenance are recorded.','Cost and token usage are captured.','Failure cases and human judgment are preserved.'],infrastructure:['Plan or dry-run evidence is recorded.','Rollback steps are documented.','Security impact is reviewed.','Post-change health is measured.'],documentation:['Audience and scope are explicit.','Links and examples are verified.','Review decision is recorded.'],other:['Success criteria are explicit.','Evidence is reproducible.','Review decision is recorded.']}
 function validateCoordination(kind,data){
   if(kind==='work.started'){
@@ -225,7 +226,7 @@ export function createServer() {
       FROM evidence_manifests e
       LEFT JOIN objectives o ON o.id=e.objective_id JOIN events ev ON ev.id=e.event_id
       WHERE e.project_id=?${objective?' AND e.objective_id=?':''} ORDER BY e.created_at DESC`).all(p.id,...(objective?[objective.id]:[]))
-      .map((row)=>{const payload=json.read(row.event_payload,{});delete row.event_payload;let local_available=false;try{local_available=row.locator_kind==='path'&&Boolean(row.locator)&&statSync(row.locator).isFile()}catch{}return{...row,cloud_providers:row.cloud_providers?row.cloud_providers.split(','):[],local_available,pass_ref:payload.pass_ref||payload.pass||payload.passage_id||(payload.id?`evidence-${payload.id}`:null)}})
+      .map((row)=>{const payload=json.read(row.event_payload,{});delete row.event_payload;let local_available=false;try{local_available=row.locator_kind==='path'&&Boolean(row.locator)&&statSync(row.locator).isFile()}catch{}return{...row,cloud_providers:row.cloud_providers?row.cloud_providers.split(','):[],local_available,pass_ref:payload.pass_ref||payload.pass||payload.passage_id||(payload.id?`evidence-${payload.id}`:null)||inferredPassRef(row.locator)}})
     if(req.query.pass)rows=rows.filter((row)=>String(row.pass_ref)===String(req.query.pass))
     res.json(rows)
   })

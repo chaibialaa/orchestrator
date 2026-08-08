@@ -193,6 +193,12 @@ const savedViewsKey = "orchestrator:saved-views";
 const allowedViews = new Set(["search", "management", "briefing", "attention", "health", "sync-center", "projects", "overview", "ai", "planning", "chapters", "evidence", "diagram", "snapshots", "analytics", "memory"]);
 const globalViews = new Set(["search", "management", "briefing", "attention", "health", "sync-center", "projects"]);
 const isGlobalView = (view: string) => globalViews.has(view);
+const projectSections = [
+  { id: "pilot", label: "Pilot", hint: "State and next action", defaultView: "overview", views: [{ id: "overview", label: "Summary" }, { id: "ai", label: "Next action" }] },
+  { id: "plan", label: "Plan", hint: "Sequence and dependencies", defaultView: "planning", views: [{ id: "planning", label: "Work plan" }, { id: "diagram", label: "Flow diagram" }] },
+  { id: "verify", label: "Verify", hint: "Chapters, passes and proofs", defaultView: "chapters", views: [{ id: "chapters", label: "Chapters" }, { id: "evidence", label: "Passes & evidence" }] },
+  { id: "history", label: "History", hint: "Memory and reporting", defaultView: "memory", views: [{ id: "memory", label: "Memory" }, { id: "snapshots", label: "Snapshots" }, { id: "analytics", label: "Usage & cost" }] },
+] as const;
 let restoringNavigation = true;
 function applyUrlState() {
   const params = new URLSearchParams(window.location.search), project = params.get("project"), view = params.get("view");
@@ -275,6 +281,13 @@ const evidenceType = ref<"all" | "images" | "text">("all"),
   evidencePage = ref(1),
   passPage = ref(1),
   eventPage = ref(1);
+const activeProjectSection = computed(() => projectSections.find(section => section.views.some(view => view.id === activeView.value)) || projectSections[0]);
+function openProjectView(view: string) {
+  activeView.value = view as typeof activeView.value;
+  if (view === "analytics") loadAnalytics();
+  if (view === "ai") loadAiWorkspace();
+  if (view === "planning") loadPlanning();
+}
 const judgmentText = ref(""),
   judgmentVerdict = ref<"pass" | "fail" | "inconclusive">("inconclusive"),
   judgmentBusy = ref(false);
@@ -649,7 +662,7 @@ const passGroups = computed(() => {
       const ordered = [...proofs].sort((a,b) => String(a.created_at).localeCompare(String(b.created_at)));
       return { id, proofs, images: proofs.filter(isImage), started_at: ordered[0]?.created_at || null, latest_at: ordered.at(-1)?.created_at || null };
     })
-    .sort((a, b) => Number(b.id) - Number(a.id));
+    .sort((a, b) => String(b.latest_at || "").localeCompare(String(a.latest_at || "")));
 });
 const passPages = computed(() =>
   Math.max(1, Math.ceil(passGroups.value.length / 10)),
@@ -678,6 +691,7 @@ const blockedContext = computed(() =>
     (blocker) => blocker.objective_uid === selectedChapter.value,
   ),
 );
+const currentChapter = computed(() => detail.value?.chapters.find(row => row.status === "blocked") || detail.value?.chapters.find(row => row.status === "in_progress") || detail.value?.chapters.find(row => row.status !== "proven") || null);
 const graphNodes = computed(() => {
   const roots =
     diagram.value?.nodes.filter(
@@ -845,13 +859,15 @@ async function recordJudgment() {
       <section class="nav-section nav-section-global">
         <div class="nav-heading"><span>Workspace</span><small>Global</small></div>
         <nav aria-label="Workspace" class="workspace-nav">
-          <button class="all-projects" :class="{ active: activeView === 'management' }" @click="activeView = 'management'; loadManagement()"><span>Management cockpit</span><small>Portfolio intelligence</small></button>
+          <span class="nav-group-label">Review</span>
+          <button class="all-projects" :class="{ active: activeView === 'projects' }" @click="activeView = 'projects'; loadPortfolio()"><span>Projects</span><small>Portfolio overview</small></button>
           <button class="all-projects" :class="{ active: activeView === 'briefing' }" @click="activeView = 'briefing'; loadBriefing()"><span>Recent briefing</span><small>What changed</small></button>
           <button class="all-projects" :class="{ active: activeView === 'attention' }" @click="activeView = 'attention'; loadAttention()"><span>Attention center</span><small>{{ attentionItems.length }} signals</small></button>
-          <button class="all-projects" :class="{ active: activeView === 'health' }" @click="activeView = 'health'; loadSystemHealth()"><span>System health</span><small>Read-only checks</small></button>
-          <button class="all-projects" :class="{ active: activeView === 'sync-center' }" @click="activeView = 'sync-center'; loadSyncCenter()"><span>Sync center</span><small>ClickUp portfolio</small></button>
+          <button class="all-projects" :class="{ active: activeView === 'management' }" @click="activeView = 'management'; loadManagement()"><span>Management cockpit</span><small>Reports and activity</small></button>
+          <span class="nav-group-label">Tools</span>
           <button class="all-projects" :class="{ active: activeView === 'search' }" @click="activeView = 'search'"><span>Search memory</span><small>All records</small></button>
-          <button class="all-projects" :class="{ active: activeView === 'projects' }" @click="activeView = 'projects'; loadPortfolio()"><span>All projects</span><small>Global view</small></button>
+          <button class="all-projects" :class="{ active: activeView === 'sync-center' }" @click="activeView = 'sync-center'; loadSyncCenter()"><span>Sync center</span><small>External registries</small></button>
+          <button class="all-projects" :class="{ active: activeView === 'health' }" @click="activeView = 'health'; loadSystemHealth()"><span>System health</span><small>Read-only checks</small></button>
         </nav>
       </section>
       <section class="nav-section nav-section-projects">
@@ -918,31 +934,16 @@ async function recordJudgment() {
           >
         </div>
       </header>
-      <div class="tabs" role="tablist">
-        <button
-          v-for="view in [
-            'projects',
-            'overview',
-            'ai',
-            'planning',
-            'chapters',
-            'evidence',
-            'diagram',
-            'snapshots',
-            'analytics',
-            'memory',
-          ]"
-          :key="view"
-          v-show="!isGlobalView(activeView)"
-          :class="{ active: activeView === view }"
-          role="tab"
-          :aria-selected="activeView === view"
-          :aria-label="`${view} view`"
-          @click="activeView = view as any; view === 'projects' && loadPortfolio(); view === 'analytics' && loadAnalytics(); view === 'ai' && loadAiWorkspace(); view === 'planning' && loadPlanning()"
-        >
-          {{ view }}
-        </button>
-      </div>
+      <nav v-if="!isGlobalView(activeView)" class="project-navigation" aria-label="Project workspace">
+        <div class="journey-tabs" role="tablist" aria-label="Project workflow">
+          <button v-for="section in projectSections" :key="section.id" :class="{ active: activeProjectSection.id === section.id }" role="tab" :aria-selected="activeProjectSection.id === section.id" @click="openProjectView(section.defaultView)">
+            <strong>{{ section.label }}</strong><small>{{ section.hint }}</small>
+          </button>
+        </div>
+        <div class="view-tabs" role="tablist" :aria-label="`${activeProjectSection.label} views`">
+          <button v-for="view in activeProjectSection.views" :key="view.id" :class="{ active: activeView === view.id }" role="tab" :aria-selected="activeView === view.id" :aria-label="`${view.id} view`" @click="openProjectView(view.id)">{{ view.label }}</button>
+        </div>
+      </nav>
       <div v-if="!isGlobalView(activeView)" class="live-refresh" role="status" aria-live="polite"><span :class="{ pulse: autoRefreshBusy }"></span><strong>{{ autoRefreshBusy ? 'Refreshing project state…' : followerState?.active ? 'Automatic follower active' : 'Follower unavailable' }}</strong><small>{{ followerState?.projects?.find((row:any)=>row.slug===selected)?.last_change_at ? `Change detected ${date(followerState.projects.find((row:any)=>row.slug===selected).last_change_at)}` : lastAutoRefresh ? `Checked ${lastAutoRefresh.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}` : 'Watching local changes' }}</small><button class="secondary" :disabled="autoRefreshBusy" @click="autoRefreshProject">Refresh now</button></div>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <section v-if="activeView === 'search'" class="search-screen"><section class="panel search-results"><div class="panel-head"><div><p class="eyebrow">{{ filteredSearchResults.length }} results</p><h2>“{{ globalQuery }}”</h2></div><select v-model="searchType" aria-label="Filter search results by type"><option value="all">All types</option><option v-for="type in [...new Set(searchResults.map(item=>item.type))]" :key="type" :value="type">{{ type }}</option></select></div><p v-if="!searchBusy && !filteredSearchResults.length" class="empty">No matching memory records.</p><button v-for="item in pagedSearchResults" :key="item.id" class="search-row" @click="openSearchResult(item)"><span class="attention-kind">{{ item.type }}</span><div><strong>{{ item.title }}</strong><p>{{ item.project.name }} · {{ item.subtitle }}</p></div><time>{{ date(item.occurred_at) }}</time><span>Open →</span></button><div v-if="filteredSearchResults.length" class="pagination"><button :disabled="searchPage===1" @click="searchPage--">Previous</button><span>{{ filteredSearchResults.length }} results · Page {{ searchPage }} / {{ searchPages }}</span><button :disabled="searchPage===searchPages" @click="searchPage++">Next</button></div></section></section>
@@ -1025,6 +1026,13 @@ async function recordJudgment() {
             }}</strong
             ><small>Available and hashed</small>
           </article>
+        </section>
+
+        <section v-if="activeView === 'overview'" class="project-compass" aria-label="Project shortcuts">
+          <button v-if="currentChapter" @click="inspectChapter(currentChapter)"><span>{{ currentChapter.status === 'blocked' ? 'Needs attention' : 'Continue' }}</span><strong>{{ currentChapter.title }}</strong><small>Open chapter context →</small></button>
+          <button v-if="evidence[0]" @click="focusedEvidence=evidence[0].uid; selectedChapter=''; selectedPass=''; activeView='evidence'"><span>Latest proof</span><strong>{{ evidence[0].label }}</strong><small>{{ date(evidence[0].created_at) }} · Review evidence →</small></button>
+          <button @click="openProjectView('planning')"><span>Plan</span><strong>Sequence and dependencies</strong><small>Review the work plan →</small></button>
+          <button @click="openProjectView('memory')"><span>History</span><strong>Memory and recovery</strong><small>Resume context →</small></button>
         </section>
 
         <div v-if="activeView === 'overview'" class="grid">

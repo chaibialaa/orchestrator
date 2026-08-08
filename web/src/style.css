@@ -985,6 +985,7 @@ aside {
   margin-top: 10px;
   overflow: hidden;
 }
+.nav-group-label { display:block; margin:10px 12px 4px; color:#668477; font-size:9px; font-weight:750; letter-spacing:.12em; text-transform:uppercase; }
 .project-nav { max-height: min(46vh, 430px); overflow: auto; padding-right: 3px; }
 .project-nav::-webkit-scrollbar { width: 5px; }
 .project-nav::-webkit-scrollbar-thumb { border-radius: 5px; background: #315244; }
@@ -1147,6 +1148,23 @@ header p:not(.eyebrow) {
   color: #246044;
   border-color: #3b8061;
 }
+.project-navigation { margin-bottom:18px; border-bottom:1px solid #dce2de; }
+.journey-tabs { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+.journey-tabs button { min-width:0; padding:11px 13px; text-align:left; border:1px solid transparent; border-radius:10px 10px 0 0; background:transparent; color:#607067; cursor:pointer; }
+.journey-tabs strong,.journey-tabs small { display:block; }
+.journey-tabs strong { font-size:14px; }
+.journey-tabs small { margin-top:2px; font-size:11px; color:#849088; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.journey-tabs button.active { color:#18583d; background:#eef6f1; border-color:#cfe0d6; border-bottom-color:#eef6f1; }
+.view-tabs { display:flex; gap:6px; padding:9px 0; }
+.view-tabs button { border:0; border-radius:999px; padding:7px 12px; background:transparent; color:#66756d; font-weight:650; cursor:pointer; }
+.view-tabs button.active { background:#23684b; color:#fff; }
+.project-compass { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:0 0 16px; }
+.project-compass button { min-width:0; padding:14px; text-align:left; border:1px solid #dce5df; border-radius:12px; background:#f8faf8; color:#24382e; cursor:pointer; }
+.project-compass span,.project-compass strong,.project-compass small { display:block; }
+.project-compass span { color:#638073; font-size:10px; font-weight:750; letter-spacing:.08em; text-transform:uppercase; }
+.project-compass strong { margin:5px 0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.project-compass small { color:#6e7d75; }
+.project-compass button:hover { border-color:#72a18a; background:#f0f7f3; }
 .metrics {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -1522,6 +1540,11 @@ header p:not(.eyebrow) {
     padding-inline: 16px;
   }
   .tabs button { min-height: 44px; white-space: nowrap; }
+  .journey-tabs { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .journey-tabs button { border-radius:10px; min-height:58px; }
+  .view-tabs { overflow-x:auto; }
+  .view-tabs button { min-height:42px; white-space:nowrap; }
+  .project-compass { grid-template-columns:1fr; }
   .comparison-head {
     align-items: stretch;
     flex-direction: column;
@@ -1616,6 +1639,15 @@ html[data-theme="dark"] .tabs button { color: #92a39a; }
 html[data-theme="dark"] .tabs button.active,
 html[data-theme="dark"] .text-button,
 html[data-theme="dark"] a { color: #79c69e; }
+html[data-theme="dark"] .project-navigation { border-color:#294238; }
+html[data-theme="dark"] .journey-tabs button { color:#a8b8af; }
+html[data-theme="dark"] .journey-tabs button.active { background:#173126; border-color:#315443; color:#8fd5b0; border-bottom-color:#173126; }
+html[data-theme="dark"] .journey-tabs small { color:#7f9589; }
+html[data-theme="dark"] .view-tabs button { color:#a7b8ae; }
+html[data-theme="dark"] .view-tabs button.active { background:#3b8a65; color:#fff; }
+html[data-theme="dark"] .project-compass button { background:#11251c; border-color:#29463a; color:#e4eee8; }
+html[data-theme="dark"] .project-compass button:hover { background:#173126; border-color:#47765f; }
+html[data-theme="dark"] .project-compass span,html[data-theme="dark"] .project-compass small { color:#8ba397; }
 html[data-theme="dark"] .bar { background: #304239; }
 html[data-theme="dark"] .tag,
 html[data-theme="dark"] .status { background: #2b3d34; color: #c2d0c8; }
