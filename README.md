@@ -23,6 +23,7 @@ It records projects, chapters, objectives, events, decisions, blockers, verdicts
 - Human-judgment forms shown only when a judgment has explicitly been requested.
 - Multi-machine coordination records for concurrent passes and observed Git state.
 - Read-only discovery of local Codex and Claude memory.
+- Project-scoped recovery of proof references from local Codex and Claude conversations, with provenance, timestamps, availability, size, and SHA-256 hashes.
 - Human-reviewed planning proposals derived from local AI memory, blockers, failed verdicts, and project state.
 - Optional passive ClickUp synchronization for the complete proposal registry, evidence attachments, rejected-ticket feedback, and project-specific workflow mapping.
 - Portable JSON and Markdown exports, plus idempotent JSON import.
@@ -198,6 +199,8 @@ GET /api/analytics?project=:slug&days=30
 GET /api/memory/local
 POST /api/memory/local/index
 GET /api/memory/local/index
+GET /api/projects/:project/memory/recovery
+POST /api/projects/:project/memory/recovery
 GET /api/sync
 GET /api/projects/:project/planning
 POST /api/projects/:project/planning/generate

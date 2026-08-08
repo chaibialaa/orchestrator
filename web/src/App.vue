@@ -141,6 +141,8 @@ const diagram = ref<Diagram | null>(null),
   snapshotDiff = ref<any>(null),
   snapshotBusy = ref(false),
   localMemory = ref<any>(null),
+  memoryRecovery = ref<any>(null),
+  recoveryBusy = ref(false),
   portfolio = ref<any>(null),
   portfolioBusy = ref(false),
   attention = ref<any>(null),
@@ -774,6 +776,8 @@ async function scanMemory() {
     memoryBusy.value = false;
   }
 }
+async function previewRecovery(){if(!selected.value)return;recoveryBusy.value=true;error.value="";try{memoryRecovery.value=await api(`/projects/${selected.value}/memory/recovery`)}catch(e:any){error.value=e.message}finally{recoveryBusy.value=false}}
+async function importRecovery(){if(!selected.value||!memoryRecovery.value?.summary?.new)return;recoveryBusy.value=true;error.value="";try{const paths=memoryRecovery.value.candidates.filter((row:any)=>!row.already_recorded).map((row:any)=>row.path),response=await fetch(`/api/projects/${selected.value}/memory/recovery`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({since:memoryRecovery.value.since,paths})});if(!response.ok)throw new Error((await response.json()).message);await response.json();await Promise.all([previewRecovery(),loadProject(true)]);activeView.value='evidence';selectedChapter.value=''}catch(e:any){error.value=e.message}finally{recoveryBusy.value=false}}
 async function addDiscovered(project: any) {
   memoryBusy.value = true;
   try {
@@ -1827,6 +1831,7 @@ async function recordJudgment() {
           </template>
         </section>
         <section v-else class="panel memory-import">
+          <section class="memory-recovery"><div class="panel-head"><div><p class="eyebrow">Historical evidence recovery</p><h2>Recover missing proofs for {{ detail?.name }}</h2><p class="scope-note">Scans local Codex and Claude conversations since the latest recorded proof. Files are hashed when present; vanished references remain clearly marked missing.</p></div><button class="scan-button" :disabled="recoveryBusy" @click="previewRecovery">{{ recoveryBusy ? 'Scanning conversations…' : 'Find missing proofs' }}</button></div><template v-if="memoryRecovery"><div class="recovery-summary"><span><strong>{{ memoryRecovery.summary.new }}</strong> new references</span><span><strong>{{ memoryRecovery.summary.available }}</strong> available files</span><span><strong>{{ memoryRecovery.summary.missing }}</strong> missing files</span><span><strong>{{ memoryRecovery.sessions }}</strong> conversations scanned</span></div><div v-if="memoryRecovery.candidates.length" class="recovery-preview"><article v-for="proof in memoryRecovery.candidates.slice(0,30)" :key="proof.path" :data-status="proof.already_recorded?'recorded':proof.status"><div><strong>{{ proof.label }}</strong><code>{{ proof.path }}</code><small>{{ proof.source }} · {{ date(proof.occurred_at) }}<template v-if="proof.objective_uid"> · linked to chapter</template></small></div><span>{{ proof.already_recorded ? 'already recorded' : proof.status }}</span></article></div><button class="recovery-import" :disabled="recoveryBusy || !memoryRecovery.summary.new" @click="importRecovery">Recover {{ memoryRecovery.summary.new }} new references</button></template></section>
           <div class="panel-head">
             <div>
               <p class="eyebrow">Global machine inventory</p>
