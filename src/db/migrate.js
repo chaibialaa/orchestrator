@@ -25,12 +25,19 @@ export function migrate(path = dbPath()) {
   db.pragma('busy_timeout = 5000')
   db.pragma('foreign_keys = OFF')
   const current = hasTable(db, 'schema_migrations') ? db.prepare('SELECT max(version) version FROM schema_migrations').get()?.version : null
-  if (current === 14) { db.close(); return { migrated: false, version: 14 } }
+  if (current === 15) { db.close(); return { migrated: false, version: 15 } }
+  if (current === 14) {
+    db.exec(schemaSql())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(15,?)').run(schemaChecksum())
+    db.close()
+    return { migrated: true, version: 15, counts: {} }
+  }
   if (current === 13) {
     db.exec(schemaSql())
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(14,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(15,?)').run(schemaChecksum())
     db.close()
-    return { migrated: true, version: 14, counts: {} }
+    return { migrated: true, version: 15, counts: {} }
   }
   if (current === 12) {
     const projectColumns=new Set(db.prepare('PRAGMA table_info(projects)').all().map(row=>row.name)),syncColumns=new Set(db.prepare('PRAGMA table_info(sync_connections)').all().map(row=>row.name))
@@ -168,6 +175,7 @@ export function migrate(path = dbPath()) {
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(12,?)').run(schemaChecksum())
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(13,?)').run(schemaChecksum())
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(14,?)').run(schemaChecksum())
+      db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(15,?)').run(schemaChecksum())
       return
     }
 

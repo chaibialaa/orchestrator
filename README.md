@@ -108,6 +108,10 @@ The same data is available through `GET /api/projects/:project/ai-workspace`, wi
 
 The global **Management cockpit** aggregates active projects across machines into a 30–365 day reporting window. It includes a GitHub-style activity calendar, recorded progress, blocker aging, evidence coverage, reported AI cost, latest Git state, and provenance by machine or agent. Metrics describe delivery flow and audit coverage; they are not individual productivity scores.
 
+For solo multi-project management, **Today** orders projects by attention, exposes inactivity, pending decisions, daily changes, new proofs, the next recorded objective, and the gap between the proposal backlog and objectives completed during the day. **Reports & reviews** provides a guided project/period/audience selector, live preview, personal context notes, JSON and Markdown downloads, and a print-ready HTML view for browser PDF export. Daily and weekly reviews persist notes, follow-ups, project scope, and the report state used at review time.
+
+`GET /api/management/today` returns the daily focus dataset. `POST /api/management/report/preview` and `/render/{json|markdown|html}` build scoped reports. `GET` and `POST /api/management/reviews` expose the append-only personal review history.
+
 `GET /api/management` returns the portable dataset. `GET /api/management/report/json` and `/markdown` generate management reports. While the server is open, a portable snapshot is archived every 24 hours; tune this with `ORCHESTRATOR_REPORT_HOURS` and `ORCHESTRATOR_REPORT_DAYS`. `GET` and `POST /api/management/reports` list or capture snapshots. Commits are deduplicated from observed `post-commit` hashes, push attempts come from `pre-push`, and a verified push requires the passively read upstream tracking ref to equal local HEAD or an equivalent explicit provider event.
 
 ## Safe migration

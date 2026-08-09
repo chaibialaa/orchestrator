@@ -157,6 +157,10 @@ const diagram = ref<Diagram | null>(null),
   management = ref<any>(null),
   managementReports = ref<any[]>([]),
   managementBusy = ref(false),
+  today = ref<any>(null),
+  reviews = ref<any[]>([]),
+  reportPreview = ref<any>(null),
+  reportBusy = ref(false),
   analytics = ref<any>(null),
   analyticsBusy = ref(false),
   aiWorkspace = ref<any>(null),
@@ -177,6 +181,8 @@ const lastAutoRefresh=ref<Date|null>(null)
 const autoRefreshBusy=ref(false)
 const followerState=ref<any>(null)
 const managementDays=ref(90)
+const reportForm=ref<any>({days:7,audience:"self",title:"Weekly solo project review",notes:"",projects:[]})
+const reviewForm=ref<any>({cadence:"daily",notes:"",followups:"",projects:[]})
 const managementMaxActivity=computed(()=>Math.max(1,...(management.value?.activity||[]).map((row:any)=>row.events)))
 const managementLevel=(row:any)=>row.events===0?0:Math.max(1,Math.ceil(row.events/managementMaxActivity.value*4))
 const clickupLists=computed(()=>clickupResourcesData.value.lists.filter((row:any)=>!clickupForm.value.workspace_id||row.workspace_id===clickupForm.value.workspace_id))
@@ -190,8 +196,8 @@ const shareState = ref("Copy context link");
 const focusedEvidence = ref(""), pendingEvidence = ref("");
 const savedViews = ref<SavedView[]>([]), saveState = ref("Save shortcut");
 const savedViewsKey = "orchestrator:saved-views";
-const allowedViews = new Set(["search", "management", "briefing", "attention", "health", "sync-center", "projects", "overview", "ai", "planning", "chapters", "evidence", "diagram", "snapshots", "analytics", "memory"]);
-const globalViews = new Set(["search", "management", "briefing", "attention", "health", "sync-center", "projects"]);
+const allowedViews = new Set(["today", "reports", "search", "management", "briefing", "attention", "health", "sync-center", "projects", "overview", "ai", "planning", "chapters", "evidence", "diagram", "snapshots", "analytics", "memory"]);
+const globalViews = new Set(["today", "reports", "search", "management", "briefing", "attention", "health", "sync-center", "projects"]);
 const isGlobalView = (view: string) => globalViews.has(view);
 const projectSections = [
   { id: "pilot", label: "Pilot", hint: "State and next action", defaultView: "overview", views: [{ id: "overview", label: "Summary" }, { id: "ai", label: "Next action" }] },
@@ -260,7 +266,7 @@ function removeSavedView(id: string) {
   persistSavedViews();
 }
 const activeView = ref<
-    "search" | "management" | "briefing" | "attention" | "health" | "sync-center" | "projects" | "overview" | "ai" | "planning" | "chapters" | "evidence" | "diagram" | "snapshots" | "analytics" | "memory"
+    "today" | "reports" | "search" | "management" | "briefing" | "attention" | "health" | "sync-center" | "projects" | "overview" | "ai" | "planning" | "chapters" | "evidence" | "diagram" | "snapshots" | "analytics" | "memory"
   >("overview"),
   selectedChapter = ref(""),
   selectedPass = ref(""),
@@ -318,6 +324,10 @@ async function loadSystemHealth(){systemHealthBusy.value=true;try{systemHealth.v
 async function loadSyncCenter(){syncCenterBusy.value=true;try{[syncCenter.value,syncConflicts.value]=await Promise.all([api('/clickup/sync-center'),api('/sync/conflicts')])}catch(e:any){error.value=e.message}finally{syncCenterBusy.value=false}}
 async function resolveSyncConflict(uid:string,action:string){syncCenterBusy.value=true;try{const response=await fetch(`/api/sync/conflicts/${uid}/resolve`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action})});if(!response.ok)throw new Error((await response.json()).message);await Promise.all([loadSyncCenter(),loadProject(true)])}catch(e:any){error.value=e.message}finally{syncCenterBusy.value=false}}
 async function loadManagement(){managementBusy.value=true;try{[management.value,managementReports.value]=await Promise.all([api<any>(`/management?days=${managementDays.value}`),api<any[]>('/management/reports')])}catch(e:any){error.value=e.message}finally{managementBusy.value=false}}
+async function loadToday(){managementBusy.value=true;try{[today.value,reviews.value]=await Promise.all([api<any>('/management/today'),api<any[]>('/management/reviews')])}catch(e:any){error.value=e.message}finally{managementBusy.value=false}}
+async function previewSoloReport(){reportBusy.value=true;try{const response=await fetch('/api/management/report/preview',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(reportForm.value)});if(!response.ok)throw new Error((await response.json()).message);reportPreview.value=await response.json()}catch(e:any){error.value=e.message}finally{reportBusy.value=false}}
+async function renderSoloReport(kind:string){reportBusy.value=true;try{const response=await fetch(`/api/management/report/render/${kind}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(reportForm.value)});if(!response.ok)throw new Error((await response.json()).message);const blob=await response.blob(),url=URL.createObjectURL(blob);if(kind==='html'){window.open(url,'_blank','noopener')}else{const link=document.createElement('a');link.href=url;link.download=`orchestrator-solo-report-${new Date().toISOString().slice(0,10)}.${kind==='markdown'?'md':'json'}`;link.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000)}}catch(e:any){error.value=e.message}finally{reportBusy.value=false}}
+async function saveManagementReview(){reportBusy.value=true;try{const response=await fetch('/api/management/reviews',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...reviewForm.value,followups:String(reviewForm.value.followups||'').split('\n')})});if(!response.ok)throw new Error((await response.json()).message);reviewForm.value.notes='';reviewForm.value.followups='';await loadToday()}catch(e:any){error.value=e.message}finally{reportBusy.value=false}}
 async function captureManagement(){managementBusy.value=true;try{const response=await fetch('/api/management/reports',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({days:managementDays.value})});if(!response.ok)throw new Error((await response.json()).message);await loadManagement()}catch(e:any){error.value=e.message}finally{managementBusy.value=false}}
 async function syncAllProjects(){syncCenterBusy.value=true;error.value="";try{const request=fetch('/api/clickup/sync-all',{method:'POST'});const poll=window.setInterval(loadSyncCenter,800);const response=await request;window.clearInterval(poll);if(!response.ok)throw new Error((await response.json()).message);await loadSyncCenter()}catch(e:any){error.value=e.message}finally{syncCenterBusy.value=false}}
 function markBriefingReviewed(){localStorage.setItem('orchestrator:briefing-reviewed',new Date().toISOString());loadBriefing()}
@@ -458,6 +468,8 @@ watch(selected, () => {
 });
 watch([selected, activeView, selectedChapter, selectedPass, previewImage, openPreview], syncContextUrl);
 watch(activeView, (view) => {
+  if (view === "today") loadToday();
+  if (view === "reports") { if (!today.value) loadToday(); if (!reportPreview.value) previewSoloReport(); }
   if (view === "management") loadManagement();
   if (view === "briefing" && !briefing.value) loadBriefing();
   if (view === "health" && !systemHealth.value) loadSystemHealth();
@@ -861,10 +873,12 @@ async function recordJudgment() {
         <div class="nav-heading"><span>Workspace</span><small>Global</small></div>
         <nav aria-label="Workspace" class="workspace-nav">
           <span class="nav-group-label">Review</span>
+          <button class="all-projects" :class="{ active: activeView === 'today' }" @click="activeView = 'today'; loadToday()"><span>Today</span><small>Priorities and follow-up</small></button>
           <button class="all-projects" :class="{ active: activeView === 'projects' }" @click="activeView = 'projects'; loadPortfolio()"><span>Projects</span><small>Portfolio overview</small></button>
           <button class="all-projects" :class="{ active: activeView === 'briefing' }" @click="activeView = 'briefing'; loadBriefing()"><span>Recent briefing</span><small>What changed</small></button>
           <button class="all-projects" :class="{ active: activeView === 'attention' }" @click="activeView = 'attention'; loadAttention()"><span>Attention center</span><small>{{ attentionItems.length }} signals</small></button>
           <button class="all-projects" :class="{ active: activeView === 'management' }" @click="activeView = 'management'; loadManagement()"><span>Management cockpit</span><small>Reports and activity</small></button>
+          <button class="all-projects" :class="{ active: activeView === 'reports' }" @click="activeView = 'reports'"><span>Reports & reviews</span><small>Daily and weekly ritual</small></button>
           <span class="nav-group-label">Tools</span>
           <button class="all-projects" :class="{ active: activeView === 'search' }" @click="activeView = 'search'"><span>Search memory</span><small>All records</small></button>
           <button class="all-projects" :class="{ active: activeView === 'sync-center' }" @click="activeView = 'sync-center'; loadSyncCenter()"><span>Sync center</span><small>External registries</small></button>
@@ -903,11 +917,11 @@ async function recordJudgment() {
     <main id="main-content" tabindex="-1">
       <header>
         <div>
-          <p class="eyebrow">{{ activeView === "search" ? "Universal search" : activeView === "management" ? "Engineering management" : activeView === "briefing" ? "Global resume" : activeView === "attention" ? "Global attention" : activeView === "health" ? "Register integrity" : activeView === "sync-center" ? "Passive connectors" : activeView === "projects" ? "Global portfolio" : "Project record" }}</p>
-          <h1>{{ activeView === "search" ? "Search memory" : activeView === "management" ? "Management cockpit" : activeView === "briefing" ? "Recent briefing" : activeView === "attention" ? "Attention center" : activeView === "health" ? "System health" : activeView === "sync-center" ? "Sync center" : activeView === "projects" ? "Projects" : detail?.name || "Project memory" }}</h1>
+          <p class="eyebrow">{{ activeView === "today" ? "Solo management" : activeView === "reports" ? "Management ritual" : activeView === "search" ? "Universal search" : activeView === "management" ? "Engineering management" : activeView === "briefing" ? "Global resume" : activeView === "attention" ? "Global attention" : activeView === "health" ? "Register integrity" : activeView === "sync-center" ? "Passive connectors" : activeView === "projects" ? "Global portfolio" : "Project record" }}</p>
+          <h1>{{ activeView === "today" ? "Today" : activeView === "reports" ? "Reports & reviews" : activeView === "search" ? "Search memory" : activeView === "management" ? "Management cockpit" : activeView === "briefing" ? "Recent briefing" : activeView === "attention" ? "Attention center" : activeView === "health" ? "System health" : activeView === "sync-center" ? "Sync center" : activeView === "projects" ? "Projects" : detail?.name || "Project memory" }}</h1>
           <p>
             {{
-              activeView === "search" ? "Projects, objectives, events, decisions, evidence, paths and hashes." : activeView === "management" ? "Delivery flow, Git activity, blockers, evidence and contributors across every machine." : activeView === "briefing" ? "Changes across every active project since your last review." : activeView === "attention" ? "Decisions and risks that require a closer look." : activeView === "health" ? "Read-only integrity, backup and evidence-retention checks." : activeView === "sync-center" ? "Scheduled ClickUp registry synchronization across every connected project." : activeView === "projects"
+              activeView === "today" ? "Priorities, gaps and follow-up across your active projects." : activeView === "reports" ? "Build a clear review, record your notes and export the result." : activeView === "search" ? "Projects, objectives, events, decisions, evidence, paths and hashes." : activeView === "management" ? "Delivery flow, Git activity, blockers, evidence and contributors across every machine." : activeView === "briefing" ? "Changes across every active project since your last review." : activeView === "attention" ? "Decisions and risks that require a closer look." : activeView === "health" ? "Read-only integrity, backup and evidence-retention checks." : activeView === "sync-center" ? "Scheduled ClickUp registry synchronization across every connected project." : activeView === "projects"
                 ? "Tracked work, local discoveries and multi-machine state."
                 : detail?.description ||
               "Auditable history and conversation handoff."
@@ -947,6 +961,19 @@ async function recordJudgment() {
       </nav>
       <div v-if="!isGlobalView(activeView)" class="live-refresh" role="status" aria-live="polite"><span :class="{ pulse: autoRefreshBusy }"></span><strong>{{ autoRefreshBusy ? 'Refreshing project state…' : followerState?.active ? 'Automatic follower active' : 'Follower unavailable' }}</strong><small>{{ followerState?.projects?.find((row:any)=>row.slug===selected)?.last_change_at ? `Change detected ${date(followerState.projects.find((row:any)=>row.slug===selected).last_change_at)}` : lastAutoRefresh ? `Checked ${lastAutoRefresh.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}` : 'Watching local changes' }}</small><button class="secondary" :disabled="autoRefreshBusy" @click="autoRefreshProject">Refresh now</button></div>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
+      <section v-if="activeView === 'today'" class="today-screen">
+        <div v-if="managementBusy && !today" class="panel empty">Building today’s review…</div>
+        <template v-else-if="today">
+          <section class="today-summary" aria-label="Today summary"><article><span>Needs attention</span><strong>{{ today.summary.needs_attention }}</strong></article><article><span>Stale projects</span><strong>{{ today.summary.stale }}</strong></article><article><span>Changes today</span><strong>{{ today.summary.changes_today }}</strong></article><article><span>New proofs</span><strong>{{ today.summary.evidence_today }}</strong></article><article><span>Decisions waiting</span><strong>{{ today.summary.decisions_waiting }}</strong></article></section>
+          <section class="panel today-priorities"><div class="panel-head"><div><p class="eyebrow">Ordered by attention</p><h2>What needs your focus</h2></div><button @click="activeView='reports'">Start review →</button></div><article v-for="project in today.projects" :key="project.slug" :data-signal="project.status_signal"><button @click="selected=project.slug;activeView=project.blocked?'chapters':'overview'"><span class="status" :data-status="project.status_signal==='attention'?'blocked':project.status_signal">{{ project.status_signal }}</span><div><strong>{{ project.name }}</strong><p>{{ project.next?.title || 'No unfinished objective recorded' }}</p><small>{{ project.changes_today }} changes today · {{ project.evidence_today }} proofs · Last activity {{ date(project.last_activity) }}</small></div><b>Open →</b></button><dl><div><dt>Progress</dt><dd>{{ project.progress }}%</dd></div><div><dt>Planned</dt><dd>{{ project.gap.planned }}</dd></div><div><dt>Completed today</dt><dd>{{ project.gap.completed }}</dd></div><div><dt>Gap</dt><dd>{{ project.gap.remaining }}</dd></div></dl></article></section>
+          <section class="panel review-history"><div class="panel-head"><div><p class="eyebrow">Personal management memory</p><h2>Latest reviews</h2></div><span>{{ reviews.length }} saved</span></div><p v-if="!reviews.length" class="empty">No daily or weekly review recorded yet.</p><article v-for="review in reviews.slice(0,5)" :key="review.uid"><div><strong>{{ review.cadence }} review</strong><p>{{ review.notes || 'No note' }}</p><small>{{ date(review.created_at) }} · {{ review.project_slugs.length || 'All' }} projects</small></div><ul><li v-for="item in review.followups" :key="item">{{ item }}</li></ul></article></section>
+        </template>
+      </section>
+      <section v-if="activeView === 'reports'" class="reports-screen">
+        <section class="panel report-builder"><div class="panel-head"><div><p class="eyebrow">Guided generator</p><h2>Build a management report</h2></div><button :disabled="reportBusy" @click="previewSoloReport">{{ reportBusy ? 'Building…' : 'Refresh preview' }}</button></div><div class="report-fields"><label><span>Title</span><input v-model="reportForm.title"></label><label><span>Period</span><select v-model.number="reportForm.days"><option :value="1">Today</option><option :value="7">7 days</option><option :value="30">30 days</option><option :value="90">90 days</option></select></label><label><span>Audience</span><select v-model="reportForm.audience"><option value="self">Personal review</option><option value="stakeholder">Stakeholder</option><option value="technical">Technical</option></select></label><label class="report-notes"><span>Context and personal notes</span><textarea v-model="reportForm.notes" placeholder="Decisions, context, risks or interpretation…"></textarea></label></div><fieldset><legend>Projects</legend><label v-for="project in projects" :key="project.slug"><input v-model="reportForm.projects" type="checkbox" :value="project.slug"><span>{{ project.name }}</span></label><small>Leave all unchecked to include every active project.</small></fieldset><div class="report-actions"><button :disabled="reportBusy" @click="renderSoloReport('markdown')">Export Markdown</button><button :disabled="reportBusy" @click="renderSoloReport('json')">Export JSON</button><button :disabled="reportBusy" @click="renderSoloReport('html')">Print / Save PDF</button></div></section>
+        <section v-if="reportPreview" class="panel report-preview"><div class="panel-head"><div><p class="eyebrow">Live preview</p><h2>{{ reportPreview.title }}</h2></div><span>{{ reportPreview.summary.projects }} projects · {{ reportPreview.days }} days</span></div><div class="report-preview-summary"><article><strong>{{ reportPreview.summary.average_progress }}%</strong><span>Progress</span></article><article><strong>{{ reportPreview.summary.open_blockers }}</strong><span>Blockers</span></article><article><strong>{{ reportPreview.summary.commits }}</strong><span>Commits</span></article><article><strong>{{ reportPreview.summary.trusted_evidence }}/{{ reportPreview.summary.evidence }}</strong><span>Trusted proofs</span></article></div><p v-if="reportPreview.notes" class="report-note">{{ reportPreview.notes }}</p><article v-for="project in reportPreview.projects" :key="project.slug" class="report-project"><div><strong>{{ project.name }}</strong><small>{{ project.last_summary || 'No recent summary' }}</small></div><span>{{ project.progress }}%</span><span>{{ project.blocked }} blockers</span><span>{{ project.commits }} commits</span><span>{{ project.trusted_evidence }}/{{ project.evidence }} proofs</span></article></section>
+        <section class="panel review-editor"><div class="panel-head"><div><p class="eyebrow">Daily or weekly ritual</p><h2>Record this review</h2></div></div><div class="review-fields"><label><span>Cadence</span><select v-model="reviewForm.cadence"><option value="daily">Daily review</option><option value="weekly">Weekly review</option></select></label><label><span>Notes</span><textarea v-model="reviewForm.notes" placeholder="What changed, what matters, what you decided…"></textarea></label><label><span>Follow-ups, one per line</span><textarea v-model="reviewForm.followups" placeholder="Review Blockrise blocker\nValidate Nationfall U09 proofs"></textarea></label></div><button :disabled="reportBusy" @click="saveManagementReview">Save review</button></section>
+      </section>
       <section v-if="activeView === 'search'" class="search-screen"><section class="panel search-results"><div class="panel-head"><div><p class="eyebrow">{{ filteredSearchResults.length }} results</p><h2>“{{ globalQuery }}”</h2></div><select v-model="searchType" aria-label="Filter search results by type"><option value="all">All types</option><option v-for="type in [...new Set(searchResults.map(item=>item.type))]" :key="type" :value="type">{{ type }}</option></select></div><p v-if="!searchBusy && !filteredSearchResults.length" class="empty">No matching memory records.</p><button v-for="item in pagedSearchResults" :key="item.id" class="search-row" @click="openSearchResult(item)"><span class="attention-kind">{{ item.type }}</span><div><strong>{{ item.title }}</strong><p>{{ item.project.name }} · {{ item.subtitle }}</p></div><time>{{ date(item.occurred_at) }}</time><span>Open →</span></button><div v-if="filteredSearchResults.length" class="pagination"><button :disabled="searchPage===1" @click="searchPage--">Previous</button><span>{{ filteredSearchResults.length }} results · Page {{ searchPage }} / {{ searchPages }}</span><button :disabled="searchPage===searchPages" @click="searchPage++">Next</button></div></section></section>
       <section v-else-if="activeView === 'management'" class="management-screen">
         <div v-if="managementBusy && !management" class="panel empty" role="status">Building management cockpit…</div>

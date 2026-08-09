@@ -178,6 +178,19 @@ CREATE TABLE IF NOT EXISTS management_reports (
   generated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_management_reports_generated ON management_reports(generated_at DESC);
+CREATE TABLE IF NOT EXISTS management_reviews (
+  id INTEGER PRIMARY KEY,
+  uid TEXT NOT NULL UNIQUE,
+  cadence TEXT NOT NULL CHECK(cadence IN ('daily','weekly')),
+  period_start TEXT NOT NULL,
+  period_end TEXT NOT NULL,
+  project_slugs TEXT NOT NULL DEFAULT '[]',
+  notes TEXT,
+  followups TEXT NOT NULL DEFAULT '[]',
+  report_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_management_reviews_created ON management_reviews(created_at DESC);
 CREATE TABLE IF NOT EXISTS clickup_accounts (
   id INTEGER PRIMARY KEY CHECK(id=1),
   token TEXT NOT NULL,
