@@ -36,19 +36,11 @@ It records projects, chapters, objectives, events, decisions, blockers, verdicts
 
 The global workspace starts with **Today**: a short, ordered management view of the projects that need attention, recent changes, new proofs, overdue objectives, upcoming reviews, and the next recorded objective. It is designed to answer “what needs my attention now?” before exposing the deeper audit trail.
 
-![Orchestrator Today dashboard with multi-project priorities](docs/dashboard-overview.png)
-
 The **Management cockpit** consolidates progress, evidence coverage, blocker age, Git activity, machines, contributors, AI usage, delivery forecasts, alerts, decisions, and a GitHub-style activity calendar. The data always retains its provenance and is never presented as an employee productivity score.
-
-![Orchestrator management cockpit in dark mode](docs/dashboard-observer.png)
 
 Each project is organized into four task-oriented paths: **Pilot** for state and next action, **Plan** for sequence and dependencies, **Verify** for chapters, passes and proofs, and **History** for memory, snapshots and usage. The evidence path groups proofs by pass, shows dates and thumbnails, opens images in a navigable lightbox, and keeps hashes, file availability, retention, and provenance visible.
 
-![Project evidence grouped into dated passes](docs/project-evidence.png)
-
 **Reports & reviews** turns the same recorded state into reusable daily, weekly, technical, or stakeholder reports. The interface is responsive, supports light, dark, and system themes, and keeps its management workflow usable on a phone.
-
-<p align="center"><img src="docs/dashboard-observer-mobile.png" alt="Responsive management report builder" width="390"></p>
 
 ### Recommended solo-management loop
 
@@ -58,8 +50,6 @@ Each project is organized into four task-oriented paths: **Pilot** for state and
 4. Finish with **Reports & reviews** to save a daily or weekly review and export a portable report.
 
 ClickUp remains an optional external registry. Credentials stay global to the local installation, while each project chooses its destination List, label color, and either the recommended semantic routing or a custom status mapping.
-
-![Project-specific ClickUp status mapping](docs/clickup-status-mapping.png)
 
 ## Architecture
 
@@ -191,16 +181,16 @@ Available local evidence requires a SHA-256 hash. Large artifacts remain referen
 ```bash
 curl -X POST http://127.0.0.1:4173/api/ingest \
   -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: blockrise-ui-proof-001' \
+  -H 'Idempotency-Key: sample-ui-proof-001' \
   -d '{
-    "project": "blockrise",
+    "project": "sample-project",
     "objective": "chapter-3",
     "kind": "evidence.recorded",
     "actor_kind": "codex",
     "actor": "Codex",
     "assertion": "measured_fact",
     "summary": "Responsive dashboard verified",
-    "occurred_at": "2026-08-06T13:00:00Z",
+    "occurred_at": "2026-01-15T13:00:00Z",
     "payload": {
       "label": "Dashboard screenshot",
       "type": "image",
@@ -306,11 +296,7 @@ Restart Claude Code, then use `/orchestrator`. The command asks Claude to read t
 
 A judgment form is derived from an active `human_judgment.requested` event. The reviewer only selects a verdict and writes the judgment; project, chapter, and objective context are already known by the interface. Proven objectives and cancelled requests never display a stale judgment form.
 
-Standing human authorization recorded on 2026-08-06: after the requested verdict cycle is exhausted, an external agent may perform a local correction strictly bounded to the already identified defect without requesting another judgment first. This authorization does not cover a new product decision, external spending, push or publication, irreversible action, or material scope expansion. Those cases still require explicit authorization. Orchestrator only records this policy and the resulting observations; it never performs the correction.
-
-Standing continuity rule recorded on 2026-08-06 for Nationfall, Blockrise, and Atlas: external work does not stop after a verdict, cleanup, report, closure, or lock release. The next safe step and any heavy-work slot transfer must already be started or handed off before the external thread reports completion. Exceptions are limited to an undocumented product decision, external spending, push or publication, irreversible action, or a blocker that cannot be corrected locally. Orchestrator stores this rule as passive memory only and never launches the next step itself.
-
-External collaboration rule recorded on 2026-08-06: Claude is a coproductor for divisible missions, with a target of 40–50% of useful work assigned through an explicit scope and exclusive file ownership while Codex advances on a separate path. Codex retains integration, heavy tests, UI/browser validation, evidence, judgment, and cleanup. Only one Claude slot may be active across projects; an empty result, quota failure, or authentication error is diagnosed once and then reallocated without blocking. Analysis is timeboxed to 15 minutes and bounded implementation to 45 minutes. Orchestrator records this policy only and never launches either agent.
+Organization-specific review policies belong in the project memory or event journal, not in the public documentation.
 
 ## Multi-machine coordination
 
