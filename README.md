@@ -33,11 +33,30 @@ It records projects, chapters, objectives, events, decisions, blockers, verdicts
 
 ## Dashboard
 
-The interface organizes each project into four task-oriented paths: **Pilot** for state and next action, **Plan** for sequence and dependencies, **Verify** for chapters, passes and proofs, and **History** for memory, snapshots and usage. Context shortcuts connect the project summary directly to the current chapter, latest proof, plan and recovery history.
+The global workspace starts with **Today**: a short, ordered management view of the projects that need attention, recent changes, new proofs, overdue objectives, upcoming reviews, and the next recorded objective. It is designed to answer “what needs my attention now?” before exposing the deeper audit trail.
 
-![Orchestrator project planning dashboard](docs/dashboard-overview.png)
+![Orchestrator Today dashboard with multi-project priorities](docs/dashboard-overview.png)
 
-Each project can retain the recommended semantic ClickUp routing or map Orchestrator states to its own list workflow.
+The **Management cockpit** consolidates progress, evidence coverage, blocker age, Git activity, machines, contributors, AI usage, delivery forecasts, alerts, decisions, and a GitHub-style activity calendar. The data always retains its provenance and is never presented as an employee productivity score.
+
+![Orchestrator management cockpit in dark mode](docs/dashboard-observer.png)
+
+Each project is organized into four task-oriented paths: **Pilot** for state and next action, **Plan** for sequence and dependencies, **Verify** for chapters, passes and proofs, and **History** for memory, snapshots and usage. The evidence path groups proofs by pass, shows dates and thumbnails, opens images in a navigable lightbox, and keeps hashes, file availability, retention, and provenance visible.
+
+![Project evidence grouped into dated passes](docs/project-evidence.png)
+
+**Reports & reviews** turns the same recorded state into reusable daily, weekly, technical, or stakeholder reports. The interface is responsive, supports light, dark, and system themes, and keeps its management workflow usable on a phone.
+
+<p align="center"><img src="docs/dashboard-observer-mobile.png" alt="Responsive management report builder" width="390"></p>
+
+### Recommended solo-management loop
+
+1. Open **Today** and resolve the first attention item.
+2. Open the project to inspect its next objective, dependency path, latest pass, and proof quality.
+3. Record the external work through the CLI, API, Git hooks, or passive follower; Orchestrator never executes it.
+4. Finish with **Reports & reviews** to save a daily or weekly review and export a portable report.
+
+ClickUp remains an optional external registry. Credentials stay global to the local installation, while each project chooses its destination List, label color, and either the recommended semantic routing or a custom status mapping.
 
 ![Project-specific ClickUp status mapping](docs/clickup-status-mapping.png)
 
