@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS objectives (
   success_criteria TEXT,
   status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','ready','in_progress','blocked','proven','abandoned')),
   priority INTEGER NOT NULL DEFAULT 50,
+  due_at TEXT,
+  estimate_minutes INTEGER CHECK(estimate_minutes IS NULL OR estimate_minutes >= 0),
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

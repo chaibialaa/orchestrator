@@ -49,6 +49,7 @@ export function reorderObjectives(project,orderedUids){
   db.transaction(()=>requested.forEach((uid,index)=>db.prepare('UPDATE objectives SET priority=?,updated_at=? WHERE uid=? AND project_id=?').run((index+1)*10,nowStamp(),uid,project.id)))()
   return objectivePlan(project)
 }
+export function updateObjectiveSchedule(project,objectiveUid,input={}){const db=base(),objective=db.prepare('SELECT id FROM objectives WHERE uid=? AND project_id=?').get(objectiveUid,project.id);if(!objective)throw new Error('Unknown objective.');const due=String(input.due_at||'').trim(),estimate=input.estimate_minutes==null||input.estimate_minutes===''?null:Math.round(Number(input.estimate_minutes));if(due&&Number.isNaN(Date.parse(due)))throw new Error('Due date is invalid.');if(estimate!=null&&(!Number.isFinite(estimate)||estimate<0||estimate>525600))throw new Error('Estimate must be between 0 and 525600 minutes.');db.prepare('UPDATE objectives SET due_at=?,estimate_minutes=?,updated_at=? WHERE id=?').run(due||null,estimate,nowStamp(),objective.id);return objectivePlan(project)}
 
 function dependencyWouldCycle(db,objectiveId,dependsOnId){
   const seen=new Set(),visit=id=>{if(id===objectiveId)return true;if(seen.has(id))return false;seen.add(id);return db.prepare('SELECT depends_on_id FROM objective_dependencies WHERE objective_id=?').all(id).some(row=>visit(row.depends_on_id))};return visit(dependsOnId)
