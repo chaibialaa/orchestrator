@@ -318,5 +318,72 @@ CREATE TABLE IF NOT EXISTS access_tokens (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS workspaces (
+  id INTEGER PRIMARY KEY,
+  uid TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','archived')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS workspace_projects (
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  project_id INTEGER NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY(workspace_id,project_id)
+);
+CREATE TABLE IF NOT EXISTS workspace_members (
+  id INTEGER PRIMARY KEY,
+  uid TEXT NOT NULL UNIQUE,
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  display_name TEXT NOT NULL,
+  email TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','inactive')),
+  external_ids TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS workspace_machines (
+  id INTEGER PRIMARY KEY,
+  uid TEXT NOT NULL UNIQUE,
+  workspace_id INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  member_id INTEGER REFERENCES workspace_members(id) ON DELETE SET NULL,
+  machine_key TEXT NOT NULL,
+  label TEXT NOT NULL,
+  platform TEXT,
+  last_seen_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(workspace_id,machine_key)
+);
+CREATE TABLE IF NOT EXISTS project_members (
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  member_id INTEGER NOT NULL REFERENCES workspace_members(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'contributor' CHECK(role IN ('owner','manager','contributor','reviewer','observer')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY(project_id,member_id)
+);
+CREATE TABLE IF NOT EXISTS external_items (
+  id INTEGER PRIMARY KEY,
+  uid TEXT NOT NULL UNIQUE,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL,
+  objective_id INTEGER REFERENCES objectives(id) ON DELETE SET NULL,
+  assignee_member_id INTEGER REFERENCES workspace_members(id) ON DELETE SET NULL,
+  provider TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  item_type TEXT NOT NULL DEFAULT 'ticket',
+  title TEXT NOT NULL,
+  status TEXT,
+  url TEXT,
+  pass_ref TEXT,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  last_seen_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(provider,external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_external_items_project ON external_items(project_id,status,updated_at DESC);
+
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;

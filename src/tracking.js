@@ -23,6 +23,7 @@ export function setTracking(enabled,{root=process.cwd(),project,name}={}) {
   const db=base(),found=db.prepare('SELECT * FROM projects WHERE slug=?').get(slug)
   if(found)db.prepare('UPDATE projects SET name=?,status=?,updated_at=? WHERE id=?').run(label,enabled?'active':'archived',nowStamp(),found.id)
   else if(enabled)db.prepare('INSERT INTO projects(uid,slug,name,description,status) VALUES(?,?,?,?,?)').run(uid(),slug,label,`Repository: ${projectRoot}`,'active')
+  const registered=db.prepare('SELECT id FROM projects WHERE slug=?').get(slug),workspace=db.prepare('SELECT id FROM workspaces WHERE status=\'active\' ORDER BY id LIMIT 1').get();if(registered&&workspace)db.prepare('INSERT OR IGNORE INTO workspace_projects(workspace_id,project_id) VALUES(?,?)').run(workspace.id,registered.id)
   return{...config,path:trackingPath(projectRoot),registered:Boolean(found||enabled)}
 }
 export function trackingStatus(root=process.cwd()) {

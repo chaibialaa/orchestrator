@@ -1,12 +1,12 @@
 import { base, json } from './index.js'
 
-const TABLES = ['projects','chapters','objectives','objective_dependencies','events','evidence_manifests','decisions','blockers','verdicts','costs','cleanups','work_proposals','clickup_ticket_links']
+const TABLES = ['workspaces','projects','workspace_projects','workspace_members','workspace_machines','project_members','chapters','objectives','objective_dependencies','events','evidence_manifests','decisions','blockers','verdicts','costs','cleanups','work_proposals','clickup_ticket_links','external_items']
 export function exportObject(projectId = null) {
   const out = { format: 'orchestrator-memory', version: 1, exported_at: new Date().toISOString(), scope: projectId ? 'project' : 'complete', tables: {} }
   for (const table of TABLES) {
     const columns = base().prepare(`PRAGMA table_info(${table})`).all().map((column) => column.name)
     const scoped = projectId && columns.includes('project_id')
-    out.tables[table] = base().prepare(`SELECT * FROM ${table}${scoped ? ' WHERE project_id=?' : ''} ORDER BY id`).all(...(scoped ? [projectId] : [])).map((row) => table === 'events' ? { ...row, payload: json.read(row.payload, {}) } : row)
+    out.tables[table] = base().prepare(`SELECT * FROM ${table}${scoped ? ' WHERE project_id=?' : ''} ORDER BY ${columns.includes('id')?'id':'rowid'}`).all(...(scoped ? [projectId] : [])).map((row) => table === 'events' ? { ...row, payload: json.read(row.payload, {}) } : row)
   }
   return out
 }

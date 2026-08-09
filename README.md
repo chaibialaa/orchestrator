@@ -22,6 +22,7 @@ It records projects, chapters, objectives, events, decisions, blockers, verdicts
 - A traceable event journal that separates measured facts, agent statements, human judgments, and system records.
 - Human-judgment forms shown only when a judgment has explicitly been requested.
 - Multi-machine coordination records for concurrent passes and observed Git state.
+- A Team workspace linking collaborators, machines, project roles, existing external tickets, chapters, passes, and proof coverage without assigning or executing work.
 - Read-only discovery of local Codex and Claude memory.
 - Project-scoped recovery of proof references from local Codex and Claude conversations, with provenance, timestamps, availability, size, and SHA-256 hashes.
 - Human-reviewed planning proposals derived from local AI memory, blockers, failed verdicts, and project state.
@@ -122,6 +123,29 @@ orchestrator handoff --json
 ```
 
 The same data is available through `GET /api/projects/:project/ai-workspace`, with portable handoffs at `GET /api/projects/:project/handoff.md` and `.json`.
+
+## Team workspace
+
+The global **Team workspace** is the portable coordination layer for a solo developer working across several machines or for a small team. It shows who is associated with each project, which machine produced an observation, the latest heartbeat, current project roles, and existing ClickUp/GitHub/Linear/other ticket links. Ticket records retain their provider, remote status, assignee, project, chapter, objective, pass, URL, and matching proof count; linking a ticket never changes its remote state.
+
+The central machine creates a project onboarding bundle from the Team view or CLI. It contains project identity, chapters, objectives, external-ticket references, workspace metadata, and setup guidance, but no ClickUp token, OAuth secret, raw conversation, or evidence bytes:
+
+```bash
+# Central machine
+orchestrator team export my-project > my-project-team.json
+
+# Collaborator machine
+orchestrator migrate
+orchestrator team join my-project-team.json
+cd /path/to/repository
+orchestrator enable my-project --name "My project"
+orchestrator hooks install
+orchestrator integrate claude
+```
+
+Collaborators still perform work with Codex, Claude, or normal development tools. Passive hooks, the local follower, and explicit `record`/`evidence add` calls produce auditable observations. Drive or Dropbox exchanges immutable journal shards between machines; the central dashboard imports them by stable identity. Existing ClickUp tickets can be searched read-only and linked instead of recreated, so an established backlog remains authoritative while Orchestrator supplies cross-project context, proof manifests, reports, and stale-Git warnings.
+
+The passive API is `GET /api/team`, `PUT /api/team/workspace`, `POST|PUT /api/team/members`, `PUT /api/team/machines/:machine`, `PUT /api/team/projects/:project/members/:member`, `GET /api/team/onboarding/:project`, `POST /api/team/onboarding/import`, `GET /api/projects/:project/external-items/clickup`, and `POST /api/team/external-items`.
 
 ## Engineering management cockpit
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createServer, insertEvent, startManagementReportScheduler } from './server.js'
+import { createServer, importTeamOnboarding, insertEvent, startManagementReportScheduler, teamOnboardingBundle } from './server.js'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir, hostname } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -56,8 +56,12 @@ if (command === 'serve') {
   const workspace=localWorkspace();process.stdout.write(args.includes('--json')?`${JSON.stringify(workspace.handoff,null,2)}\n`:handoffMarkdown(workspace))
 } else if(command==='integrate'&&args[0]==='claude'){
   console.log(JSON.stringify(installClaudeCommand(process.cwd(),args.includes('--global')),null,2))
+} else if(command==='team'&&args[0]==='export'){
+  const project=args[1]||trackingStatus().config?.project;if(!project)throw new Error('Usage: orchestrator team export <project-slug>');process.stdout.write(`${JSON.stringify(teamOnboardingBundle(project),null,2)}\n`)
+} else if(command==='team'&&args[0]==='join'){
+  if(!args[1])throw new Error('Usage: orchestrator team join <bundle.json>');console.log(JSON.stringify(importTeamOnboarding(JSON.parse(readFileSync(args[1],'utf8'))),null,2))
 } else if (command === 'help' || command === '--help' || command === '-h') {
-  console.log('orchestrator serve [port]\norchestrator migrate\norchestrator export [--markdown]\norchestrator enable [project-slug] [--name name]\norchestrator disable [project-slug]\norchestrator status\norchestrator hooks install|status|uninstall [--command orchestrator]\norchestrator integrate claude [--global]\norchestrator next\norchestrator handoff [--json]\norchestrator record <observation.json>\norchestrator evidence add <file> [--objective uid] [--pass ref] [--label text] [--type type] [--origin source] [--actor-kind codex|claude] [--actor name]')
+  console.log('orchestrator serve [port]\norchestrator migrate\norchestrator export [--markdown]\norchestrator enable [project-slug] [--name name]\norchestrator disable [project-slug]\norchestrator status\norchestrator hooks install|status|uninstall [--command orchestrator]\norchestrator integrate claude [--global]\norchestrator team export <project-slug>\norchestrator team join <bundle.json>\norchestrator next\norchestrator handoff [--json]\norchestrator record <observation.json>\norchestrator evidence add <file> [--objective uid] [--pass ref] [--label text] [--type type] [--origin source] [--actor-kind codex|claude] [--actor name]')
 } else {
   console.error(`Unknown command: ${command}`)
   process.exitCode = 1

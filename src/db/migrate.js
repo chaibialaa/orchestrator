@@ -8,6 +8,8 @@ const stable = (kind, id) => `legacy-${kind}-${id}`
 const key = (kind, id) => `legacy:${kind}:${id}`
 const digest = (value) => createHash('sha256').update(value).digest('hex')
 const hasTable = (db, name) => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name))
+const initializeWorkspace=(db)=>{let workspace=db.prepare('SELECT * FROM workspaces ORDER BY id LIMIT 1').get();if(!workspace){db.prepare('INSERT INTO workspaces(uid,name) VALUES(?,?)').run(`workspace-${machineId()}`,'My workspace');workspace=db.prepare('SELECT * FROM workspaces ORDER BY id LIMIT 1').get()}db.prepare('INSERT OR IGNORE INTO workspace_projects(workspace_id,project_id) SELECT ?,id FROM projects').run(workspace.id);return workspace}
+const initializeTeamRecords=(db,workspace)=>{if(hasTable(db,'clickup_ticket_links'))for(const row of db.prepare('SELECT l.*,COALESCE(w.title,\'ClickUp ticket \'||l.ticket_id) title FROM clickup_ticket_links l LEFT JOIN work_proposals w ON w.id=l.proposal_id').all())db.prepare("INSERT OR IGNORE INTO external_items(uid,project_id,objective_id,provider,external_id,title,status,url,last_seen_at) VALUES(?,?,?,?,?,?,?,?,?)").run(`external-clickup-${row.ticket_id}`,row.project_id,row.objective_id,'clickup',row.ticket_id,row.title,row.ticket_status,row.ticket_url,row.last_seen_at);for(const row of db.prepare('SELECT machine_id,max(occurred_at) last_seen_at FROM events WHERE machine_id IS NOT NULL GROUP BY machine_id').all())db.prepare('INSERT OR IGNORE INTO workspace_machines(uid,workspace_id,machine_key,label,last_seen_at) VALUES(?,?,?,?,?)').run(`machine-${digest(row.machine_id).slice(0,24)}`,workspace.id,row.machine_id,row.machine_id,row.last_seen_at)}
 
 function pathInfo(ref, repoPath) {
   const raw = String(ref ?? '').trim()
@@ -25,7 +27,8 @@ export function migrate(path = dbPath()) {
   db.pragma('busy_timeout = 5000')
   db.pragma('foreign_keys = OFF')
   const current = hasTable(db, 'schema_migrations') ? db.prepare('SELECT max(version) version FROM schema_migrations').get()?.version : null
-  if (current === 17) { db.close(); return { migrated: false, version: 17 } }
+  if (current === 18) { db.close(); return { migrated: false, version: 18 } }
+  if (current === 17) { db.exec(schemaSql());const workspace=initializeWorkspace(db);initializeTeamRecords(db,workspace);db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(18,?)').run(schemaChecksum());db.close();return { migrated: true, version: 18, counts: {} } }
   if (current === 16) {
     db.exec(schemaSql())
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(17,?)').run(schemaChecksum())
@@ -202,6 +205,8 @@ export function migrate(path = dbPath()) {
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(15,?)').run(schemaChecksum())
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(16,?)').run(schemaChecksum())
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(17,?)').run(schemaChecksum())
+      db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(18,?)').run(schemaChecksum())
+      initializeTeamRecords(db,initializeWorkspace(db))
       return
     }
 
@@ -258,6 +263,13 @@ export function migrate(path = dbPath()) {
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(10,?)').run(schemaChecksum())
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(11,?)').run(schemaChecksum())
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(12,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(13,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(14,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(15,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(16,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(17,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(18,?)').run(schemaChecksum())
+    initializeTeamRecords(db,initializeWorkspace(db))
   })
   tx()
   db.pragma('foreign_keys = ON')
@@ -266,5 +278,5 @@ export function migrate(path = dbPath()) {
   const counts = Object.fromEntries(['projects','objectives','events','evidence_manifests','decisions','blockers','verdicts','costs'].map((table) => [table, db.prepare(`SELECT count(*) count FROM ${table}`).get().count]))
   db.close()
   if (integrity !== 'ok' || foreignKeys.length) throw new Error(`Migration validation failed: ${integrity}, ${foreignKeys.length} foreign key errors`)
-  return { migrated: true, version: 13, counts }
+  return { migrated: true, version: 18, counts }
 }
