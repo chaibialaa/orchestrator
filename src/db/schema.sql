@@ -193,6 +193,11 @@ CREATE TABLE IF NOT EXISTS management_reviews (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_management_reviews_created ON management_reviews(created_at DESC);
+CREATE TABLE IF NOT EXISTS management_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS clickup_accounts (
   id INTEGER PRIMARY KEY CHECK(id=1),
   token TEXT NOT NULL,

@@ -25,15 +25,22 @@ export function migrate(path = dbPath()) {
   db.pragma('busy_timeout = 5000')
   db.pragma('foreign_keys = OFF')
   const current = hasTable(db, 'schema_migrations') ? db.prepare('SELECT max(version) version FROM schema_migrations').get()?.version : null
-  if (current === 16) { db.close(); return { migrated: false, version: 16 } }
+  if (current === 17) { db.close(); return { migrated: false, version: 17 } }
+  if (current === 16) {
+    db.exec(schemaSql())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(17,?)').run(schemaChecksum())
+    db.close()
+    return { migrated: true, version: 17, counts: {} }
+  }
   if (current === 15) {
     const columns=new Set(db.prepare('PRAGMA table_info(objectives)').all().map(row=>row.name))
     if(!columns.has('due_at'))db.exec('ALTER TABLE objectives ADD COLUMN due_at TEXT;')
     if(!columns.has('estimate_minutes'))db.exec('ALTER TABLE objectives ADD COLUMN estimate_minutes INTEGER CHECK(estimate_minutes IS NULL OR estimate_minutes >= 0);')
     db.exec(schemaSql())
     db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(16,?)').run(schemaChecksum())
+    db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(17,?)').run(schemaChecksum())
     db.close()
-    return { migrated: true, version: 16, counts: {} }
+    return { migrated: true, version: 17, counts: {} }
   }
   if (current === 14) {
     const columns=new Set(db.prepare('PRAGMA table_info(objectives)').all().map(row=>row.name))
@@ -194,6 +201,7 @@ export function migrate(path = dbPath()) {
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(14,?)').run(schemaChecksum())
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(15,?)').run(schemaChecksum())
       db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(16,?)').run(schemaChecksum())
+      db.prepare('INSERT INTO schema_migrations(version,checksum) VALUES(17,?)').run(schemaChecksum())
       return
     }
 
