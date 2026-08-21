@@ -1,7 +1,7 @@
 {
   "name": "@chaibialaa/orchestrator",
   "version": "0.1.0-beta.5",
-  "description": "An auditable project dashboard and persistent memory for work performed outside Orchestrator.",
+  "description": "A local-first control plane for coordinating AI projects, sessions, evidence, decisions, and memory.",
   "type": "module",
   "bin": {
     "orchestrator": "src/cli.js"
@@ -14,13 +14,16 @@
     "build": "npm --prefix web run build -- --outDir ../public --emptyOutDir",
     "dev": "npm --prefix web run dev",
     "test": "node --test \"test/*.test.js\"",
+    "postinstall": "node -e \"const fs=require('node:fs'),p='node_modules/node-pty/prebuilds/darwin-'+process.arch+'/spawn-helper';if(process.platform==='darwin'&&fs.existsSync(p))fs.chmodSync(p,0o755)\"",
     "prerelease-guard": "node -e \"const v=require('./package.json').version, t=process.env.npm_config_tag||'latest'; if(v.includes('-')&&t==='latest'){console.error('\\n  '+v+' is a pre-release and would be published as the default version.\\n  publishConfig.tag is NOT honoured by this npm, so it has to be on the command:\\n\\n    npm publish --tag beta\\n');process.exit(1)}\"",
     "prepublishOnly": "npm run prerelease-guard && npm run build && npm test"
   },
   "dependencies": {
     "better-sqlite3": "^11.5.0",
     "express": "^4.21.1",
-    "sharp": "^0.35.3"
+    "node-pty": "^1.1.0",
+    "sharp": "^0.35.3",
+    "ws": "^8.21.3"
   },
   "license": "PolyForm-Noncommercial-1.0.0",
   "author": "Chaibi Alaa",
@@ -33,6 +36,8 @@
     "url": "https://github.com/chaibialaa/orchestrator/issues"
   },
   "keywords": [
+    "ai-orchestration",
+    "multi-agent",
     "project-memory",
     "audit-log",
     "evidence",

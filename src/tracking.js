@@ -11,26 +11,28 @@ const hookStart='# orchestrator-observer:start',hookEnd='# orchestrator-observer
 const slugify = value => String(value).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')
 const digestFile = path => new Promise((resolve,reject)=>{const hash=createHash('sha256'),stream=createReadStream(path);stream.on('data',chunk=>hash.update(chunk));stream.on('error',reject);stream.on('end',()=>resolve(hash.digest('hex')))})
 export const trackingPath = (root=process.cwd()) => join(root,filename)
-export function readTracking(root=process.cwd()) { const path=trackingPath(root);if(!existsSync(path))return null;try{return json.read(readFileSync(path,'utf8'),null)}catch{return null} }
-export function setTracking(enabled,{root=process.cwd(),project,name}={}) {
-  const projectRoot=realpathSync(root),path=trackingPath(projectRoot),current=readTracking(projectRoot)
-  if(existsSync(path)&&!current)throw new Error(`${filename} is not valid JSON.`)
-  if(current&&current.format!=='orchestrator-project')throw new Error(`${filename} belongs to another format.`)
+function legacyTracking(root){const path=trackingPath(root);if(!existsSync(path))return null;try{const value=json.read(readFileSync(path,'utf8'),null);if(value?.format==='orchestrator-project')return value;if(!value?.format&&typeof value?.project==='string'&&value?.evidence_mode==='declared-only')return{...value,format:'orchestrator-project',version:0};return null}catch{return null}}
+function centralTracking(root){let projectRoot;try{projectRoot=realpathSync(root)}catch{return null}const row=base().prepare(`SELECT t.*,p.slug,p.name,p.status FROM project_tracking t JOIN projects p ON p.id=t.project_id WHERE t.repository_root=?`).get(projectRoot);return row?{format:'orchestrator-project',version:2,enabled:Boolean(row.enabled),project:row.slug,name:row.name,evidence_mode:'declared-only',enforcement_mode:row.enforcement_mode,...json.read(row.settings,{}),updated_at:row.updated_at,configuration:'central'}:null}
+export function readTracking(root=process.cwd()) { return centralTracking(root)||legacyTracking(root) }
+export function setTracking(enabled,{root=process.cwd(),project,name,enforcementMode}={}) {
+  const projectRoot=realpathSync(root),legacy=legacyTracking(projectRoot),current=centralTracking(projectRoot)||legacy
   const slug=slugify(project||current?.project||basename(projectRoot)),label=String(name||current?.name||basename(projectRoot)).trim()
   if(!slug)throw new Error('A project slug is required.')
-  const config={format:'orchestrator-project',version:1,enabled:Boolean(enabled),project:slug,name:label,evidence_mode:'declared-only',updated_at:nowStamp()}
-  writeFileSync(trackingPath(projectRoot),`${JSON.stringify(config,null,2)}\n`,{mode:0o644})
   const db=base(),found=db.prepare('SELECT * FROM projects WHERE slug=?').get(slug)
   if(found)db.prepare('UPDATE projects SET name=?,status=?,updated_at=? WHERE id=?').run(label,enabled?'active':'archived',nowStamp(),found.id)
   else if(enabled)db.prepare('INSERT INTO projects(uid,slug,name,description,status) VALUES(?,?,?,?,?)').run(uid(),slug,label,`Repository: ${projectRoot}`,'active')
   const registered=db.prepare('SELECT id FROM projects WHERE slug=?').get(slug),workspace=db.prepare('SELECT id FROM workspaces WHERE status=\'active\' ORDER BY id LIMIT 1').get();if(registered&&workspace)db.prepare('INSERT OR IGNORE INTO workspace_projects(workspace_id,project_id) VALUES(?,?)').run(workspace.id,registered.id)
-  return{...config,path:trackingPath(projectRoot),registered:Boolean(found||enabled)}
+  if(!registered)throw new Error('Cannot disable an unknown project.')
+  const reserved=new Set(['format','version','enabled','project','name','evidence_mode','updated_at','configuration','enforcement_mode']),settings=Object.fromEntries(Object.entries(current||{}).filter(([key])=>!reserved.has(key))),mode=['observe','advisory','strict'].includes(enforcementMode)?enforcementMode:current?.enforcement_mode||'advisory',stamp=nowStamp()
+  db.prepare(`INSERT INTO project_tracking(project_id,repository_root,enabled,enforcement_mode,settings,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET repository_root=excluded.repository_root,enabled=excluded.enabled,enforcement_mode=excluded.enforcement_mode,settings=excluded.settings,updated_at=excluded.updated_at`).run(registered.id,projectRoot,enabled?1:0,mode,json.write(settings),stamp)
+  if(legacy&&existsSync(trackingPath(projectRoot)))unlinkSync(trackingPath(projectRoot))
+  return{...settings,format:'orchestrator-project',version:2,enabled:Boolean(enabled),project:slug,name:label,evidence_mode:'declared-only',enforcement_mode:mode,updated_at:stamp,configuration:'central',path:null,legacy_file_removed:Boolean(legacy),registered:true}
 }
 export function trackingStatus(root=process.cwd()) {
   const config=readTracking(root)
-  if(!config)return{configured:false,enabled:false,path:trackingPath(root),project:null,registered:false}
+  if(!config)return{configured:false,enabled:false,path:null,project:null,registered:false,foreign_file_ignored:existsSync(trackingPath(root))}
   const project=base().prepare('SELECT slug,name,status,updated_at FROM projects WHERE slug=?').get(config.project)
-  return{configured:true,enabled:Boolean(config.enabled&&project?.status!=='archived'),path:trackingPath(root),config,project:project||null,registered:Boolean(project)}
+  return{configured:true,enabled:Boolean(config.enabled&&project?.status!=='archived'),path:null,config,project:project||null,registered:Boolean(project),configuration:'central',enforcement_mode:config.enforcement_mode||'advisory'}
 }
 export async function addDeclaredEvidence(file,{root=process.cwd(),objective=null,passRef=null,label=null,type='other',origin='declared evidence',actorKind='codex',actor='Codex',endpoint=process.env.ORCHESTRATOR_URL||'http://127.0.0.1:4173'}={}) {
   const status=trackingStatus(root)

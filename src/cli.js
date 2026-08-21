@@ -12,6 +12,16 @@ import { deriveAiWorkspace, handoffMarkdown } from './intelligence.js'
 import { startClickupScheduler } from './planning.js'
 import { generateProposals } from './planning.js'
 import { startPassiveFollowers } from './follower.js'
+import { refreshKnowledgeBase } from './knowledge.js'
+import { createServer as createHttpServer } from 'node:http'
+import { attachTerminalWebSockets, markInterruptedSessions } from './terminal.js'
+
+function recordFollowerBatch({project,paths,git,observed_at}){
+  const normalized=[...new Set(paths)].sort(),bucket=String(observed_at).slice(0,16),key=`follower:${project.slug}:${bucket}`
+  insertEvent({project:project.slug,kind:'event.recorded',actor_kind:'system',actor:'Passive repository follower',assertion:'system_record',summary:`${normalized.length} repository path${normalized.length===1?'':'s'} changed`,payload:{paths:normalized,change_count:normalized.length,observer:'filesystem',compacted:true,execution:false},occurred_at:observed_at,source:'passive repository follower'},key)
+  if(git){const latest=base().prepare("SELECT payload FROM events WHERE project_id=? AND kind='git.state' ORDER BY occurred_at DESC,id DESC LIMIT 1").get(project.id),previous=latest?JSON.parse(latest.payload):null,changed=!previous||['branch','head_commit','dirty','upstream_commit'].some(field=>previous[field]!==git[field]);if(changed)insertEvent({project:project.slug,kind:'git.state',actor_kind:'system',actor:'Passive repository follower',assertion:'measured_fact',summary:git.remote_verified?'Local HEAD matches the recorded upstream ref':'Local repository state changed',payload:{machine:hostname(),...git,trigger:'filesystem-change',transition:git.remote_verified?'git.push.verified':undefined},occurred_at:observed_at,source:'passive repository follower'},`${key}:git`)}
+  generateProposals(project)
+}
 
 const localWorkspace=()=>{const status=trackingStatus();if(!status.configured||!status.project)throw new Error('Orchestrator is not configured for this project. Run: orchestrator enable');const project=base().prepare('SELECT * FROM projects WHERE slug=?').get(status.config.project);return deriveAiWorkspace(project)}
 const cliPath=fileURLToPath(import.meta.url)
@@ -25,7 +35,10 @@ function installClaudeCommand(root=process.cwd(),globalMode=false){
 const [command = 'serve', ...args] = process.argv.slice(2)
 if (command === 'serve') {
   const port = Number(args[0] || process.env.PORT || 4173)
-  createServer().listen(port, '127.0.0.1', () => {startClickupScheduler();startManagementReportScheduler();startPassiveFollowers({onPlan:project=>generateProposals(project),onBatch:({project,paths,git,observed_at})=>{const key=`follower:${project.slug}:${observed_at}`;insertEvent({project:project.slug,kind:'event.recorded',actor_kind:'system',actor:'Passive repository follower',assertion:'system_record',summary:`${paths.length} repository path${paths.length===1?'':'s'} changed`,payload:{paths,change_count:paths.length,observer:'filesystem',execution:false},occurred_at:observed_at,source:'passive repository follower'},key);if(git)insertEvent({project:project.slug,kind:'git.state',actor_kind:'system',actor:'Passive repository follower',assertion:'measured_fact',summary:git.remote_verified?'Local HEAD matches the recorded upstream ref':'Local repository state changed',payload:{machine:hostname(),...git,trigger:'filesystem-change',transition:git.remote_verified?'git.push.verified':undefined},occurred_at:observed_at,source:'passive repository follower'},`${key}:git`);generateProposals(project)}});console.log(`Orchestrator observation dashboard: http://127.0.0.1:${port}`)})
+  markInterruptedSessions()
+  const server=createHttpServer(createServer())
+  attachTerminalWebSockets(server)
+  server.listen(port, '127.0.0.1', () => {startClickupScheduler();startManagementReportScheduler();startPassiveFollowers({onPlan:project=>generateProposals(project),onBatch:recordFollowerBatch});const knowledgeTimer=setTimeout(()=>{try{refreshKnowledgeBase()}catch{}},2000);knowledgeTimer.unref();const cloudSync=async()=>{try{const connections=await fetch(`http://127.0.0.1:${port}/api/sync`).then(response=>response.json());for(const item of connections.filter(row=>row.enabled&&!row.progress?.active)){const last=Date.parse(item.last_push_at||item.last_pull_at||0);if(!last||Date.now()-last>=15*60*1000)await fetch(`http://127.0.0.1:${port}/api/sync/${encodeURIComponent(item.provider)}`,{method:'POST'})}}catch{}};const cloudTimer=setInterval(cloudSync,60*1000);cloudTimer.unref();const cloudStart=setTimeout(cloudSync,60*1000);cloudStart.unref();console.log(`Orchestrator local AI control plane: http://127.0.0.1:${port}`)})
 } else if (command === 'migrate') {
   console.log(JSON.stringify(migrate(), null, 2))
 } else if (command === 'export') {

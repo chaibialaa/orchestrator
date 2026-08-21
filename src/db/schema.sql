@@ -19,6 +19,18 @@ CREATE TABLE IF NOT EXISTS projects (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS project_tracking (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+  repository_root TEXT NOT NULL UNIQUE,
+  enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+  enforcement_mode TEXT NOT NULL DEFAULT 'advisory' CHECK(enforcement_mode IN ('observe','advisory','strict')),
+  settings TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_project_tracking_root ON project_tracking(repository_root);
+
 CREATE TABLE IF NOT EXISTS chapters (
   id INTEGER PRIMARY KEY,
   uid TEXT NOT NULL UNIQUE,
@@ -84,6 +96,10 @@ CREATE TABLE IF NOT EXISTS evidence_manifests (
   mime TEXT,
   retention TEXT NOT NULL DEFAULT 'referenced' CHECK(retention IN ('referenced','included','external','missing','deleted')),
   status TEXT NOT NULL DEFAULT 'available' CHECK(status IN ('available','missing','unverified','deleted')),
+  verification TEXT CHECK(verification IS NULL OR verification IN ('verified','modified','missing','unverified','not_local')),
+  verified_at TEXT,
+  actual_sha256 TEXT,
+  actual_bytes INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   CHECK((status = 'available' AND sha256 IS NOT NULL) OR status != 'available')
 );
@@ -146,6 +162,35 @@ CREATE TABLE IF NOT EXISTS work_proposals (
   reviewed_by TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_work_proposals_project ON work_proposals(project_id,status,created_at DESC);
+CREATE TABLE IF NOT EXISTS knowledge_rules (
+  id INTEGER PRIMARY KEY,
+  uid TEXT NOT NULL UNIQUE,
+  fingerprint TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  problem TEXT NOT NULL,
+  recommendation TEXT NOT NULL,
+  avoid_text TEXT,
+  tags TEXT NOT NULL DEFAULT '[]',
+  project_slugs TEXT NOT NULL DEFAULT '[]',
+  source_events TEXT NOT NULL DEFAULT '[]',
+  confidence INTEGER NOT NULL DEFAULT 0 CHECK(confidence BETWEEN 0 AND 100),
+  occurrences INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'candidate' CHECK(status IN ('candidate','active','dismissed')),
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_rules_status ON knowledge_rules(status,confidence DESC,last_seen_at DESC);
+CREATE TABLE IF NOT EXISTS project_specifications (
+  id INTEGER PRIMARY KEY,
+  uid TEXT NOT NULL UNIQUE,
+  project_id INTEGER NOT NULL UNIQUE REFERENCES projects(id) ON DELETE CASCADE,
+  revision INTEGER NOT NULL DEFAULT 1,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE TABLE IF NOT EXISTS objective_dependencies (
   id INTEGER PRIMARY KEY,
   project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -384,6 +429,36 @@ CREATE TABLE IF NOT EXISTS external_items (
   UNIQUE(provider,external_id)
 );
 CREATE INDEX IF NOT EXISTS idx_external_items_project ON external_items(project_id,status,updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS terminal_sessions (
+  id INTEGER PRIMARY KEY,
+  uid TEXT NOT NULL UNIQUE,
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  provider TEXT NOT NULL CHECK(provider IN ('codex','claude')),
+  title TEXT NOT NULL,
+  cwd TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'starting' CHECK(status IN ('starting','running','completed','failed','stopped','interrupted')),
+  command_path TEXT NOT NULL,
+  pid INTEGER,
+  exit_code INTEGER,
+  signal INTEGER,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  started_at TEXT,
+  ended_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_terminal_sessions_status ON terminal_sessions(status,created_at DESC);
+CREATE TABLE IF NOT EXISTS terminal_chunks (
+  id INTEGER PRIMARY KEY,
+  session_id INTEGER NOT NULL REFERENCES terminal_sessions(id) ON DELETE CASCADE,
+  sequence INTEGER NOT NULL,
+  stream TEXT NOT NULL DEFAULT 'pty',
+  content TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(session_id,sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_terminal_chunks_session ON terminal_chunks(session_id,sequence);
 
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;

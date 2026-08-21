@@ -1,2033 +1,1481 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import SystemHealthPanel from "./components/SystemHealthPanel.vue";
-import orchestratorMark from "./assets/orchestrator-mark.svg";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import QRCode from 'qrcode'
+import '@xterm/xterm/css/xterm.css'
+import orchestratorMark from './assets/orchestrator-mark.svg'
 
-type ThemePreference = "light" | "dark" | "system";
-const themeKey = "orchestrator:theme";
-const storedTheme = localStorage.getItem(themeKey);
-const themePreference = ref<ThemePreference>(storedTheme === "light" || storedTheme === "dark" ? storedTheme : "system");
-const systemTheme = window.matchMedia("(prefers-color-scheme: dark)");
-function applyTheme() {
-  const resolved = themePreference.value === "system" ? (systemTheme.matches ? "dark" : "light") : themePreference.value;
-  document.documentElement.dataset.theme = resolved;
-  document.documentElement.style.colorScheme = resolved;
-}
-function setTheme(theme: ThemePreference) {
-  themePreference.value = theme;
-  localStorage.setItem(themeKey, theme);
-  applyTheme();
-}
-const followSystemTheme = () => { if (themePreference.value === "system") applyTheme(); };
-applyTheme();
+type View='home'|'projects'|'workflow'|'terminal'|'usage'|'settings'
+type Stage='scope'|'plan'|'execute'|'verify'|'decide'|'memory'
+type Theme='light'|'dark'
+type ThemePreference=Theme|'system'
+type Language='fr'|'en'
+type Provider={id:string;label:string;available:boolean;command:string|null;models:Array<{id:string;label:string;source:string;configured:boolean}>;default_model:string|null;default_effort:string|null;permission_profiles?:Array<{id:string;label:string;description:string}>;capabilities:{efforts?:string[];resume?:boolean;dangerous_bypass?:boolean;permission_modes?:string[];sandbox?:string[];approval?:string[];search?:boolean;fork_session?:boolean;approval_modes?:string[]}}
+type Project={uid:string;slug:string;name:string;description:string|null;status:string;objectives:number;proofs:number;open_blockers:number;project_type:string;progress?:number;completed_objectives?:number;sessions?:number;active_sessions?:number;decisions_waiting?:number;last_activity?:string;state_signal?:string;current_pass?:{uid:string;title:string;status:string}|null;last_pass?:{uid:string;title:string;status:string;last_activity?:string}|null}
+type Session={uid:string;provider:string;title:string;cwd:string;status:string;project_slug:string|null;project_name:string|null;created_at:string;active:boolean;attachable:boolean;exit_code:number|null;metadata:Record<string,any>}
 
-type Project = {
-  uid: string;
-  slug: string;
-  name: string;
-  description: string | null;
-  status: string;
-  objectives: number;
-  open_blockers: number;
-  proofs: number;
-};
-type Objective = {
-  uid: string;
-  id: number;
-  title: string;
-  status: string;
-  priority: number;
-  event_count: number;
-  evidence_count: number;
-  last_activity: string | null;
-  parent_id: number | null;
-};
-type Chapter = Objective & {
-  objective_count: number;
-  proven_count: number;
-  progress: number;
-  children: Objective[];
-};
-type Event = {
-  uid: string;
-  kind: string;
-  assertion: string;
-  summary: string;
-  occurred_at: string;
-  actor: string;
-  objective_title: string | null;
-  payload: Record<string, unknown>;
-};
-type Evidence = {
-  uid: string;
-  label: string;
-  type: string;
-  origin: string;
-  locator_kind: string;
-  locator: string | null;
-  sha256: string | null;
-  bytes: number | null;
-  retention: string;
-  status: string;
-  created_at: string;
-  objective_title: string | null;
-  pass_ref: string | null;
-  cloud_providers: string[];
-  local_available: boolean;
-};
-type Detail = Omit<Project, "objectives"> & {
-  objectives: Objective[];
-  chapters: Chapter[];
-  blockers: Array<{ uid: string; title: string; detail: string | null; objective_id: number; objective_uid: string | null; objective_title: string | null; pass_ref: string | null }>;
-  decisions: Array<{ uid: string; title: string; body: string }>;
-  judgment_requests: Array<{
-    uid: string;
-    objective_id: number;
-    summary: string;
-    occurred_at: string;
-  }>;
-};
-type SyncConnection = {
-  provider: string;
-  label: string;
-  enabled: number;
-  last_status: string;
-  last_detail: string | null;
-  last_pull_at: string | null;
-  last_push_at: string | null;
-  shard_count: number;
-  pending_events: number;
-  cloud_evidence: number;
-};
-type SavedView = { id: string; label: string; context: string; url: string; saved_at: string };
-type DiagramNode = {
-  id: string;
-  label: string;
-  status: string;
-  phase: string;
-  priority: number;
-  evidence_count: number;
-  fail_count: number;
-  blocker_count: number;
-  proposal?: boolean;
-};
-type Diagram = {
-  project: { name: string };
-  nodes: DiagramNode[];
-  edges: Array<{ from: string; to: string; type: string }>;
-};
+const view=ref<View>('home'),stage=ref<Stage>('scope'),providers=ref<Provider[]>([]),projects=ref<Project[]>([]),sessions=ref<Session[]>([]),selectedProject=ref(''),selectedSession=ref<Session|null>(null)
+const storedTheme=localStorage.getItem('orchestrator-theme')
+const storedLanguage=localStorage.getItem('orchestrator-language')
+const language=ref<Language>(storedLanguage==='en'||storedLanguage==='fr'?storedLanguage:(navigator.language.toLowerCase().startsWith('fr')?'fr':'en'))
+const translations:Record<string,string>={
+  'Aujourd’hui':'Today','Projets':'Projects','Sessions':'Sessions','Usage IA':'AI usage','Accès':'Access',
+  'Cadrer':'Scope','Planifier':'Plan','Exécuter':'Execute','Vérifier':'Verify','Décider':'Decide','Mémoriser':'Remember',
+  'But et critères':'Goal and criteria','Ordre de travail':'Work order','Sessions IA':'AI sessions','Preuves par objectif':'Evidence by objective','Arbitrages humains':'Human decisions','Contexte durable':'Durable context',
+  'Système':'System','Jour':'Light','Nuit':'Dark','Ordinateur connecté':'Computer connected','Distant':'Remote','Local':'Local',
+  'Centre de décision':'Decision center','Ce qui demande votre attention.':'What needs your attention.','Commencez par une décision ou le prochain travail, puis suivez le projet étape par étape.':'Start with a decision or the next task, then follow the project step by step.','Nouvelle session IA':'New AI session',
+  'Décisions humaines':'Human decisions','Blocages':'Blockers','Preuves fragiles':'Weak evidence','Sessions actives':'Active sessions','à arbitrer':'to decide','à résoudre':'to resolve','à vérifier':'to verify',
+  'Continuer depuis votre téléphone.':'Continue from your phone.','Appareils associés':'Linked devices','Mémoire cloud':'Cloud memory','Google Drive et Dropbox':'Google Drive and Dropbox','Actualiser l’état':'Refresh status',
+  'Preuves cloud':'Cloud evidence','Événements en attente':'Pending events','Conflits ouverts':'Open conflicts','Connexion configurée':'Connection configured','Connexion désactivée':'Connection disabled','opérationnel':'operational','jamais lancé':'never run',
+  'Aucune synchronisation enregistrée.':'No synchronization recorded.','Aucun échange daté':'No dated exchange','Synchronisation automatique active':'Automatic synchronization active','Prochaine synchronisation automatique sous 15 minutes.':'Next automatic synchronization within 15 minutes.',
+  'Français':'French','Anglais':'English','IA':'AI','Fermer':'Close','Chargement de la session…':'Loading session…'
+}
+Object.assign(translations,{
+  'Connexion à Orchestrator…':'Connecting to Orchestrator…','Accès distant sécurisé':'Secure remote access','Associer cet appareil.':'Link this device.','Nom de cet appareil':'Device name','Code d’appairage':'Pairing code',
+  'Boîte de décision':'Decision inbox','À traiter maintenant':'Handle now','Aucun arbitrage urgent. Vous pouvez poursuivre le prochain objectif.':'No urgent decision. You can continue with the next objective.','Prochain travail':'Next work','Continuer sans chercher':'Continue without searching','Ouvrir le plan →':'Open plan →','Tous les projets':'All projects','Voir la vue complète':'Open full view',
+  'Tableau de bord IA':'AI dashboard','Usage de vos IA.':'Your AI usage.','Chargement de l’usage IA…':'Loading AI usage…','sessions lancées':'sessions launched','Historique':'History','Date et heure non communiquées':'Date and time unavailable','Limite non lisible':'Limit unavailable','Modèles':'Models','Les plus utilisés':'Most used','Modèle et effort':'Model and effort','Dernier usage':'Last used','Aucune session enregistrée.':'No recorded session.','Routage':'Routing','Bascule sur quota réel':'Switch on actual quota','Passer automatiquement à l’autre IA':'Automatically switch to another AI','Dernière bascule':'Last switch',
+  '← Projets':'← Projects','Espace projet':'Project workspace','Changer de projet':'Switch project','Lancer une IA':'Launch an AI','Lecture du cadrage, du plan, des sessions et des preuves…':'Loading scope, plan, sessions, and evidence…','Actualisation du contexte…':'Refreshing context…','← Précédent':'← Previous','Étape suivante →':'Next step →',
+  'Atelier d’analyse IA':'AI analysis studio','Confier la synthèse à une IA':'Delegate the synthesis to an AI','Reprendre un pilote du projet →':'Resume a project pilot →','IA d’analyse':'Analysis AI','Mode':'Mode','Analyser uniquement':'Analyze only','Analyser et proposer':'Analyze and propose','Modèle':'Model','Effort':'Effort','Action':'Action','Reprise rapide':'Quick resume','Pilotes du projet':'Project pilots','Voir la dernière':'View latest','Lancer':'Launch',
+  'Diagnostic IA en lecture seule':'Read-only AI diagnostic','Version actuelle':'Current version','Correction recommandée':'Recommended correction','Aucun écart pertinent détecté':'No relevant discrepancy detected','Revue de réanalyse':'Reanalysis review','Proposition IA':'AI proposal','Refuser':'Reject','Accepter':'Accept','Tout accepter':'Accept all','Tout refuser':'Reject all','Aucune nouveauté pertinente détectée':'No relevant change detected','Discussion contextualisée':'Contextual discussion','Votre demande':'Your request',
+  'Éditeur du projet':'Project editor','Annuler':'Cancel','Titre':'Title','Public concerné':'Target audience','Résumé de la mission':'Mission summary','Contexte':'Context','Périmètre — un élément par ligne':'Scope — one item per line','Hors périmètre — un élément par ligne':'Out of scope — one item per line','Livrables — un élément par ligne':'Deliverables — one item per line','Critères d’acceptation — un par ligne':'Acceptance criteria — one per line','Non créé':'Not created','Données disponibles':'Available data','Créer manuellement':'Create manually','Périmètre':'Scope','Livrables':'Deliverables','Sources citées':'Cited sources','État':'Status','Analyse réalisée par':'Analyzed by','Cadre général':'General scope','Informations modifiables':'Editable information','Non renseigné.':'Not provided.','Hors périmètre':'Out of scope','Critères d’acceptation':'Acceptance criteria','Document structuré':'Structured document','Ordre et priorité':'Order and priority','Organiser le GDD':'Organize the GDD','Priorité':'Priority','À décider':'To decide','Ambigu':'Ambiguous','Clos':'Closed','Résumé':'Summary','Ajouter le chapitre':'Add chapter','Sources':'Sources','Demander un avis IA':'Ask AI for advice','Discuter':'Discuss','Analyser ce chapitre':'Analyze this chapter','Discuter du chapitre':'Discuss this chapter','Voir les sources de discussion':'View discussion sources','Ouvrir la session complète →':'Open full session →','Modifier le cadre général':'Edit general scope','Télécharger le PDF':'Download PDF','Impact sur le parcours':'Workflow impact','Aucune règle de validation n’est définie.':'No validation rule is defined.','Décisions et ambiguïtés':'Decisions and ambiguities','Questions avant validation':'Questions before approval','Votre réponse':'Your answer','Demander conseil':'Ask for advice','Discuter avec l’IA':'Discuss with AI',
+  'Pilotage durable':'Durable piloting','Permissions par défaut du projet':'Default project permissions','Nom':'Name','Travail délégué':'Delegated work','Recherche':'Research','Revue':'Review','Exécution':'Execution','Mode de pilotage':'Piloting mode','Relève de contexte':'Context rotation','Seuil de relève':'Rotation threshold','Permissions du sous-agent':'Sub-agent permissions','Mission':'Mission','Règles particulières':'Special rules','Demande pour le prochain lancement':'Request for next launch','Dernier lancement':'Last launch','Aucun pilote pour l’instant':'No pilot yet','Réconciliation multi-IA':'Multi-AI reconciliation','Rattacher le travail réel au plan':'Link actual work to the plan','Ouvrir le pilote':'Open pilot','Analyse des historiques IA…':'Analyzing AI history…','Voir l’extrait analysé':'View analyzed excerpt','Ouvrir la session':'Open session','Plan cohérent avec les sessions analysées':'Plan consistent with analyzed sessions',
+  'GDD approuvé':'Approved GDD','Nouveaux objectifs':'New objectives','File active':'Active queue','Vue d’ensemble retrouvée':'Recovered overview','Chapitres → passes → décisions':'Chapters → passes → decisions','Chapitre':'Chapter','Passe':'Pass','Décision':'Decision','Chapitres':'Chapters','Objectifs et passes':'Objectives and passes','Décisions':'Decisions','Aucune passe enregistrée':'No recorded pass','Aucun objectif relié à ce chapitre.':'No objective linked to this chapter.','Décision requise':'Decision required','Aucun arbitrage demandé.':'No decision requested.','Décisions de cadrage':'Scope decisions','Ordre d’exécution':'Execution order','Modifier l’ordre':'Edit order','Chapitre GDD':'GDD chapter','Non relié':'Unlinked','Boîte d’entrée':'Inbox','Nouveaux objectifs à trier':'New objectives to sort','Lire la proposition complète':'Read full proposal','Position dans la file':'Queue position','À la fin de la file active':'At the end of the active queue','Approuver et insérer':'Approve and insert','Rejeter':'Reject','Mission actuelle du pilote':'Current pilot mission','Voir le pilote':'View pilot','Réconcilier avant d’exécuter →':'Reconcile before execution →',
+  'Plan → Exécution':'Plan → Execution','Choisir la prochaine passe':'Choose the next pass','Modifier le plan':'Edit plan','Recommandée':'Recommended','Voir le dossier':'View dossier','Session directe':'Direct session','Configurer la session sur cette passe →':'Configure session for this pass →','Sélectionnez une passe ci-dessus.':'Select a pass above.','Pilotage persistant':'Persistent piloting','Charger un pilote':'Load a pilot','+ Créer pour cette passe':'+ Create for this pass','Dernière session':'Latest session','Charger sur la passe':'Load on pass','Pilote externe relié':'Linked external pilot','Aucun pilote détecté':'No pilot detected','Nouveau pilote contextualisé':'New contextual pilot','Rôle':'Role','Coordination':'Coordination','Conseil':'Advice','Permissions':'Permissions','Règles':'Rules','Conditions d’arrêt':'Stop conditions','Historique d’exécution':'Execution history','Sessions du projet':'Project sessions','Aucune session rattachée à ce projet.':'No session linked to this project.',
+  'Afficher toutes les preuves':'Show all evidence','preuves affichées':'evidence shown','disponibles':'available','vérifiées':'verified','images visibles':'visible images','objectifs couverts':'covered objectives','Galerie de preuves':'Evidence gallery','Captures et rendus disponibles':'Available captures and renders','Cliquez pour agrandir':'Click to enlarge','Objectif':'Objective','Examiner':'Review','Passe examinée':'Reviewed pass','Revoir le dossier de preuves':'Review evidence dossier','état de l’objectif':'objective status','Retourner aux preuves':'Back to evidence','Continuer vers Mémoriser →':'Continue to Remember →','Votre décision est nécessaire.':'Your decision is required.','Décisions produit ouvertes':'Open product decisions','Arbitrages':'Decisions','Décisions humaines demandées':'Requested human decisions','Aucun arbitrage à traiter dans ce contexte.':'No decision to handle in this context.','Alertes décisionnelles':'Decision alerts','Voir les preuves':'View evidence','Aucune alerte ne nécessite une décision humaine.':'No alert requires a human decision.',
+  'Mémoire de la passe':'Pass memory','Revoir les preuves':'Review evidence','Afficher toute la mémoire du projet':'Show all project memory','Finaliser la passe':'Finalize pass','Retourner au plan':'Back to plan','Clôturer sans leçon':'Close without lesson','Créer une leçon durable':'Create a durable lesson','Titre de la leçon':'Lesson title','Recommandation':'Recommendation','À éviter':'Avoid','Dossier conservé':'Preserved dossier','Preuves de cette passe':'Evidence for this pass','Aucune preuve n’est rattachée à cette passe.':'No evidence linked to this pass.','Journal durable':'Durable log','Aucun événement utile n’est rattaché à cette passe.':'No useful event linked to this pass.','Connaissance réutilisable':'Reusable knowledge','Règles applicables':'Applicable rules','Aucune règle réutilisable ne s’applique encore.':'No reusable rule applies yet.',
+  'Dossier de décision':'Decision dossier','Chargement du dossier complet…':'Loading full dossier…','Prochaine action':'Next action','Comment débloquer cet objectif':'How to unblock this objective','Corriger le dernier verdict en échec':'Correct the latest failed verdict','Identifier la cause du blocage':'Identify the blocker cause','Voir uniquement ses preuves':'View only its evidence','Préparer une session corrective →':'Prepare a corrective session →','Ce qui doit être obtenu':'Required outcome','Critères de réussite':'Success criteria','Échéance':'Due date','Estimation':'Estimate','Dernière activité':'Last activity','Place dans le projet':'Place in project','Relations et dépendances':'Relations and dependencies','Objectif parent':'Parent objective','Doit être terminé avant':'Must be completed before','Dépend ensuite de cet objectif':'Then depends on this objective','Sous-objectif':'Sub-objective','Décisions et alertes':'Decisions and alerts','Ce qui empêche ou autorise la suite':'What blocks or allows continuation','Preuves et fichiers':'Evidence and files','Vérifier uniquement cet objectif':'Verify only this objective','Aperçu indisponible':'Preview unavailable','Ouvrir l’aperçu':'Open preview','Ouvrir le fichier':'Open file','Origine du travail':'Work origin','Propositions liées':'Linked proposals','Exécution liée':'Linked execution','Historique complet':'Full history','Aucun événement détaillé n’est enregistré.':'No detailed event recorded.','Projet':'Project','Ouvrir Vérifier →':'Open Verify →',
+  'Salle de pilotage':'Pilot room','Retour au projet':'Back to project','Pilote central':'Central pilot','Échanges de l’équipe':'Team exchanges','Lecture seule':'Read only','Projet protégé':'Protected project','Projet autonome':'Autonomous project','Directive partagée':'Shared directive','Envoyer à toute l’équipe':'Send to the whole team','Nouvelle session IA':'New AI session','Ouvrir un terminal':'Open terminal','Ordinateur éveillé':'Computer awake','Passe liée au lancement':'Pass linked at launch','Détacher':'Detach','Espace Orchestrator':'Orchestrator workspace','Nom de mission':'Mission name','Mode de démarrage':'Start mode','Nouvelle session':'New session','Reprendre la dernière':'Resume latest','Sélecteur natif':'Native selector','Reprendre par ID / nom':'Resume by ID / name','ID ou nom':'ID or name','Options et permissions':'Options and permissions','Profil de permissions':'Permission profile','Sandbox':'Sandbox','Écriture workspace':'Workspace write','Accès machine complet':'Full machine access','Approbations':'Approvals','Commandes non fiables':'Untrusted commands','À la demande':'On request','Ne jamais demander':'Never ask','Recherche web':'Web search','Auto':'Auto','Accepter les éditions':'Accept edits','Manuel':'Manual','Ne pas demander':'Do not ask','Plan seulement':'Plan only','Fork de la session reprise':'Fork resumed session','Instruction initiale':'Initial instruction','Je comprends et je confirme':'I understand and confirm','Rechercher':'Search','Tous les états':'All statuses','En cours':'In progress','À vérifier':'To verify','Clôturées':'Closed','Arrêtées':'Stopped','Sauvegardées':'Saved',
+  'Conversation':'Conversation','← Retour au cockpit':'← Back to cockpit','Décision demandée':'Decision requested','Examiner et répondre →':'Review and answer →','Commencez la conversation':'Start the conversation','Posez une question ou donnez une direction au pilote central.':'Ask a question or give direction to the central pilot.','Transmission du message…':'Sending message…','Ce qui se passe maintenant':'What is happening now','Choisir et continuer →':'Choose and continue →','Demander une synthèse':'Request a summary','Cockpit de mission':'Mission cockpit','Voir l’historique technique':'View technical history','En cours maintenant':'Running now','Tout valider':'Validate all','Semi-auto':'Semi-auto','Décisions uniquement':'Decisions only','Automatique':'Automatic','Réponses + décisions':'Answers + decisions','Contexte du pilote':'Pilot context','Rotation':'Rotation','Manuelle':'Manual','Automatique au checkpoint':'Automatic at checkpoint','Seuil':'Threshold','État actuel':'Current status','Décision attendue':'Expected decision','Voir et répondre':'View and answer','Preuves visibles':'Visible evidence','Dernier retour consolidé':'Latest consolidated report','Prochaine action recommandée':'Recommended next action','Aucune synthèse reçue':'No summary received','Décision humaine requise':'Human decision required','Retour au plan d’exécution':'Back to execution plan','Demande reçue':'Request received','Pourquoi le pilote attend':'Why the pilot is waiting','Choisissez une réponse pour décider':'Choose an answer to decide','Confirmer ce choix →':'Confirm this choice →','Ce que votre autorisation déclenchera':'What your authorization will trigger','Preuves visuelles liées':'Linked visual evidence','Relire le dernier rapport complet du pilote':'Read the pilot’s latest full report','Cliquer pour ouvrir':'Click to open','Ajouter seulement une précision':'Add clarification only','Fermer sans décider':'Close without deciding','Refuser et demander une alternative':'Reject and request an alternative','Historique technique · lecture seule':'Technical history · read only','Reprise native':'Native resume','Lecture':'Reading','Afficher la sortie brute':'Show raw output','Chargement de la transcription…':'Loading transcript…','Ouvrir la session technique':'Open technical session','← Cockpit':'← Cockpit','Discussion':'Discussion','Terminal direct':'Direct terminal','Suite reprise':'Resumed continuation','En vérification':'Under review','Texte copié':'Text copied','Historique du terminal':'Terminal history','Retour au direct':'Back to live','Arrêter':'Stop','Revenir à la discussion':'Back to discussion','Résultat transmis à Vérifier':'Result sent to Verify','Session arrêtée':'Stopped session','Toute la sortie est sauvegardée.':'All output is saved.','Terminal prêt':'Terminal ready','Toutes vos IA, au même endroit.':'All your AIs in one place.','Contexte de session':'Session context','Fichiers et images':'Files and images','Aucun fichier détecté':'No file detected','Chargement du fichier…':'Loading file…','Preuve à examiner':'Evidence to review','Origine':'Origin','Enregistrée':'Recorded','Agrandir l’image':'Enlarge image','Lecture du contenu…':'Loading content…','Ouvrir le fichier brut':'Open raw file','Dossier de la passe':'Pass dossier','Vérifier maintenant':'Verify now'
+})
+Object.assign(translations,{
+  'recommandations':'recommendations','manques':'missing items','corrections':'corrections','retraits':'removals','changements':'changes','ajouts':'additions','modifications':'modifications','suppressions':'deletions',
+  'Manuel · vous pilotez tout':'Manual · you control everything','Semi-auto · décisions humaines':'Semi-auto · human decisions','Auto · réponses et décisions':'Auto · answers and decisions','Manuelle · à votre demande':'Manual · on request','Auto · au prochain checkpoint':'Auto · at next checkpoint','· lien suggéré':'· suggested link',
+  'preuves affichées':'evidence shown','disponibles':'available','vérifiées':'verified','images visibles':'visible images','objectifs couverts':'covered objectives','preuves dans le dossier':'evidence in dossier','décisions humaines requises':'required human decisions','preuves':'evidence','images':'images','événements':'events','blocages ouverts':'open blockers','Ouvrir →':'Open →','coordinateur · lecture seule · IA':'coordinator · read only · AI',
+  'Cette option est désactivée à distance. Activez-la uniquement depuis l’ordinateur hôte.':'This option is disabled remotely. Enable it only from the host computer.','Accès machine sans restriction':'Unrestricted machine access','L’IA peut exécuter et modifier sans approbation ni sandbox.':'The AI can execute and modify without approval or sandbox.','Étape suivante':'Next step','Vous répondez à':'You are answering','1. Scannez ou copiez ce lien':'1. Scan or copy this link','2. Entrez ce code sur le téléphone':'2. Enter this code on the phone','· heure du fichier':'· file time'
+})
+Object.assign(translations,{
+  'Entrez le code à 6 chiffres affiché dans Orchestrator sur votre ordinateur. Il expire après 10 minutes.':'Enter the 6-digit code shown in Orchestrator on your computer. It expires after 10 minutes.','Aucun compte externe n’est nécessaire. Cet appareil pourra être révoqué depuis le PC.':'No external account is required. This device can be revoked from the computer.',
+  'Suivez les sessions réellement lancées par Orchestrator, les modèles utilisés et les plafonds qui déclenchent une bascule.':'Track sessions actually launched by Orchestrator, the models used, and the quotas that trigger a switch.','Orchestrator lit les limites annoncées par les CLI. Aucun plafond n’est saisi manuellement.':'Orchestrator reads limits reported by the CLIs. No quota is entered manually.','La bascule se déclenche seulement si la source marque la limite à 100 % et que l’autre CLI est disponible.':'Switching occurs only when the source reports a 100% limit and another CLI is available.',
+  'Orchestrator rassemble les discussions et les preuves. L’IA choisie analyse les contradictions, structure les chapitres et cite ses sources.':'Orchestrator gathers discussions and evidence. The selected AI analyzes contradictions, structures chapters, and cites its sources.','Reprenez le contexte existant avant de relire tout le document.':'Resume existing context before rereading the entire document.','L’analyse n’a identifié ni manque, ni incohérence, ni correction justifiée par les sources.':'The analysis found no missing content, inconsistency, or correction justified by the sources.','Accepter applique uniquement les changements choisis et crée une nouvelle révision en brouillon.':'Accept applies only selected changes and creates a new draft revision.','La réanalyse n’a trouvé aucune différence de contenu avec la révision actuelle.':'The reanalysis found no content difference from the current revision.',
+  'Vous modifiez ici les informations affichées dans « Cadre général ». Les chapitres se modifient séparément avec « Gérer les chapitres ».':'Edit the information shown under “General scope” here. Chapters are edited separately under “Manage chapters”.','Toute modification replace le document en brouillon avant une nouvelle validation.':'Any change returns the document to draft before a new approval.','Orchestrator peut analyser les anciennes discussions IA liées au dépôt. Le document généré restera un brouillon avec ses sources jusqu’à votre validation.':'Orchestrator can analyze previous AI discussions linked to the repository. The generated document remains a sourced draft until you approve it.','Audience, contexte, périmètre et livrables':'Audience, context, scope, and deliverables','Un changement manuel crée une nouvelle révision en brouillon.':'A manual change creates a new draft revision.','Titre du nouveau chapitre':'New chapter title','Les numéros de priorité déterminent l’ordre final, du plus petit au plus grand.':'Priority numbers determine the final order, from lowest to highest.','Aucun chapitre. Utilisez « Gérer les chapitres » pour créer le premier.':'No chapter. Use “Manage chapters” to create the first one.','Sources du chapitre':'Chapter sources',
+  'Une mission persistante, plusieurs sessions observables, un seul contexte partagé.':'One persistent mission, several observable sessions, one shared context.','Les pilotes Conseil, Revue et Coordination restent en lecture seule. L’Exécution exige un GDD validé.':'Advice, Review, and Coordination pilots remain read-only. Execution requires an approved GDD.','Créez un conseiller GDD, un réviseur de preuves ou un pilote central de coordination.':'Create a GDD advisor, evidence reviewer, or central coordination pilot.','Les changements existent déjà dans le projet. Ici, tu choisis seulement de les intégrer au suivi Orchestrator ou d’ignorer l’écart.':'The changes already exist in the project. Here you only choose whether to integrate them into Orchestrator tracking or ignore the discrepancy.','Le reste du planning reste disponible pendant la recherche.':'The rest of the plan remains available during analysis.','Aucun écart nécessitant une décision n’a été détecté.':'No discrepancy requiring a decision was detected.','Chaque ligne relie le cadre du GDD au travail réel et aux arbitrages encore attendus.':'Each row links the GDD scope to actual work and pending decisions.','Le GDD fixe le cadre et l’ordre de ses chapitres. Une proposition ne rejoint le travail qu’après votre approbation, à la position et dans le chapitre choisis ci-dessous.':'The GDD defines the scope and chapter order. A proposal joins the work only after your approval, at the position and in the chapter selected below.',
+  'Des sessions IA plus récentes ne correspondent pas au plan actuel.':'More recent AI sessions do not match the current plan.','Les objectifs sont proposés selon leur état, leurs dépendances et l’ordre défini dans Planifier.':'Objectives are proposed according to status, dependencies, and the order defined in Plan.','Aucune passe active. Revenez dans Planifier pour approuver ou créer le prochain objectif.':'No active pass. Return to Plan to approve or create the next objective.','Ajoutées au cadre de la passe. Tu pourras encore les relire et les modifier avant de démarrer.':'Added to the pass scope. You can review and edit them before starting.','Cette passe reste consultable, mais son blocage ou ses dépendances doivent être levés avant exécution.':'This pass remains viewable, but its blocker or dependencies must be resolved before execution.','Le pilote reçoit automatiquement l’objectif sélectionné, son chapitre et ses critères.':'The pilot automatically receives the selected objective, its chapter, and its criteria.','Créez un pilote prérempli depuis la passe sélectionnée.':'Create a prefilled pilot from the selected pass.','Le pilote sera sauvegardé et réutilisable sur les prochaines passes.':'The pilot will be saved and reusable for future passes.',
+  'Examinez le contenu, puis contrôlez l’intégrité des fichiers. Ce contrôle ne signifie pas que le résultat est accepté.':'Review the content, then check file integrity. This verification does not mean the result is accepted.','Aucune décision humaine n’est demandée pour cette passe.':'No human decision is requested for this pass.','Vous n’avez rien à accepter ou rejeter : « Vérifier » contrôle les preuves, tandis que « Décider » sert uniquement aux choix ambigus ou aux arbitrages explicitement demandés par une IA.':'There is nothing to accept or reject: Verify checks evidence, while Decide is only for ambiguous choices or decisions explicitly requested by an AI.','Lisez la question, son objectif et les preuves liées avant d’accepter ou de rejeter.':'Read the question, its objective, and linked evidence before accepting or rejecting.','Ces réponses complètent le cadre du projet et seront conservées dans le document.':'These answers complete the project scope and will be preserved in the document.','Conserver le journal et les preuves, sans créer de règle réutilisable.':'Keep the log and evidence without creating a reusable rule.','Ajouter une recommandation qui sera proposée aux prochaines passes pertinentes.':'Add a recommendation that will be suggested for relevant future passes.',
+  'Examiner les preuves liées, lancer une correction bornée, puis produire une nouvelle preuve vérifiable.':'Review linked evidence, launch a bounded correction, then produce new verifiable evidence.','Aucune preuve ni aucun fichier n’est encore rattaché à cet objectif.':'No evidence or file is linked to this objective yet.','Aucune sous-session déléguée pour cette relève.':'No delegated sub-session for this rotation.','Coordinateur en lecture seule · les actions restent déléguées aux sous-sessions.':'Read-only coordinator · actions remain delegated to sub-sessions.','Le pilote attend votre réponse avant de poursuivre ou déléguer.':'The pilot is waiting for your answer before continuing or delegating.','Discutez ici comme dans une session normale. L’historique reste dans cette conversation.':'Discuss here as in a normal session. History remains in this conversation.','Le pilote a répondu, mais votre précision n’a validé aucun choix.':'The pilot replied, but your clarification did not validate any choice.','Prochaine action obligatoire : choisissez l’une des réponses proposées pour débloquer la délégation.':'Required next action: choose one of the proposed answers to unblock delegation.',
+  'Vous donnez les réponses et prenez toutes les décisions.':'You provide the answers and make every decision.','Le pilote coordonne et répond ; vous intervenez uniquement pour les décisions.':'The pilot coordinates and responds; you intervene only for decisions.','Le pilote coordonne, répond et prend les décisions réversibles dans le périmètre autorisé.':'The pilot coordinates, responds, and makes reversible decisions within the authorized scope.','La relève conserve les décisions, preuves, checkpoints et prochaine action sans reprendre toute la transcription.':'The rotation preserves decisions, evidence, checkpoints, and next action without carrying the full transcript.','Pour l’agent actuellement sélectionné':'For the currently selected agent','Demandez une synthèse au pilote lorsqu’il a terminé sa première analyse.':'Request a summary after the pilot completes its first analysis.','Votre choix est envoyé au pilote central. S’il est arrêté, Orchestrator le reprend automatiquement.':'Your choice is sent to the central pilot. If stopped, Orchestrator resumes it automatically.','Une précision ne valide aucun choix et laisse la décision ouverte.':'A clarification validates no choice and leaves the decision open.','Aucune action n’est lancée depuis cette vue.':'No action is launched from this view.','Sortie complète conservée · lecture seule':'Full output preserved · read only',
+  'Entrée envoie · Maj + Entrée ajoute une ligne · Collez directement une image ou un fichier. Les pièces jointes restent dans le contexte de la session.':'Enter sends · Shift + Enter adds a line · Paste an image or file directly. Attachments remain in the session context.','Terminal direct actif':'Direct terminal active','Le formulaire est désactivé. Votre clavier agit uniquement dans le terminal.':'The form is disabled. Your keyboard acts only in the terminal.','L’objectif n’est pas encore validé : ses preuves doivent être examinées.':'The objective is not yet approved: its evidence must be reviewed.','Reprenez cette discussion ou transmettez son résultat si la passe est terminée.':'Resume this discussion or submit its result if the pass is complete.','Choisissez le projet, les permissions et le mode de reprise. La session apparaît ici en direct.':'Choose the project, permissions, and resume mode. The session appears here live.','Les chemins cités, images jointes et preuves produites apparaîtront ici automatiquement.':'Referenced paths, attached images, and produced evidence appear here automatically.','Ce format ne peut pas être prévisualisé dans Orchestrator.':'This format cannot be previewed in Orchestrator.','Détails techniques':'Technical details','Fermer le relais coupe immédiatement le lien public.':'Closing the relay immediately disables the public link.','Fermer l’accès Internet':'Close Internet access','L’extrait existe, mais aucun historique complet lisible n’est disponible.':'The excerpt exists, but no complete readable history is available.'
+})
+const tr=(value:string)=>language.value==='en'?(translations[value]||value):value
+function setLanguage(value:Language){language.value=value;localStorage.setItem('orchestrator-language',value);document.documentElement.lang=value}
+const statusLabel=(value:string)=>language.value==='fr'?({active:'actif',attention:'attention',running:'en cours',clear:'à jour',stale:'inactif',ready:'prêt',in_progress:'en cours',blocked:'bloqué',proven:'validé',draft:'brouillon',abandoned:'abandonné',completed:'terminé',interrupted:'interrompu',stopped:'arrêté',failed:'échec',archived:'archivé'} as Record<string,string>)[value]||value:({active:'active',attention:'attention',running:'running',clear:'up to date',stale:'stale',ready:'ready',in_progress:'in progress',blocked:'blocked',proven:'verified',draft:'draft',abandoned:'abandoned',completed:'completed',interrupted:'interrupted',stopped:'stopped',failed:'failed',archived:'archived'} as Record<string,string>)[value]||value
+const projectTypeLabel=(value:string)=>language.value==='fr'?({game:'jeu',software:'logiciel',web:'web',api:'API',mobile:'mobile',ai:'IA',infrastructure:'infrastructure',documentation:'documentation'} as Record<string,string>)[value]||value:({game:'game',software:'software',web:'web',api:'API',mobile:'mobile',ai:'AI',infrastructure:'infrastructure',documentation:'documentation'} as Record<string,string>)[value]||value
+const systemThemeQuery=window.matchMedia('(prefers-color-scheme: dark)')
+const theme=ref<ThemePreference>(storedTheme==='light'||storedTheme==='dark'||storedTheme==='system'?storedTheme:'system')
+const systemDark=ref(systemThemeQuery.matches)
+const resolvedTheme=computed<Theme>(()=>theme.value==='system'?(systemDark.value?'dark':'light'):theme.value)
+const notificationsSupported='Notification'in window
+const storedNotifications=localStorage.getItem('orchestrator-browser-notifications')
+const notificationPermission=ref<NotificationPermission|'unsupported'>(notificationsSupported?Notification.permission:'unsupported')
+const notificationsEnabled=ref(notificationsSupported&&Notification.permission==='granted'&&storedNotifications!=='disabled')
+const notificationLabel=computed(()=>language.value==='fr'?(!notificationsSupported?'Alertes indisponibles':notificationPermission.value==='denied'?'Alertes bloquées':notificationsEnabled.value?'Alertes activées':'Activer les alertes'):(!notificationsSupported?'Alerts unavailable':notificationPermission.value==='denied'?'Alerts blocked':notificationsEnabled.value?'Alerts enabled':'Enable alerts'))
+const today=ref<any>({summary:{},projects:[]}),attention=ref<any>({counts:{},items:[]}),projectDetail=ref<any>(null),specification=ref<any>(null),planning=ref<any>(null),evidence=ref<any[]>([]),timeline=ref<any[]>([]),projectKnowledge=ref<any>({rules:[]})
+const planEditing=ref(false),planSaving=ref(false),planOrder=ref<any[]>([]),planChapterLinks=ref<Record<string,string>>({}),proposalPlacement=ref<Record<string,{chapter_key:string;before_uid:string}>>({})
+const reconciliation=ref<any>({sessions:[],suggestions:[],history:[],summary:{}}),reconciliationBusy=ref(false),reconciliationLoading=ref(false),reconciliationReviewing=ref(''),reconciliationBulk=ref<'accepted'|'rejected'|''>(''),reconciliationBulkProgress=ref({done:0,total:0})
+const selectedExecutionObjective=ref<any>(null)
+const pendingSessionObjective=ref<any>(null)
+const executionDirectives=ref<Record<string,string>>({})
+const selectedProof=ref<any>(null),evidenceObjectiveFilter=ref<any>(null),proofDetail=ref<any>(null),proofDetailContent=ref(''),proofDetailLoading=ref(false),proofDetailError=ref('')
+const objectiveDetail=ref<any>(null),objectiveDetailLoading=ref(false)
+const validationProfile=ref<any>({criteria:[]}),specEditing=ref(false),specSaving=ref(false),specGenerating=ref(false),specApproving=ref(false),specDraft=ref<any>({}),specProvider=ref<'codex'|'claude'>('codex'),specModel=ref(''),specEffort=ref('medium'),specAnalysisMode=ref<'audit'|'proposal'>('proposal'),specAnalysis=ref<any>(null),chapterManagerOpen=ref(false),chapterSaving=ref(false),chapterDraft=ref<any[]>([]),newChapter=ref<any>({title:'',summary:'',status:'open',priority:10})
+const specProposalDecisions=ref<Record<string,'accepted'|'rejected'>>({}),specReviewBusy=ref(false)
+const gddAssistantTarget=ref<any>(null),gddAssistantProvider=ref<'codex'|'claude'>('codex'),gddAssistantPrompt=ref(''),gddAssistantBusy=ref(false),questionAnswers=ref<Record<string,string>>({}),questionSaving=ref<string|number|null>(null)
+const sourceConversation=ref<any>(null),sourceConversationLoading=ref(false)
+const pilots=ref<any>({pilots:[]}),pilotCreatorOpen=ref(false),pilotBusy=ref(false),pilotRequest=ref(''),pilotDraft=ref<any>({name:'',role:'coordinator',default_agent_role:'researcher',autonomy_mode:'semi',rotation_mode:'manual',rotation_threshold_tokens:80000,provider:'codex',model:'',effort:'medium',permission_profile:'read_only',worker_permission_profile:'read_only',mission:'',scope:'',instructions:'',stop_conditions:''})
+const pilotAgentOpen=ref(false),pilotAgentBusy=ref(false),pilotAutonomyBusy=ref(false),pilotRotationBusy=ref(false),pilotDecisionBusy=ref(false),pilotDecisionOpen=ref(false),pilotDecisionNote=ref(''),pilotTeamMessagesOpen=ref(false),pilotAgentDraft=ref<any>({name:'',role:'researcher',provider:'codex',permission_profile:'read_only',mission:''}),pilotRoomMessage=ref(''),pilotDirectMessage=ref(''),pilotRoomNotice=ref(''),pilotTechnicalOpen=ref(false),pilotTechnicalHistoryOpen=ref(false),pilotTechnicalHistoryLoading=ref(false),pilotTechnicalHistoryRaw=ref(false),pilotTechnicalHistoryError=ref(''),pilotTechnicalHistory=ref(''),pilotTechnicalSession=ref<Session|null>(null),pilotTechnicalAsset=ref<any>(null),pilotRoomState=ref<{pilot:any,run_uid:string,sessions:Session[],messages:any[],insights?:any[],context_rotation?:any}|null>(null)
+const provider=ref('codex'),sessionTitle=ref(''),busy=ref(false),loading=ref(false),workspaceHydrated=ref(false),workspaceSlug=ref(''),error=ref(''),terminalHost=ref<HTMLElement|null>(null),terminalHistoryHost=ref<HTMLElement|null>(null),terminalHistoryOpen=ref(false),terminalHistoryText=ref(''),terminalCopyNotice=ref(false),connection=ref<'idle'|'connecting'|'live'|'closed'>('idle')
+const apiPending=ref(0),apiActivity=ref(false),apiActivityLabel=ref('Chargement…'),pilotConversationFocus=ref(false),pilotChatOpen=ref(false),pilotChatHost=ref<HTMLElement|null>(null)
+const sessionMessage=ref(''),sessionPendingAttachments=ref<any[]>([]),sessionUploading=ref(false),sessionReportBusy=ref(false),sessionFileInput=ref<HTMLInputElement|null>(null),sessionArchiveMessages=ref<any[]>([])
+const sessionAssets=ref<any[]>([]),selectedSessionAsset=ref<any>(null),selectedSessionAssetContent=ref(''),selectedSessionAssetLoading=ref(false),selectedSessionAssetError=ref(''),sessionResumeBusy=ref(false)
+const sessionImageAssets=computed(()=>sessionAssets.value.filter(item=>String(item.mime||'').startsWith('image/'))),sessionFileAssets=computed(()=>sessionAssets.value.filter(item=>!String(item.mime||'').startsWith('image/')))
+const verificationBulkBusy=ref(false),verificationBulkProgress=ref({done:0,total:0})
+const memoryCloseBusy=ref(false),memoryLessonOpen=ref(false),memoryLesson=ref({title:'',recommendation:'',avoid_text:''})
+const terminalInputMode=ref<'composer'|'direct'>('composer')
+const tokens=ref<any[]>([]),dangerConfirmed=ref(false)
+const cloudConnections=ref<any[]>([]),cloudSyncing=ref(''),cloudSyncNotice=ref('')
+const remoteGate=ref({checked:false,remote:false,authenticated:false,device_label:''}),remoteCode=ref(''),remoteDeviceLabel=ref('Mon téléphone'),remoteUnlockBusy=ref(false),remoteAccess=ref<any>(null),remoteAccessBusy=ref(false),preventIdleBusy=ref(false),remoteQr=ref(''),remoteCopied=ref(false)
+const aiUsage=ref<any>(null),aiUsageDraft=ref<any>({auto_switch:false}),aiUsageBusy=ref(false),aiUsageRefreshBusy=ref(false),aiUsageRefreshNotice=ref('')
+const sessionSearch=ref(''),sessionStatusFilter=ref<'all'|'active'|'stopped'|'verification'|'closed'>('all'),sessionProjectFilter=ref('')
+const launchOptions=ref<any>({resume_mode:'new',resume_id:'',model:'',prompt:'',permission_profile:'workspace_guarded',dangerously_bypass:false,sandbox:'workspace-write',approval_policy:'on-request',search:false,permission_mode:'auto',approval_mode:'default',effort:'high',fork_session:false})
+let terminal:Terminal|null=null,fitAddon:FitAddon|null=null,socket:WebSocket|null=null,resizeObserver:ResizeObserver|null=null,sessionAssetsInterval:number|null=null,sessionAssetsDebounce:number|null=null,remoteAccessInterval:number|null=null,sessionNotificationsInterval:number|null=null,pilotRoomInterval:number|null=null,terminalSelectionTimer:number|null=null,terminalCopyNoticeTimer:number|null=null,apiActivityTimer:number|null=null,pilotConversationTimer:number|null=null,terminalLastSelection='',terminalPromptTail='',sessionStateReady=false
+const notifiedBrowserEvents=new Set<string>(),waitingSessionPrompts=new Set<string>()
 
-const projects = ref<Project[]>([]),
-  selected = ref(""),
-  detail = ref<Detail | null>(null),
-  events = ref<Event[]>([]),
-  evidence = ref<Evidence[]>([]);
-const connections = ref<SyncConnection[]>([]),
-  syncing = ref("");
-const diagram = ref<Diagram | null>(null),
-  coordination = ref<any>({
-    active: [],
-    recent: [],
-    latest_git: null,
-    counts: { active: 0, stale: 0, conflicts: 0, abandoned: 0 },
-  }),
-  resume = ref<any>(null),
-  confidence = ref<any>(null),
-  projectProfile = ref<any>(null),
-  gitGuard = ref<any>(null),
-  searchResults = ref<any[]>([]),
-  searchBusy = ref(false),
-  snapshots = ref<any[]>([]),
-  snapshotDiff = ref<any>(null),
-  snapshotBusy = ref(false),
-  localMemory = ref<any>(null),
-  memoryRecovery = ref<any>(null),
-  recoveryBusy = ref(false),
-  portfolio = ref<any>(null),
-  portfolioBusy = ref(false),
-  attention = ref<any>(null),
-  attentionBusy = ref(false),
-  briefing = ref<any>(null),
-  briefingBusy = ref(false),
-  systemHealth = ref<any>(null),
-  systemHealthBusy = ref(false),
-  syncCenter = ref<any>(null),
-  syncConflicts = ref<any>({open:[],resolved:[]}),
-  syncCenterBusy = ref(false),
-  team = ref<any>(null),
-  teamBusy = ref(false),
-  management = ref<any>(null),
-  managementReports = ref<any[]>([]),
-  managementBusy = ref(false),
-  today = ref<any>(null),
-  reviews = ref<any[]>([]),
-  managementReminders = ref<any>(null),
-  reportComparison = ref<any>(null),
-  reportPreview = ref<any>(null),
-  reportBusy = ref(false),
-  analytics = ref<any>(null),
-  analyticsBusy = ref(false),
-  aiWorkspace = ref<any>(null),
-  aiWorkspaceBusy = ref(false),
-  planning = ref<any>(null),
-  planningBusy = ref(false),
-  memoryBusy = ref(false);
-const projectAddOpen=ref(false)
-const projectCandidatePath=ref("")
-const projectCandidateName=ref("")
-const projectPreview=ref<any>(null)
-const memberForm=ref({display_name:"",email:""})
-const externalForm=ref<any>({project:"",provider:"clickup",external_id:"",title:"",status:"",url:"",chapter_uid:"",objective_uid:"",pass_ref:"",assignee_uid:""})
-const clickupTaskSearch=ref("")
-const clickupTaskResults=ref<any[]>([])
-const projectMemberForm=ref({project:"",member_uid:"",role:"contributor"})
-const clickupForm=ref<any>({workspace_id:"",list_id:"",tag_name:"",tag_color:"#247a5a",token:"",enabled:true,status_mapping:{}})
-const clickupResourcesData=ref<any>({workspaces:[],lists:[]})
-const clickupListStatusesData=ref<any[]>([])
-const clickupSync=ref<any>({active:false,percent:0,message:"Ready"})
-const clickupBusy=ref(false)
-const clickupActivity=ref("")
-const clickupMappingOpen=ref(false)
-const planningNeed=ref("")
-const dependencyDraft=ref<Record<string,string>>({})
-const lastAutoRefresh=ref<Date|null>(null)
-const autoRefreshBusy=ref(false)
-const followerState=ref<any>(null)
-const managementDays=ref(90)
-const reportForm=ref<any>({days:7,audience:"self",title:"Weekly solo project review",notes:"",projects:[]})
-const managementSettings=ref<any>({stale_days:3,blocker_days:7,evidence_coverage:80,cost_limit:100,weekly_goals:{},templates:[]})
-const reportBefore=ref("")
-const reportAfter=ref("")
-const templateName=ref("")
-const reviewForm=ref<any>({cadence:"daily",notes:"",followups:"",projects:[]})
-const managementMaxActivity=computed(()=>Math.max(1,...(management.value?.activity||[]).map((row:any)=>row.events)))
-const managementLevel=(row:any)=>row.events===0?0:Math.max(1,Math.ceil(row.events/managementMaxActivity.value*4))
-const clickupLists=computed(()=>clickupResourcesData.value.lists.filter((row:any)=>!clickupForm.value.workspace_id||row.workspace_id===clickupForm.value.workspace_id))
-const clickupStatuses=computed(()=>clickupListStatusesData.value.length?clickupListStatusesData.value:clickupResourcesData.value.lists.find((row:any)=>row.id===clickupForm.value.list_id)?.statuses||[])
-const statusKinds=[['proposed','Proposed'],['approved','Approved'],['published','Published'],['rejected','Rejected'],['superseded','Superseded']]
-function resetClickupMapping(){clickupForm.value.status_mapping={};}
-async function openClickupMapping(){clickupMappingOpen.value=true;if(!clickupResourcesData.value.lists.length)await loadClickupResources();else if(!clickupListStatusesData.value.length)await loadClickupStatuses()}
-const analyticsDays = ref(30),
-  analyticsScope = ref<"project" | "global">("project");
-const shareState = ref("Copy context link");
-const focusedEvidence = ref(""), pendingEvidence = ref("");
-const savedViews = ref<SavedView[]>([]), saveState = ref("Save shortcut");
-const savedViewsKey = "orchestrator:saved-views";
-const allowedViews = new Set(["today", "reports", "team", "search", "management", "briefing", "attention", "health", "sync-center", "projects", "overview", "ai", "planning", "chapters", "evidence", "diagram", "snapshots", "analytics", "memory"]);
-const globalViews = new Set(["today", "reports", "team", "search", "management", "briefing", "attention", "health", "sync-center", "projects"]);
-const isGlobalView = (view: string) => globalViews.has(view);
-const projectSections = [
-  { id: "pilot", label: "Pilot", hint: "State and next action", defaultView: "overview", views: [{ id: "overview", label: "Summary" }, { id: "ai", label: "Next action" }] },
-  { id: "plan", label: "Plan", hint: "Sequence and dependencies", defaultView: "planning", views: [{ id: "planning", label: "Work plan" }, { id: "diagram", label: "Flow diagram" }] },
-  { id: "verify", label: "Verify", hint: "Chapters, passes and proofs", defaultView: "chapters", views: [{ id: "chapters", label: "Chapters" }, { id: "evidence", label: "Passes & evidence" }] },
-  { id: "history", label: "History", hint: "Memory and reporting", defaultView: "memory", views: [{ id: "memory", label: "Memory" }, { id: "snapshots", label: "Snapshots" }, { id: "analytics", label: "Usage & cost" }] },
-] as const;
-let restoringNavigation = true;
-function applyUrlState() {
-  const params = new URLSearchParams(window.location.search), project = params.get("project"), view = params.get("view");
-  if (project && projects.value.some(row => row.slug === project)) selected.value = project;
-  if (view && allowedViews.has(view)) activeView.value = view as typeof activeView.value;
-  selectedChapter.value = params.get("chapter") || "";
-  selectedPass.value = params.get("pass") || "";
-  pendingEvidence.value = params.get("proof") || "";
-  focusedEvidence.value = pendingEvidence.value;
-  if (!pendingEvidence.value) {
-    previewImage.value = null;
-    openPreview.value = "";
+const nav:Array<{id:View;label:string}>=[{id:'home',label:'Aujourd’hui'},{id:'projects',label:'Projets'},{id:'terminal',label:'Sessions'},{id:'usage',label:'Usage IA'},{id:'settings',label:'Accès'}]
+const stages:Array<{id:Stage;index:string;label:string;help:string}>=[
+  {id:'scope',index:'01',label:'Cadrer',help:'But et critères'},
+  {id:'plan',index:'02',label:'Planifier',help:'Ordre de travail'},
+  {id:'execute',index:'03',label:'Exécuter',help:'Sessions IA'},
+  {id:'verify',index:'04',label:'Vérifier',help:'Preuves par objectif'},
+  {id:'decide',index:'05',label:'Décider',help:'Arbitrages humains'},
+  {id:'memory',index:'06',label:'Mémoriser',help:'Contexte durable'}
+]
+const sessionMatchesFilters=(row:Session)=>{const query=sessionSearch.value.trim().toLocaleLowerCase('fr');if(query&&!`${row.title} ${row.project_name||''} ${row.provider}`.toLocaleLowerCase('fr').includes(query))return false;if(sessionProjectFilter.value&&row.project_slug!==sessionProjectFilter.value)return false;const status=sessionWorkflowStatus(row);if(sessionStatusFilter.value==='active'&&!row.active)return false;if(sessionStatusFilter.value==='stopped'&&(row.active||status==='verified'||row.metadata?.report_status==='awaiting_verification'))return false;if(sessionStatusFilter.value==='verification'&&row.metadata?.report_status!=='awaiting_verification')return false;if(sessionStatusFilter.value==='closed'&&status!=='verified')return false;return true}
+const liveSessions=computed(()=>sessions.value.filter(row=>row.active&&sessionMatchesFilters(row))),archivedSessions=computed(()=>sessions.value.filter(row=>!row.active&&sessionMatchesFilters(row))),allLiveSessions=computed(()=>sessions.value.filter(row=>row.active)),selectedProvider=computed(()=>providers.value.find(row=>row.id===provider.value)),selectedPilotProvider=computed(()=>providers.value.find(row=>row.id===pilotDraft.value.provider)),currentProject=computed(()=>projects.value.find(row=>row.slug===selectedProject.value))
+const activeProjects=computed(()=>projects.value.filter(row=>!['archived','closed','inactive'].includes(String(row.status||'').toLowerCase()))),archivedProjects=computed(()=>projects.value.filter(row=>['archived','closed','inactive'].includes(String(row.status||'').toLowerCase())))
+const projectStats=(item:Project)=>{const observed=today.value.projects?.find((row:any)=>row.slug===item.slug),progress=Number(item.progress??observed?.progress??0),current=item.current_pass||observed?.next||null,linked=sessions.value.filter(row=>row.project_slug===item.slug),active=linked.filter(row=>row.active).length;return{progress,current,last:item.last_pass||current,state:item.state_signal||observed?.status_signal||item.status,activity:item.last_activity||observed?.last_activity||null,sessions:Math.max(Number(item.sessions||0),linked.length),activeSessions:Math.max(Number(item.active_sessions||0),active),decisions:Number(item.decisions_waiting??observed?.decisions_waiting??0)}}
+const selectedSpecProvider=computed(()=>providers.value.find(row=>row.id===specProvider.value))
+const projectSessions=computed(()=>sessions.value.filter(row=>row.project_slug===selectedProject.value))
+const pilotRunUid=computed(()=>selectedSession.value?.metadata?.pilot_run_uid||null)
+const pilotRoomSessions=computed(()=>{const run=pilotRunUid.value,room=pilotRoomState.value,rows:Session[]=run?(room&&room.run_uid===run?room.sessions:sessions.value.filter(row=>row.metadata?.pilot_run_uid===run)):[];const logical=new Map<string,Session>();for(const row of rows){const central=!row.metadata?.pilot_parent_session_uid&&row.metadata?.pilot_role==='coordinator',key=central?'pilot-root':row.metadata?.native_session_id||row.uid,previous=logical.get(key),newerRotation=Number(row.metadata?.rotation_index||0)>Number(previous?.metadata?.rotation_index||0);if(!previous||newerRotation||row.active&&!previous.active||row.active===previous.active&&Number(row.metadata?.rotation_index||0)===Number(previous.metadata?.rotation_index||0)&&Date.parse((row as any).updated_at)>Date.parse((previous as any).updated_at))logical.set(key,row)}return[...logical.values()].sort((a,b)=>Number(a.metadata?.pilot_role!=='coordinator')-Number(b.metadata?.pilot_role!=='coordinator')||Date.parse((b as any).updated_at)-Date.parse((a as any).updated_at))})
+const pilotRoomRoot=computed(()=>pilotRoomSessions.value.find(row=>!row.metadata?.pilot_parent_session_uid)||pilotRoomSessions.value.at(-1)||null)
+const pilotRoomWorkers=computed(()=>pilotRoomSessions.value.filter(row=>row.uid!==pilotRoomRoot.value?.uid))
+const pilotRoomMessages=computed(()=>pilotRoomState.value?.messages||[])
+const pilotConversationMessages=computed(()=>{const seen=new Set<string>();return pilotRoomMessages.value.filter((message:any)=>{if(/^Checkpoint automatique du sous-agent/i.test(String(message.content||'')))return false;const key=`${message.sender}:${String(message.content||'').trim().replace(/\s+/g,' ')}`;if(seen.has(key))return false;seen.add(key);return true})})
+const pilotWrittenContent=(value:any)=>String(value||'').match(/<parameter\s+name=["']content["']>([\s\S]*?)<\/parameter>/i)?.[1]?.trim()||''
+const repairPilotEncoding=(value:any)=>{const replacements:Record<string,string>={'√Ä':'À','√Ç':'Â','√á':'Ç','√à':'È','√â':'É','√ä':'Ê','√ã':'Ë','√é':'Î','√è':'Ï','√î':'Ô','√ô':'Ù','√õ':'Û','√ú':'Ü','√†':'à','√¢':'â','√ß':'ç','√®':'è','√©':'é','√™':'ê','√´':'ë','√Æ':'î','√Ø':'ï','√¥':'ô','√∂':'ö','√π':'ù','√ª':'û','√º':'ü','≈ì':'œ','≈í':'Œ','¬´':'«','¬ª':'»','‚Äô':'’','‚Äì':'–','‚Äî':'—'};let result=String(value||'');for(const [broken,fixed] of Object.entries(replacements))result=result.split(broken).join(fixed);return result}
+const cleanPilotReportContent=(value:any)=>{const source=repairPilotEncoding(value),spoken=source.split(/<invoke\b/i)[0].trim(),written=pilotWrittenContent(source);return[spoken,written].filter(Boolean).join('\n\n').replace(/<\/?(?:invoke|parameter)\b[^>]*>/gi,'').replace(/\*\*/g,'').trim()}
+const cleanPilotChatContent=(value:any)=>repairPilotEncoding(value).split(/<invoke\b/i)[0].replace(/<\/?(?:invoke|parameter)\b[^>]*>/gi,'').replace(/^#{1,6}\s+/gm,'').trim()
+const pilotChatSegments=(value:any)=>String(value||'').split(/(\*\*[^*]+\*\*)/g).filter(Boolean).map(text=>text.startsWith('**')&&text.endsWith('**')?{text:text.slice(2,-2),bold:true}:{text,bold:false})
+const visiblePilotChatContent=(message:any)=>{let content=cleanPilotChatContent(message.content);if(message.kind!=='decision')return content;content=content.replace(/\s*Reformule maintenant un checkpoint strict[\s\S]*$/i,'').replace(/\s*Ce choix clôt la demande précédente[\s\S]*$/i,'').replace(/^Décision humaine explicite\s*—\s*Choix confirmé\s*:\s*/i,'Décision — ').replace(/^Décision humaine\s*—\s*Autorisé\.\s*La demande suivante est acceptée\s*:\s*/i,'Décision — Autorisé\n').replace(/^Décision humaine\s*—\s*Refusé\.\s*/i,'Décision — Refusé\n');return content.trim()}
+const pilotDecisionFromMessage=(value:any)=>{const content=cleanPilotReportContent(value),match=content.match(/(?:^|\n)#{0,6}\s*Décision demandée\s*:?\s*(?:\n|$)([\s\S]*?)(?=\n#{0,6}\s*Prochaine action(?: recommandée)?\s*:?\s*(?:\n|$)|$)/i);if(!match)return undefined;const request=match[1].trim();return/^(?:aucune|aucun|non|néant|neant)\b/i.test(request)?null:request}
+const pilotReportBlocks=(value:any)=>{const blocks:any[]=[],lines=cleanPilotReportContent(value).split('\n');let paragraph:string[]=[],list:string[]=[];const flush=()=>{if(paragraph.length){blocks.push({type:'paragraph',text:paragraph.join(' ').trim()});paragraph=[]}if(list.length){blocks.push({type:'list',items:list});list=[]}};for(const raw of lines){const line=raw.trim();if(!line){flush();continue}const heading=line.match(/^#{1,4}\s+(.+)$/),bullet=line.match(/^(?:[-*]|\d+\.)\s+(.+)$/);if(heading){flush();blocks.push({type:'heading',text:heading[1]})}else if(bullet){if(paragraph.length)flush();list.push(bullet[1])}else{if(list.length)flush();paragraph.push(line)}}flush();return blocks}
+const pilotChatMessages=computed(()=>{const rows=pilotRoomMessages.value.filter((message:any)=>message.kind==='pilot_reply'||message.sender==='Vous'||message.sender==='Votre note').map((message:any)=>({...message,role:message.kind==='pilot_reply'?'pilot':'human',content:visiblePilotChatContent(message)})),insight=pilotRootInsight.value;if(insight?.checkpoint&&!rows.some((message:any)=>message.role==='pilot'&&message.content===cleanPilotChatContent(insight.checkpoint)))rows.push({uid:`insight-${insight.session_uid}`,sender:'Pilote central',target:'human',kind:'pilot_reply',role:'pilot',content:cleanPilotChatContent(insight.checkpoint),created_at:insight.updated_at});return rows.filter((message:any)=>message.content).sort((a:any,b:any)=>Date.parse(a.created_at)-Date.parse(b.created_at))})
+const pilotAutonomyMode=computed(()=>pilotRoomState.value?.pilot?.autonomy_mode||'semi')
+const pilotRoomCheckpoints=computed(()=>pilotRoomMessages.value.filter((message:any)=>message.sender!=='Vous'&&message.sender!=='Orchestrator'))
+const pilotRootInsight=computed(()=>[...(pilotRoomState.value?.insights||[])].filter((item:any)=>(item.checkpoint||item.decision_request)&&(!pilotRoomRoot.value||item.session_uid===pilotRoomRoot.value.uid)).sort((a:any,b:any)=>Date.parse(b.updated_at)-Date.parse(a.updated_at))[0]||null)
+const pilotLatestCheckpoint=computed(()=>{const candidates:any[]=[...pilotRoomCheckpoints.value];if(pilotRootInsight.value?.checkpoint)candidates.push({sender:'Pilote central',content:pilotRootInsight.value.checkpoint,created_at:pilotRootInsight.value.updated_at});return candidates.sort((a:any,b:any)=>Date.parse(b.created_at)-Date.parse(a.created_at))[0]||null})
+const pilotDecisionRequest=computed(()=>{const latestReply=[...pilotRoomMessages.value].reverse().find((item:any)=>item.kind==='pilot_reply'),lastHuman=[...pilotRoomMessages.value].reverse().find((item:any)=>item.sender==='Vous');if(latestReply&&(!lastHuman||Date.parse(latestReply.created_at)>Date.parse(lastHuman.created_at))){const request=pilotDecisionFromMessage(latestReply.content);if(request!==undefined)return request?{sender:'Pilote central',content:request,created_at:latestReply.created_at}:null}const insight=pilotRootInsight.value;if(!insight?.decision_request||lastHuman&&Date.parse(lastHuman.created_at)>=Date.parse(insight.updated_at))return null;return{sender:'Pilote central',content:insight.decision_request,created_at:insight.updated_at}})
+const pilotCurrentAssets=computed(()=>{if(selectedSession.value?.metadata?.pilot_role!=='coordinator')return[];const latestReply=[...pilotRoomMessages.value].reverse().find((item:any)=>item.kind==='pilot_reply'),latestCheckpoint=[...pilotRoomMessages.value].reverse().find((item:any)=>item.kind==='agent_checkpoint'),context=repairPilotEncoding([latestReply?.content,latestCheckpoint?.content,pilotDecisionRequest.value?.content].filter(Boolean).join('\n')).toLocaleLowerCase('fr'),matched=sessionAssets.value.filter((item:any)=>{const values=[item.path,item.label,item.name].filter(Boolean).map((value:any)=>String(value).toLocaleLowerCase('fr')),base=values.flatMap((value:string)=>{const name=value.split('/').pop()||value,stem=name.replace(/\.[^.]+$/,'');return[name,stem]}).filter((value:string)=>value.length>=8);return values.some((value:string)=>context.includes(value))||base.some((value:string)=>context.includes(value))});const latestVisual=sessionImageAssets.value.find((item:any)=>item.source==='result')||sessionImageAssets.value[0];if(latestVisual&&!matched.some((item:any)=>item.uid===latestVisual.uid))matched.unshift(latestVisual);return matched.slice(0,6)})
+const pilotCurrentImageAssets=computed(()=>pilotCurrentAssets.value.filter((item:any)=>String(item.mime||'').startsWith('image/')))
+const pilotHistoricalAssets=computed(()=>{const current=new Set(pilotCurrentAssets.value.map((item:any)=>item.uid));return sessionAssets.value.filter((item:any)=>!current.has(item.uid))})
+const pilotDecisionChoices=computed(()=>pilotDecisionRequest.value?(pilotRootInsight.value?.decision_choices||[]):[])
+const pilotAwaitingReply=computed(()=>{if(!pilotRoomRoot.value?.active)return false;const human=[...pilotRoomMessages.value].reverse().find((item:any)=>item.sender==='Vous'||item.sender==='Votre note'),reply=[...pilotRoomMessages.value].reverse().find((item:any)=>item.kind==='pilot_reply');return Boolean(human&&(!reply||Date.parse(human.created_at)>Date.parse(reply.created_at)))})
+const pilotAwaitingAgentReview=computed(()=>{if(!pilotRoomRoot.value?.active)return false;const checkpoint=[...pilotRoomMessages.value].reverse().find((item:any)=>item.kind==='agent_checkpoint'),reply=[...pilotRoomMessages.value].reverse().find((item:any)=>item.kind==='pilot_reply');return Boolean(checkpoint&&(!reply||Date.parse(checkpoint.created_at)>Date.parse(reply.created_at)))})
+const pilotRecommendedAction=computed(()=>{const content=cleanPilotReportContent(pilotLatestCheckpoint.value?.content),match=content.match(/(?:^|\n)#{0,6}\s*Prochaine action[^\n]*\n+([^\n]+)/i);return match?.[1]?.trim()||'Reprendre le pilote afin qu’il reformule la prochaine action avant toute exécution.'})
+const pilotCanContinue=computed(()=>Boolean(!pilotDecisionRequest.value&&!pilotActiveWorkers.value.length&&pilotLatestCheckpoint.value&&!/^Reprendre le pilote afin/i.test(pilotRecommendedAction.value)))
+const pilotLatestReportBlocks=computed(()=>pilotReportBlocks(pilotLatestCheckpoint.value?.content))
+const pilotActiveSessions=computed(()=>pilotRoomSessions.value.filter(item=>item.active))
+const pilotActiveWorkers=computed(()=>pilotActiveSessions.value.filter(item=>item.metadata?.pilot_parent_session_uid))
+const pilotCoordinatorActive=computed(()=>Boolean(pilotRoomRoot.value?.active))
+const pilotRotation=computed(()=>pilotRoomState.value?.context_rotation||{mode:'manual',threshold_tokens:80000,estimated_tokens:0,percent:0,should_rotate:false,rotation_index:0})
+const projectAttention=computed(()=>attention.value.items.filter((row:any)=>row.project?.slug===selectedProject.value))
+const judgments=computed(()=>projectDetail.value?.judgment_requests||[])
+const scopeApproved=computed(()=>Boolean(specification.value?.approved)),documentLabel=computed(()=>currentProject.value?.project_type==='game'?'GDD':language.value==='fr'?'cahier des charges':'requirements')
+const gddChapters=computed(()=>{const rows=specification.value?.content?.chapters||[];return rows.map((chapter:any,index:number)=>({chapter,index})).sort((a:any,b:any)=>(Number(a.chapter.priority)||((a.index+1)*10))-(Number(b.chapter.priority)||((b.index+1)*10))||a.index-b.index).map((row:any)=>row.chapter)}),chapterCounts=computed(()=>gddChapters.value.reduce((counts:any,chapter:any)=>{counts[chapter.status]=(counts[chapter.status]||0)+1;return counts},{closed:0,ambiguous:0,open:0}))
+const activePlanObjectives=computed(()=>planning.value?.plan?.active||planning.value?.plan?.objectives?.filter((row:any)=>['draft','ready','in_progress','blocked'].includes(row.status))||[]),archivedPlanObjectives=computed(()=>planning.value?.plan?.archive||planning.value?.plan?.objectives?.filter((row:any)=>!['draft','ready','in_progress','blocked'].includes(row.status))||[]),planChapters=computed(()=>planning.value?.plan?.chapters||gddChapters.value),pendingPlanProposals=computed(()=>planning.value?.proposals?.filter((row:any)=>row.status==='proposed')||[])
+const workflowDiagramRows=computed(()=>{const objectives=planning.value?.plan?.objectives||[...activePlanObjectives.value,...archivedPlanObjectives.value],proofsByObjective=new Map<string,any[]>();for(const proof of evidence.value){if(!proof.objective_uid)continue;const rows=proofsByObjective.get(proof.objective_uid)||[];rows.push(proof);proofsByObjective.set(proof.objective_uid,rows)}const rank=(objective:any)=>objective.status==='in_progress'?0:objective.status==='blocked'?1:objective.status==='ready'?2:objective.status==='draft'?3:4,decorate=(objective:any)=>{const proofs=proofsByObjective.get(objective.uid)||[],passes=[...new Set(proofs.map((proof:any)=>proof.pass_ref).filter(Boolean))];return{...objective,passes,proof_count:proofs.length,decisions:judgments.value.filter((decision:any)=>decision.objective_uid===objective.uid||decision.objective?.uid===objective.uid)}};const linked=new Set<string>(),rows=planChapters.value.map((chapter:any,index:number)=>{const key=chapter.key||chapter.uid||String(index),chapterObjectives=objectives.filter((objective:any)=>(Boolean(objective.gdd_chapter_key)&&objective.gdd_chapter_key===key)||(Boolean(chapter.uid)&&Boolean(objective.chapter_uid)&&objective.chapter_uid===chapter.uid)).sort((a:any,b:any)=>rank(a)-rank(b)||Number(a.priority)-Number(b.priority)).map((objective:any)=>{linked.add(objective.uid);return decorate(objective)});return{key,title:chapter.title,status:chapter.status||'open',objectives:chapterObjectives}}),unlinked=objectives.filter((objective:any)=>!linked.has(objective.uid)).sort((a:any,b:any)=>rank(a)-rank(b)||Number(a.priority)-Number(b.priority)).map(decorate);if(unlinked.length)rows.push({key:'unlinked',title:'Sans chapitre',status:'open',objectives:unlinked});return rows})
+const workflowGlobalDecisions=computed(()=>specification.value?.content?.decisions||[])
+const executionCandidates=computed(()=>[...activePlanObjectives.value].sort((a:any,b:any)=>{const focus=reconciliation.value?.focus?.objective_uid,rank=(item:any)=>item.uid===focus?-1:item.status==='in_progress'?0:item.status==='ready'&&item.unmet_dependencies===0?1:item.status==='draft'&&item.unmet_dependencies===0?2:item.status==='blocked'?4:3;return rank(a)-rank(b)||Number(a.priority)-Number(b.priority)})),executionTarget=computed(()=>selectedExecutionObjective.value||executionCandidates.value[0]||null)
+const specProposal=computed(()=>specAnalysis.value?.result?.kind==='proposal'?specAnalysis.value.result.proposal:null),specAudit=computed(()=>specAnalysis.value?.result?.kind==='audit'?specAnalysis.value.result.audit:null),specProposalPending=computed(()=>specProposal.value?.changes?.filter((item:any)=>!specProposalDecisions.value[item.id]).length||0)
+const verificationEvidence=computed(()=>{const filter=evidenceObjectiveFilter.value;if(!filter)return evidence.value;if(filter.passRef)return evidence.value.filter(proof=>proof.objective_uid===filter.uid&&proof.pass_ref===filter.passRef);const allowed=new Set(filter.proofUids||[]);return evidence.value.filter(proof=>allowed.has(proof.uid))})
+const proofDetailRelated=computed(()=>{const proof=proofDetail.value;if(!proof)return[];return evidence.value.filter(item=>item.objective_uid===proof.objective_uid&&(!proof.pass_ref||item.pass_ref===proof.pass_ref))})
+const decisionContextObjective=computed(()=>{const uid=evidenceObjectiveFilter.value?.uid;return uid?(planning.value?.plan?.objectives||[]).find((item:any)=>item.uid===uid)||null:null})
+const decisionContextJudgments=computed(()=>{const uid=evidenceObjectiveFilter.value?.uid;if(!uid)return judgments.value;return judgments.value.filter((item:any)=>item.objective_uid===uid||item.objective?.uid===uid)})
+const decisionAttention=computed(()=>projectAttention.value.filter((item:any)=>['judgment','blocker'].includes(item.type)&&(!evidenceObjectiveFilter.value?.uid||item.objective?.uid===evidenceObjectiveFilter.value.uid)))
+const unansweredSpecQuestions=computed(()=>((specification.value?.content?.open_questions||[]) as string[]).map((question,index)=>({question,index,answer:questionAnswers.value[index]||''})).filter(item=>!item.answer.trim()))
+const unresolvedSpecItems=computed(()=>gddChapters.value.filter((chapter:any)=>chapter.status!=='closed'))
+const decisionInboxItems=computed(()=>[...decisionContextJudgments.value,...decisionAttention.value])
+const memoryTimeline=computed(()=>{const filter=evidenceObjectiveFilter.value;if(!filter)return timeline.value;return timeline.value.filter((item:any)=>item.objective_uid===filter.uid&&(!filter.passRef||item.payload?.pass_ref===filter.passRef))})
+const meaningfulMemoryTimeline=computed(()=>memoryTimeline.value.filter((item:any)=>!(/passive repository follower/i.test(`${item.title||''} ${item.summary||''} ${item.payload?.title||''}`)||item.kind==='event.recorded'&&/repository follower/i.test(JSON.stringify(item.payload||{})))))
+const hiddenMemoryEvents=computed(()=>Math.max(0,memoryTimeline.value.length-meaningfulMemoryTimeline.value.length))
+const memoryKnowledge=computed(()=>{if(!evidenceObjectiveFilter.value)return projectKnowledge.value?.rules||[];const sources=new Set(memoryTimeline.value.map((item:any)=>item.uid));return(projectKnowledge.value?.rules||[]).filter((rule:any)=>(rule.source_events||[]).some((source:string)=>sources.has(source)))})
+const memoryClosure=computed(()=>memoryTimeline.value.find((item:any)=>item.kind==='pass.closed')||null)
+const memoryClosed=computed(()=>Boolean(memoryClosure.value))
+const memoryReady=computed(()=>Boolean(!memoryClosed.value&&evidenceObjectiveFilter.value?.passRef&&verificationEvidence.value.length&&verificationEvidence.value.every(item=>item.verification==='verified')))
+const evidenceGroups=computed(()=>{const groups=new Map<string,any>();for(const proof of verificationEvidence.value){const key=proof.objective_uid||proof.objective_title||'project';if(!groups.has(key))groups.set(key,{key,title:proof.objective_title||'Preuves générales du projet',proofs:[],passes:new Set<string>()});const group=groups.get(key);group.proofs.push(proof);if(proof.pass_ref)group.passes.add(proof.pass_ref)}return [...groups.values()].sort((a,b)=>b.proofs.length-a.proofs.length)})
+const imageProofs=computed(()=>verificationEvidence.value.filter(proof=>!proof.previewFailed&&proof.status==='available'&&proof.local_available&&(/^image\//i.test(proof.mime||'')||/\.(png|jpe?g|webp|gif)$/i.test(proof.locator||'')||['render','screenshot','image'].includes(String(proof.type).toLowerCase()))).slice(0,36))
+const unverifiedEvidence=computed(()=>evidence.value.filter(row=>row.status==='available'&&row.verification!=='verified'))
+const stageCounts=computed(()=>({scope:unresolvedSpecItems.value.length+unansweredSpecQuestions.value.length,plan:activePlanObjectives.value.length,execute:projectSessions.value.filter(row=>row.active).length,verify:unverifiedEvidence.value.length,decide:decisionInboxItems.value.length+unansweredSpecQuestions.value.length,memory:projectKnowledge.value?.rules?.length||0}))
+const stageHelp=(id:Stage)=>(language.value==='fr'?{scope:'points à clarifier',plan:'objectifs actifs',execute:'sessions actives',verify:'preuves à contrôler',decide:'décisions attendues',memory:'leçons durables'}:{scope:'items to clarify',plan:'active objectives',execute:'active sessions',verify:'evidence to review',decide:'pending decisions',memory:'durable lessons'})[id]
+const date=(value:string)=>value?new Intl.DateTimeFormat(language.value==='fr'?'fr-FR':'en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}).format(new Date(value)):'—'
+const messageDate=(value:string)=>value?new Intl.DateTimeFormat(language.value==='fr'?'fr-FR':'en-US',{dateStyle:'short',timeStyle:'short'}).format(new Date(value)):tr('Date inconnue')
+const sessionWorkflowStatus=(item:Session)=>item.active?'active':item.metadata?.workflow_status==='closed'||item.metadata?.pass_closed_at?'verified':item.metadata?.report_status==='verified'?'verified':item.status
+const sessionWorkflowLabel=(item:Session)=>item.active?'live':sessionWorkflowStatus(item)==='verified'?(language.value==='fr'?'clôturée':'closed'):['stopped','completed'].includes(item.status)?(language.value==='fr'?'terminé':'finished'):item.status
+const requestActivityLabel=(path:string,options?:RequestInit)=>{if(!['GET',undefined].includes(options?.method?.toUpperCase()))return language.value==='fr'?'Enregistrement en cours…':'Saving…';if(/pilots\/.+\/rooms/.test(path))return language.value==='fr'?'Synchronisation du cockpit…':'Synchronizing cockpit…';if(/^projects\/[^/]+(?:$|\/)/.test(path))return language.value==='fr'?'Chargement du projet…':'Loading project…';if(/^terminal\/sessions\/.+\/(?:assets|transcript)/.test(path))return language.value==='fr'?'Chargement de la session…':'Loading session…';return language.value==='fr'?'Chargement…':'Loading…'}
+const api=async(path:string,options?:RequestInit)=>{apiPending.value++;apiActivityLabel.value=requestActivityLabel(path,options);if(apiActivityTimer===null)apiActivityTimer=window.setTimeout(()=>{apiActivity.value=apiPending.value>0;apiActivityTimer=null},180);try{const headers=new Headers(options?.headers),token=localStorage.getItem('orchestrator-remote-token');if(token)headers.set('authorization',`Bearer ${token}`);const response=await fetch(`/api/${path}`,{...options,headers}),type=response.headers.get('content-type')||'',body=type.includes('json')?await response.json():await response.text();if(response.status===401&&remoteGate.value.remote)remoteGate.value={...remoteGate.value,authenticated:false};if(!response.ok)throw new Error(body.message||`Erreur (${response.status})`);return body}finally{apiPending.value=Math.max(0,apiPending.value-1);if(!apiPending.value){if(apiActivityTimer!==null){window.clearTimeout(apiActivityTimer);apiActivityTimer=null}apiActivity.value=false}}}
+const projectPath=(item:Project)=>String(item.description||'').match(/Repository:\s*(.+)/i)?.[1]||'Aucun dépôt local associé'
+const routePath=()=>{const base=view.value==='home'?'/':view.value==='projects'?'/projects':view.value==='workflow'?`/projects/${encodeURIComponent(selectedProject.value)}/${stage.value}`:view.value==='terminal'?(selectedSession.value?`/sessions/${encodeURIComponent(selectedSession.value.uid)}`:'/sessions'):view.value==='usage'?'/usage':'/access';if(view.value==='workflow'&&stage.value==='scope'&&sourceConversation.value?.source?.id)return`${base}?source=${encodeURIComponent(sourceConversation.value.source.id)}`;if(view.value==='workflow'&&['verify','decide','memory'].includes(stage.value)&&evidenceObjectiveFilter.value?.uid){const params=new URLSearchParams({objective:evidenceObjectiveFilter.value.uid});if(evidenceObjectiveFilter.value.passRef)params.set('pass',evidenceObjectiveFilter.value.passRef);return`${base}?${params}`}return base}
+function syncRoute(mode:'push'|'replace'='push'){const path=routePath();if(`${location.pathname}${location.search}`===path)return;history[mode==='replace'?'replaceState':'pushState']({view:view.value},'',path)}
+async function restoreLocation(replaceInvalid=false){
+  const parts=location.pathname.split('/').filter(Boolean).map(decodeURIComponent),leavingTerminal=view.value==='terminal'&&parts[0]!=='sessions'
+  if(leavingTerminal)disposeTerminal()
+  error.value='';sourceConversation.value=null
+  if(!parts.length){view.value='home';selectedSession.value=null;return}
+  if(parts[0]==='projects'){
+    if(parts.length===1){view.value='projects';selectedSession.value=null;return}
+    const project=projects.value.find(item=>item.slug===parts[1])
+    if(project){const requested=stages.some(item=>item.id===parts[2])?parts[2] as Stage:'scope';selectedProject.value=project.slug;stage.value=requested;view.value='workflow';selectedSession.value=null;await loadWorkspace();if(!scopeApproved.value&&['plan','execute'].includes(requested)){stage.value='scope';error.value=`Validez le ${documentLabel.value} avant d’ouvrir cette étape.`;syncRoute('replace')}else{const params=new URLSearchParams(location.search),sourceId=requested==='scope'?params.get('source'):null,source=specification.value?.content?.sources?.find((item:any)=>item.id===sourceId),objectiveUid=['verify','decide','memory'].includes(requested)?params.get('objective'):null;if(source)await openSourceConversation(source,'none');else if(objectiveUid)applyVerificationFilter(objectiveUid,params.get('pass'));else if(sourceId||!parts[2])syncRoute('replace')}return}
   }
+  if(parts[0]==='sessions'){view.value='terminal';const session=parts[1]?sessions.value.find(item=>item.uid===parts[1]):null;if(session)await mountTerminal(session,undefined,'none');else{selectedSession.value=null;if(parts[1])syncRoute('replace')}return}
+  if(parts[0]==='usage'){view.value='usage';selectedSession.value=null;await loadAiUsage();return}
+  if(parts[0]==='access'){view.value='settings';selectedSession.value=null;await Promise.all([loadTokens(),loadRemoteAccess(),loadCloudSync()]);return}
+  view.value='home';selectedSession.value=null;if(replaceInvalid||location.pathname!=='/')syncRoute('replace')
 }
-function urlForContext() {
-  const params = new URLSearchParams();
-  if (selected.value) params.set("project", selected.value);
-  params.set("view", activeView.value);
-  if (selectedChapter.value) params.set("chapter", selectedChapter.value);
-  if (selectedPass.value) params.set("pass", selectedPass.value);
-  const proof = previewImage.value?.uid || openPreview.value || focusedEvidence.value;
-  if (proof) params.set("proof", proof);
-  return `${window.location.pathname}?${params.toString()}`;
+
+async function bootstrap(){const [p,projectRows,s]=await Promise.all([api('terminal/providers'),api('projects'),api('terminal/sessions')]);providers.value=p.providers;projects.value=projectRows;sessions.value=s.sessions;selectedProject.value=projects.value[0]?.slug||'';provider.value=providers.value.find(row=>row.available)?.id||'codex';launchOptions.value.effort=providers.value.find(row=>row.id===provider.value)?.default_effort||'';specProvider.value=provider.value==='claude'?'claude':'codex';specEffort.value=providers.value.find(row=>row.id===specProvider.value)?.default_effort||'medium';pilotDraft.value.provider=provider.value;pilotDraft.value.effort=providers.value.find(row=>row.id===provider.value)?.default_effort||'';void Promise.all([api('management/today'),api('attention')]).then(([day,alerts])=>{today.value=day;attention.value=alerts;if(!selectedProject.value)selectedProject.value=day.projects?.[0]?.slug||''}).catch(()=>{});void loadRemoteAccess();await restoreLocation(true);sessionStateReady=true;if(sessionNotificationsInterval===null)sessionNotificationsInterval=window.setInterval(()=>void pollSessionNotifications(),8000)}
+async function openView(next:View,{preserveObjective=false}={}){if(view.value==='terminal'&&next!=='terminal')disposeTerminal();if(next==='terminal'&&!preserveObjective)pendingSessionObjective.value=null;sourceConversation.value=null;gddAssistantTarget.value=null;view.value=next;if(next!=='terminal')selectedSession.value=null;error.value='';syncRoute();if(next==='settings')await Promise.all([loadTokens(),loadRemoteAccess(),loadCloudSync()]);if(next==='terminal')await loadRemoteAccess();if(next==='usage')await loadAiUsage()}
+async function openProject(slug:string,next:Stage='scope'){sourceConversation.value=null;gddAssistantTarget.value=null;selectedProject.value=slug;stage.value=next;view.value='workflow';selectedSession.value=null;syncRoute();await loadWorkspace()}
+function applyVerificationFilter(objectiveUid:string,passRef:string|null=null,title=''){const proofs=evidence.value.filter((proof:any)=>proof.objective_uid===objectiveUid&&(!passRef||proof.pass_ref===passRef)),objective=(planning.value?.plan?.objectives||[]).find((item:any)=>item.uid===objectiveUid);evidenceObjectiveFilter.value={uid:objectiveUid,title:title||objective?.title||proofs[0]?.objective_title||'Preuves de la passe',passRef:passRef||null,proofUids:proofs.map((proof:any)=>proof.uid)}}
+function clearVerificationFilter(){evidenceObjectiveFilter.value=null;syncRoute('replace')}
+function openDiagramPass(objective:any,passRef:string|null=null,next:'verify'|'decide'='verify'){applyVerificationFilter(objective.uid,passRef,objective.title);void selectStage(next,true)}
+async function openSessionVerification(session:Session){if(!session.project_slug||!session.metadata?.objective_uid)return;const objectiveUid=session.metadata.objective_uid,passRef=session.metadata.pass_uid||null,title=session.metadata.objective_title||session.title;disposeTerminal();selectedProject.value=session.project_slug;evidenceObjectiveFilter.value={uid:objectiveUid,title,passRef,proofUids:[]};stage.value='verify';view.value='workflow';selectedSession.value=null;syncRoute();await loadWorkspace({preserveEvidenceFilter:true});applyVerificationFilter(objectiveUid,passRef,title);syncRoute('replace')}
+async function openSessionProjectStage(next:Stage){const session=selectedSession.value,slug=session?.project_slug;if(!session||!slug)return;if(next==='verify'&&session.metadata?.objective_uid){await openSessionVerification(session);return}disposeTerminal();await openProject(slug,next)}
+async function changeProject(){sourceConversation.value=null;gddAssistantTarget.value=null;syncRoute();await loadWorkspace()}
+function selectReconciledFocus(){const uid=reconciliation.value?.focus?.objective_uid,item=(planning.value?.plan?.active||[]).find((row:any)=>row.uid===uid);if(item)selectedExecutionObjective.value=item}
+async function loadWorkspace({preserveEvidenceFilter=false}:{preserveEvidenceFilter?:boolean}={}){
+  if(!selectedProject.value)return
+  const slug=selectedProject.value,freshProject=workspaceSlug.value!==slug
+  loading.value=true
+  if(freshProject)workspaceHydrated.value=false
+  error.value='';specEditing.value=false;planEditing.value=false;objectiveDetail.value=null
+  if(!preserveEvidenceFilter)evidenceObjectiveFilter.value=null
+  reconciliation.value={sessions:[],suggestions:[],history:[],summary:{}}
+  reconciliationLoading.value=true
+  void api(`projects/${slug}/reconciliation`).then(value=>{if(selectedProject.value===slug){reconciliation.value=value;selectReconciledFocus()}}).catch(()=>{}).finally(()=>{if(selectedProject.value===slug)reconciliationLoading.value=false})
+  try{
+    const [detail,spec,profile,plan,proofs,events,knowledge,pilotRows,latestAnalysis]=await Promise.all([api(`projects/${slug}`),api(`projects/${slug}/specification`),api(`projects/${slug}/profile`),api(`projects/${slug}/planning`),api(`projects/${slug}/evidence`),api(`projects/${slug}/timeline`),api(`projects/${slug}/knowledge`),api(`projects/${slug}/pilots`),api(`projects/${slug}/specification/analysis`)])
+    if(selectedProject.value!==slug)return
+    projectDetail.value=detail;specification.value=spec;specAnalysis.value=latestAnalysis
+    specProposalDecisions.value={...(latestAnalysis?.result?.proposal?.decisions||{})}
+    questionAnswers.value=Object.fromEntries((spec.content?.open_questions||[]).map((question:string,index:number)=>[index,spec.content?.question_answers?.find((item:any)=>item.question===question)?.answer||'']))
+    validationProfile.value={...profile,criteria:(profile.criteria||[]).map(validationRuleLabel)}
+    planning.value=plan
+    proposalPlacement.value=Object.fromEntries((plan.proposals||[]).filter((item:any)=>item.status==='proposed').map((item:any)=>[item.uid,{chapter_key:item.gdd_chapter_key||'',before_uid:''}]))
+    evidence.value=proofs;timeline.value=events;projectKnowledge.value=knowledge;pilots.value=pilotRows
+    if(freshProject)launchOptions.value.permission_profile=pilotRows.permission_policy?.default_profile||'workspace_guarded'
+    selectReconciledFocus()
+    selectedExecutionObjective.value=executionCandidates.value[0]||null
+    workspaceSlug.value=slug;workspaceHydrated.value=true
+  }catch(value){error.value=value instanceof Error?value.message:String(value)}finally{loading.value=false}
 }
-let urlTimer: number;
-function syncContextUrl() {
-  if (restoringNavigation) return;
-  clearTimeout(urlTimer);
-  urlTimer = window.setTimeout(() => {
-    const next = urlForContext();
-    if (`${window.location.pathname}${window.location.search}` !== next) window.history.pushState(null, "", next);
-  }, 0);
+async function selectStage(next:Stage,preserveEvidenceFilter=false){if(!scopeApproved.value&&['plan','execute'].includes(next)){error.value=`Validez le ${documentLabel.value} avant de ${next==='plan'?'planifier':'lancer une exécution'}.`;return}const contextualStages=['verify','decide','memory'],continuingReview=contextualStages.includes(stage.value)&&contextualStages.includes(next);if(next==='verify'&&!preserveEvidenceFilter&&!continuingReview)evidenceObjectiveFilter.value=null;if(['decide','memory'].includes(next)&&!preserveEvidenceFilter&&!contextualStages.includes(stage.value))evidenceObjectiveFilter.value=null;error.value='';sourceConversation.value=null;gddAssistantTarget.value=null;stage.value=next;syncRoute()}
+function openDecisionEvidence(){void selectStage('verify',true)}
+function clearMemoryFilter(){evidenceObjectiveFilter.value=null;syncRoute('replace')}
+async function closeMemoryPass(withLesson=false){const filter=evidenceObjectiveFilter.value;if(!filter?.passRef||memoryCloseBusy.value)return;if(withLesson&&(!memoryLesson.value.title.trim()||!memoryLesson.value.recommendation.trim())){error.value='Donnez un titre et une recommandation à la leçon.';return}memoryCloseBusy.value=true;error.value='';try{const result=await api(`projects/${selectedProject.value}/passes/${encodeURIComponent(filter.passRef)}/close`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({objective_uid:filter.uid,lesson:withLesson?memoryLesson.value:null})});planning.value={...planning.value,plan:result.plan};selectedExecutionObjective.value=result.next_objective||null;evidenceObjectiveFilter.value=null;memoryLessonOpen.value=false;stage.value='plan';syncRoute()}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{memoryCloseBusy.value=false}}
+function returnToPlan(){evidenceObjectiveFilter.value=null;memoryLessonOpen.value=false;stage.value='plan';syncRoute()}
+function validationRuleLabel(value:string){if(language.value==='en')return value;return ({'Gameplay acceptance criteria pass.':'Les critères fonctionnels et de jouabilité définis pour le projet sont satisfaits.','PlayMode or standalone evidence is recorded.':'Une preuve d’exécution PlayMode ou standalone est enregistrée.','Visual judgment is explicit when requested.':'Tout jugement visuel demandé reçoit une décision explicite.','Performance budgets show no regression.':'Les mesures ne montrent aucune régression de performance.','Requirements are linked to objectives.':'Chaque exigence est reliée à un objectif traçable.','Automated tests pass.':'Les tests automatisés définis pour le projet passent.','Reviewable evidence is recorded.':'Les preuves nécessaires à la revue sont enregistrées.','No unresolved critical blocker remains.':'Aucun blocage critique ne reste ouvert.'} as Record<string,string>)[value]||value}
+function analysisStatusLabel(value:string){return (language.value==='fr'?{closed:'Clos',ambiguous:'Ambigu',open:'À décider'}:{closed:'Closed',ambiguous:'Ambiguous',open:'To decide'} as Record<string,string>)[value]||value}
+function objectiveStatusLabel(value:string){return (language.value==='fr'?{draft:'Brouillon',ready:'Prêt à lancer',in_progress:'En cours',blocked:'Bloqué',proven:'Validé',abandoned:'Abandonné'}:{draft:'Draft',ready:'Ready',in_progress:'In progress',blocked:'Blocked',proven:'Validated',abandoned:'Abandoned'} as Record<string,string>)[value]||value}
+function pilotRoleLabel(value:string){return (language.value==='fr'?{coordinator:'Coordination',advisor:'Conseil',reviewer:'Revue',executor:'Exécution'}:{coordinator:'Coordinator',advisor:'Advisor',reviewer:'Reviewer',executor:'Executor'} as Record<string,string>)[value]||value}
+function pilotAutonomyLabel(value:string){return (language.value==='fr'?{manual:'Manuel',semi:'Semi-automatique',auto:'Automatique'}:{manual:'Manual',semi:'Semi-automatic',auto:'Automatic'} as Record<string,string>)[value]||value}
+function permissionProfileText(profile:any){if(language.value==='fr')return`${profile.label} · ${profile.description||''}`.replace(/ · $/,'');const labels:{[key:string]:[string,string]}={read_only:['Read only','Analysis without changing the project.'],workspace_guarded:['Protected project','Write access inside the project with confirmations.'],workspace_autonomous:['Autonomous project','Write access inside the project without routine confirmations.'],full_access:['Full machine','Unsandboxed access, available only on the host computer.']},translated=labels[profile.id];return translated?`${translated[0]} · ${translated[1]}`:`${profile.label} · ${profile.description||''}`.replace(/ · $/,'')}
+function hasQuestionAnswer(question:string){return Boolean(specification.value?.content?.question_answers?.some((item:any)=>item.question===question))}
+function sourceById(id:string){return specification.value?.content?.sources?.find((item:any)=>item.id===id)}
+function proposalKindLabel(value:string){return (language.value==='fr'?{added:'Ajout',modified:'Modification',removed:'Suppression'}:{added:'Addition',modified:'Change',removed:'Removal'} as Record<string,string>)[value]||value}
+function proposalTitle(item:any){const raw=String(item?.title||item?.body||'Nouvel objectif').replace(/^(chapter|corrective|project_state)\s*[·:—-]*\s*/i,'').replace(/^(continue|reprends?|correct rejected result)\s*[:—-]\s*/i,'').trim();return raw.length>110?`${raw.slice(0,107)}…`:raw}
+function proposalSummary(item:any){const raw=String(item?.rationale||item?.body||'').replace(/\s+/g,' ').trim();return raw.length>260?`${raw.slice(0,257)}…`:raw}
+function chooseSpecProvider(id:string){if(id!=='codex'&&id!=='claude')return;specProvider.value=id;specModel.value='';specEffort.value=providers.value.find(item=>item.id===id)?.default_effort||'medium'}
+function chooseGddAssistantProvider(id:string){if(id==='codex'||id==='claude')gddAssistantProvider.value=id}
+function choosePilotProvider(id:string){pilotDraft.value.provider=id;pilotDraft.value.model='';pilotDraft.value.effort=providers.value.find(item=>item.id===id)?.default_effort||''}
+function chooseLaunchProvider(id:string){provider.value=id;launchOptions.value.model='';launchOptions.value.effort=providers.value.find(item=>item.id===id)?.default_effort||''}
+async function loadLaunchPermissionPolicy(){if(!selectedProject.value)return;try{const policy=await api(`projects/${selectedProject.value}/permission-policy`);launchOptions.value.permission_profile=policy.default_profile||'workspace_guarded'}catch{launchOptions.value.permission_profile='workspace_guarded'}}
+function proposalPreview(value:any){if(value==null)return'—';if(typeof value==='string')return value;if(Array.isArray(value))return value.map(item=>typeof item==='string'?`• ${item}`:`• ${item.title||item.question||item.summary||JSON.stringify(item)}`).join('\n')||'—';if(value.title||value.summary)return[value.title,value.summary,value.status?`État : ${analysisStatusLabel(value.status)}`:''].filter(Boolean).join('\n');return JSON.stringify(value,null,2)}
+function isImageProof(item:any){return /^image\//i.test(item?.mime||'')||/\.(png|jpe?g|webp|gif)$/i.test(item?.locator||'')||['render','screenshot','image'].includes(String(item?.type||'').toLowerCase())}
+function isPreviewableProof(item:any){return isImageProof(item)||/\.(txt|md|json|csv|log)$/i.test(item?.locator||'')||/^(text\/|application\/json)/i.test(item?.mime||'')}
+function fileSize(value:number|null){if(value==null)return'—';if(value<1024)return`${value} o`;if(value<1048576)return`${(value/1024).toFixed(1)} Ko`;return`${(value/1048576).toFixed(1)} Mo`}
+async function openObjectiveDetail(item:any){objectiveDetail.value={objective:item,summary:{},evidence:[],events:[],dependencies:[],dependents:[],blockers:[],verdicts:[],decisions:[],judgments:[],proposals:[],children:[]};objectiveDetailLoading.value=true;error.value='';try{objectiveDetail.value=await api(`projects/${selectedProject.value}/planning/objectives/${item.uid}`)}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{objectiveDetailLoading.value=false}}
+async function openObjectiveVerification(){const detail=objectiveDetail.value;if(!detail?.objective)return;evidenceObjectiveFilter.value={uid:detail.objective.uid,title:detail.objective.title,proofUids:(detail.evidence||[]).map((proof:any)=>proof.uid)};objectiveDetail.value=null;await selectStage('verify',true)}
+async function persistProposalDecisions(decisions:Record<string,'accepted'|'rejected'>){const proposal=specProposal.value;if(!proposal)return;try{const result=await api(`projects/${selectedProject.value}/specification/analysis/${proposal.uid}/review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({decisions,finalize:false})});specAnalysis.value=result.job}catch(value){error.value=value instanceof Error?value.message:String(value)}}
+async function decideProposal(changeId:string,decision:'accepted'|'rejected'){specProposalDecisions.value={...specProposalDecisions.value,[changeId]:decision};await persistProposalDecisions({[changeId]:decision})}
+async function decideAllProposals(decision:'accepted'|'rejected'){const changes=specAnalysis.value?.result?.proposal?.changes||[],decisions=Object.fromEntries(changes.map((item:any)=>[item.id,decision]));specProposalDecisions.value=decisions;await persistProposalDecisions(decisions)}
+async function finalizeSpecificationProposal(){const proposal=specAnalysis.value?.result?.proposal;if(!proposal)return;specReviewBusy.value=true;error.value='';try{const result=await api(`projects/${selectedProject.value}/specification/analysis/${proposal.uid}/review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({decisions:specProposalDecisions.value,finalize:true})});specAnalysis.value=result.job;specification.value=result.specification;await loadWorkspace()}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{specReviewBusy.value=false}}
+function openGddAssistant(target:any,mode:'advice'|'discussion'='discussion'){gddAssistantTarget.value=target;gddAssistantProvider.value=specProvider.value;gddAssistantPrompt.value=mode==='advice'?`Analyse ce point du ${documentLabel.value}, confronte-le aux sources citées et recommande une décision argumentée. Signale clairement ce qui manque pour le considérer comme clos.`:`Aide-moi à clarifier ce point du ${documentLabel.value}. Commence par reformuler l’ambiguïté puis pose les questions utiles avant de recommander une décision.`;requestAnimationFrame(()=>document.querySelector('.gdd-consultation')?.scrollIntoView({behavior:'smooth',block:'center'}))}
+async function startGddDiscussion(){if(!gddAssistantTarget.value||!gddAssistantPrompt.value.trim())return;gddAssistantBusy.value=true;error.value='';try{const target=gddAssistantTarget.value,sourceContext=(target.sourceIds||[]).map((id:string)=>sourceById(id)).filter(Boolean).map((source:any)=>`${source.id} · ${source.provider} · ${source.role}\n${source.excerpt}`).join('\n\n'),prompt=[`Tu interviens comme conseiller ${documentLabel.value} dans Orchestrator.`,`Projet : ${currentProject.value?.name}. Révision : ${specification.value?.revision}.`,`Sujet : ${target.title}.`,target.detail?`Contexte : ${target.detail}`:'',sourceContext?`Extraits des sources citées :\n${sourceContext}`:'',`Demande humaine : ${gddAssistantPrompt.value.trim()}`,'Reste en lecture seule. Appuie tes conclusions sur les sources fournies, distingue faits, ambiguïtés et recommandations, puis poursuis la discussion avec moi.'].filter(Boolean).join('\n\n'),created=await api('terminal/sessions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider:gddAssistantProvider.value,project:selectedProject.value,title:`${documentLabel.value} · ${target.title}`.slice(0,150),options:{resume_mode:'new',model:'',prompt,...(gddAssistantProvider.value==='codex'?{sandbox:'read-only',approval_policy:'never'}:{permission_mode:'dontAsk',effort:'high'})},cols:120,rows:34})});await refreshSessions();gddAssistantTarget.value=null;await mountTerminal(created,created.attach_token)}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{gddAssistantBusy.value=false}}
+async function saveQuestionAnswer(question:string,index:string|number){const answer=String(questionAnswers.value[String(index)]||'').trim();if(!answer)return;questionSaving.value=index;error.value='';try{const existing=(specification.value.content.question_answers||[]).filter((item:any)=>item.question!==question),content={...specification.value.content,question_answers:[...existing,{question,answer,answered_at:new Date().toISOString(),answered_by:'Dashboard reviewer'}],status:'draft',approved_at:null,approved_by:null};specification.value=await api(`projects/${selectedProject.value}/specification`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({title:specification.value.title,content})})}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{questionSaving.value=null}}
+async function openSourceConversation(source:any,mode:'push'|'none'='push'){sourceConversationLoading.value=true;error.value='';try{sourceConversation.value={source,messages:[]};if(mode==='push')syncRoute();sourceConversation.value=await api(`projects/${selectedProject.value}/specification/sources/${encodeURIComponent(source.id)}`)}catch(value){sourceConversation.value=null;error.value=value instanceof Error?value.message:String(value);if(mode==='push')syncRoute('replace')}finally{sourceConversationLoading.value=false}}
+function closeSourceConversation(){sourceConversation.value=null;syncRoute('replace')}
+function editSpecification(){const saved=Boolean(specification.value?.uid),content=specification.value?.content||{};specDraft.value={title:specification.value?.title||`Cahier des charges - ${currentProject.value?.name||''}`,summary:saved?content.summary||'':'',audience:saved?content.audience||'':'Équipe projet et parties prenantes',context:saved?content.context||'':'',scope:saved?(content.scope||[]).join('\n'):'',non_goals:saved?(content.non_goals||[]).join('\n'):'',deliverables:saved?(content.deliverables||[]).join('\n'):'',acceptance_criteria:saved?(content.acceptance_criteria||[]).join('\n'):(validationProfile.value.criteria||[]).join('\n')};specEditing.value=true}
+const lines=(value:any)=>String(value||'').split(/\r?\n/).map(row=>row.trim()).filter(Boolean)
+async function saveSpecification(){specSaving.value=true;error.value='';try{const existing=specification.value?.content||{},content={summary:specDraft.value.summary,audience:specDraft.value.audience,context:specDraft.value.context,scope:lines(specDraft.value.scope),non_goals:lines(specDraft.value.non_goals),functional_requirements:lines(specDraft.value.scope),quality_requirements:validationProfile.value.criteria||[],deliverables:lines(specDraft.value.deliverables),acceptance_criteria:lines(specDraft.value.acceptance_criteria),constraints:existing.constraints||[],risks:existing.risks||[],knowledge_rules:existing.knowledge_rules||[],chapters:existing.chapters||[],decisions:existing.decisions||[],open_questions:existing.open_questions||[],question_answers:existing.question_answers||[],sources:existing.sources||[],analysis_provider:existing.analysis_provider||null,analysis_model:existing.analysis_model||null};specification.value=await api(`projects/${selectedProject.value}/specification`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({title:specDraft.value.title,content})});specEditing.value=false}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{specSaving.value=false}}
+function openChapterManager(){chapterDraft.value=gddChapters.value.map((chapter:any,index:number)=>({...JSON.parse(JSON.stringify(chapter)),priority:Number(chapter.priority)||((index+1)*10)}));newChapter.value={title:'',summary:'',status:'open',priority:(Math.max(0,...chapterDraft.value.map(chapter=>Number(chapter.priority)||0))+10)};chapterManagerOpen.value=true}
+function addManualChapter(){const title=String(newChapter.value.title||'').trim();if(!title)return;chapterDraft.value.push({key:`manual-${Date.now().toString(36)}`,title,summary:String(newChapter.value.summary||'').trim(),status:newChapter.value.status||'open',priority:Math.max(1,Number(newChapter.value.priority)||((chapterDraft.value.length+1)*10)),source_ids:[],items:[]});chapterDraft.value.sort((a,b)=>Number(a.priority)-Number(b.priority));newChapter.value={title:'',summary:'',status:'open',priority:Math.max(0,...chapterDraft.value.map(chapter=>Number(chapter.priority)||0))+10}}
+function moveChapter(index:number,direction:number){const target=index+direction;if(target<0||target>=chapterDraft.value.length)return;const rows=[...chapterDraft.value],[row]=rows.splice(index,1);rows.splice(target,0,row);chapterDraft.value=rows.map((chapter,position)=>({...chapter,priority:(position+1)*10}))}
+async function saveChapters(){chapterSaving.value=true;error.value='';try{const chapters=[...chapterDraft.value].sort((a,b)=>Number(a.priority)-Number(b.priority));specification.value=await api(`projects/${selectedProject.value}/specification`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({title:specification.value.title,content:{...(specification.value.content||{}),chapters,status:'draft'}})});chapterManagerOpen.value=false}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{chapterSaving.value=false}}
+const wait=(milliseconds:number)=>new Promise(resolve=>setTimeout(resolve,milliseconds))
+async function generateSpecification(){specGenerating.value=true;specAnalysis.value=null;specProposalDecisions.value={};error.value='';try{let job=await api(`projects/${selectedProject.value}/specification/analyze`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider:specProvider.value,model:specModel.value||null,effort:specEffort.value||null,mode:specification.value?.uid?specAnalysisMode.value:'proposal',limit:500})});specAnalysis.value=job;for(let attempt=0;attempt<400&&job.status==='running';attempt++){await wait(1500);job=await api(`projects/${selectedProject.value}/specification/analysis/${job.uid}`);specAnalysis.value=job}if(job.status==='completed'){if(job.result?.kind==='proposal')specProposalDecisions.value={};else if(job.result?.kind!=='audit')specification.value=job.result}else throw new Error(job.error||'L’analyse IA du GDD n’a pas abouti.')}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{specGenerating.value=false}}
+async function approveCurrentSpecification(){specApproving.value=true;error.value='';try{specification.value=await api(`projects/${selectedProject.value}/specification/approve`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({reviewer:'Dashboard reviewer'})})}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{specApproving.value=false}}
+async function createProjectPilot(){pilotBusy.value=true;error.value='';try{await api(`projects/${selectedProject.value}/pilots`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(pilotDraft.value)});pilots.value=await api(`projects/${selectedProject.value}/pilots`);const fallback=providers.value.find(item=>item.available)||providers.value[0];pilotDraft.value={name:'',role:'coordinator',default_agent_role:'researcher',autonomy_mode:'semi',rotation_mode:'manual',rotation_threshold_tokens:80000,provider:fallback?.id||'codex',model:'',effort:fallback?.default_effort||'',permission_profile:'read_only',worker_permission_profile:'read_only',mission:'',scope:'',instructions:'',stop_conditions:''};pilotCreatorOpen.value=false}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{pilotBusy.value=false}}
+async function saveProjectPermissionDefault(){if(!selectedProject.value)return;try{pilots.value.permission_policy=await api(`projects/${selectedProject.value}/permission-policy`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({default_profile:pilots.value.permission_policy?.default_profile})});launchOptions.value.permission_profile=pilots.value.permission_policy.default_profile}catch(value){error.value=value instanceof Error?value.message:String(value)}}
+async function launchProjectPilot(item:any,request=pilotRequest.value,context:any={}){pilotBusy.value=true;error.value='';try{const result=await api(`projects/${selectedProject.value}/pilots/${item.uid}/launch`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({request,...context})});pilotRequest.value='';pilots.value=await api(`projects/${selectedProject.value}/pilots`);await refreshSessions();await mountTerminal(result.agent||result.session,(result.agent||result.session).attach_token)}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{pilotBusy.value=false}}
+function executionPrompt(item:any){return[`Tu prends en charge la prochaine passe approuvée du plan Orchestrator.`,`Objectif : ${item.title}`,`UID : ${item.uid}`,item.gdd_chapter_title?`Chapitre GDD : ${item.gdd_chapter_title}`:'',item.intent?`Intention : ${item.intent}`:'',item.success_criteria?`Critères de réussite : ${item.success_criteria}`:'',`État enregistré : ${item.status}. Priorité : ${item.priority}. Preuves existantes : ${item.evidence_count||0}.`,item.unmet_dependencies?`Attention : ${item.unmet_dependencies} dépendance(s) ne sont pas encore prouvées.`:'Toutes les dépendances enregistrées sont satisfaites.','Commence par vérifier l’état réel du dépôt et les preuves existantes. Reste dans ce périmètre, produis les preuves demandées et rends un checkpoint clair avant toute décision matérielle.'].filter(Boolean).join('\n\n')}
+async function prepareObjectiveSession(item:any){selectedExecutionObjective.value=item;pendingSessionObjective.value=item;sessionTitle.value=`Passe · ${item.title}`.slice(0,150);const directives=String(executionDirectives.value[item.uid]||'').trim();launchOptions.value.prompt=[executionPrompt(item),directives?`Directives humaines pour cette session :\n${directives}`:''].filter(Boolean).join('\n\n');await openView('terminal',{preserveObjective:true})}
+async function prepareCorrectiveSession(){const detail=objectiveDetail.value,item=detail?.objective;if(!item)return;const openBlockers=(detail.blockers||[]).filter((row:any)=>row.status==='open'),latestFailure=(detail.verdicts||[]).find((row:any)=>row.verdict==='fail');selectedExecutionObjective.value=item;pendingSessionObjective.value=item;sessionTitle.value=`Correction · ${item.title}`.slice(0,150);launchOptions.value.prompt=[`Tu prends en charge une correction bornée pour débloquer cet objectif Orchestrator.`,`Objectif : ${item.title}`,`UID : ${item.uid}`,item.intent?`Résultat attendu : ${item.intent}`:'',item.success_criteria?`Critères de réussite : ${item.success_criteria}`:'',openBlockers.length?`Blocages ouverts :\n${openBlockers.map((row:any)=>`- ${row.title}: ${row.detail||'sans détail'}`).join('\n')}`:'',latestFailure?`Dernier verdict en échec : ${latestFailure.rationale||'sans justification détaillée'}`:'',`Commence par examiner uniquement les preuves liées à cet objectif. Corrige la cause du blocage sans élargir le périmètre, puis produis une nouvelle preuve vérifiable. Ne marque rien comme réussi sans verdict explicite.`].filter(Boolean).join('\n\n');objectiveDetail.value=null;await openView('terminal',{preserveObjective:true})}
+function prepareExecutionPilot(item:any=executionTarget.value){if(!item)return;selectedExecutionObjective.value=item;const fallback=providers.value.find(provider=>provider.available)||providers.value[0];pilotDraft.value={name:`Pilote · ${item.title}`.slice(0,120),role:'coordinator',default_agent_role:'executor',autonomy_mode:'semi',rotation_mode:'manual',rotation_threshold_tokens:80000,provider:fallback?.id||'codex',model:'',effort:fallback?.default_effort||'',permission_profile:'read_only',worker_permission_profile:pilots.value?.permission_policy?.default_profile||'workspace_guarded',mission:`Piloter la réalisation et la validation de l’objectif « ${item.title} » sans étendre son périmètre.`,scope:[`Objectif ${item.uid}`,item.gdd_chapter_title?`Chapitre GDD : ${item.gdd_chapter_title}`:'',item.intent].filter(Boolean).join('\n'),instructions:'Vérifier le dépôt avant action, conserver les acquis, suivre les critères du GDD et rattacher chaque résultat à une preuve consultable dans Orchestrator.',stop_conditions:item.success_criteria||'Arrêter à la première décision humaine, dépendance non satisfaite ou preuve contradictoire.'};pilotCreatorOpen.value=true;requestAnimationFrame(()=>document.querySelector('.execution-pilot-create')?.scrollIntoView({behavior:'smooth',block:'center'}))}
+async function launchPilotForObjective(pilot:any,item:any=executionTarget.value){if(!item)return;selectedExecutionObjective.value=item;await launchProjectPilot(pilot,executionPrompt(item),{objective_uid:item.uid,gdd_chapter_key:item.gdd_chapter_key||null})}
+function ensurePilotRoomPolling(){if(pilotRoomInterval!==null)return;pilotRoomInterval=window.setInterval(()=>{if(view.value==='terminal'&&pilotRunUid.value&&!pilotTechnicalOpen.value)void loadPilotRoom()},2000)}
+function scrollPilotChat(){nextTick(()=>{if(pilotChatHost.value)pilotChatHost.value.scrollTop=pilotChatHost.value.scrollHeight})}
+function pilotChatNearBottom(){const host=pilotChatHost.value;return!host||host.scrollHeight-host.scrollTop-host.clientHeight<80}
+async function loadPilotRoom(){const session=selectedSession.value,run=session?.metadata?.pilot_run_uid,pilot=session?.metadata?.pilot_uid;if(!session||!run||!pilot){pilotRoomState.value=null;return}const previous=pilotChatMessages.value.length,follow=pilotChatNearBottom();try{pilotRoomState.value=await api(`projects/${session.project_slug}/pilots/${pilot}/rooms/${run}`);ensurePilotRoomPolling();if(follow&&pilotChatMessages.value.length!==previous)scrollPilotChat()}catch{pilotRoomState.value=null}}
+async function createPilotAgent(){const session=selectedSession.value,run=session?.metadata?.pilot_run_uid,pilot=session?.metadata?.pilot_uid;if(!session||!run||!pilot||!pilotAgentDraft.value.mission.trim())return;pilotAgentBusy.value=true;pilotRoomNotice.value='';error.value='';try{const created=await api(`projects/${session.project_slug}/pilots/${pilot}/rooms/${run}/agents`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(pilotAgentDraft.value)});await refreshSessions();await loadPilotRoom();pilotAgentDraft.value={name:'',role:'researcher',provider:'codex',permission_profile:'read_only',mission:''};pilotAgentOpen.value=false;pilotRoomNotice.value='Sous-agent ajouté à la salle.';await mountTerminal(created,created.attach_token)}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{pilotAgentBusy.value=false}}
+async function sendPilotRoomMessage(){const session=selectedSession.value,run=session?.metadata?.pilot_run_uid,pilot=session?.metadata?.pilot_uid,content=pilotRoomMessage.value.trim();if(!session||!run||!pilot||!content)return;pilotAgentBusy.value=true;pilotRoomNotice.value='';error.value='';try{const result=await api(`projects/${session.project_slug}/pilots/${pilot}/rooms/${run}/messages`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({content,target:'all',sender:'Vous'})});if(!result.delivered)throw new Error('Aucun terminal actif n’a reçu la directive.');pilotRoomState.value=result.room;pilotRoomMessage.value='';pilotRoomNotice.value=`Directive distribuée à ${result.delivered} agent${result.delivered===1?'':'s'} actif${result.delivered===1?'':'s'}.`}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{pilotAgentBusy.value=false}}
+async function setPilotAutonomy(mode:'manual'|'semi'|'auto'){const session=selectedSession.value,pilot=session?.metadata?.pilot_uid,run=session?.metadata?.pilot_run_uid;if(!session||!pilot||!run||mode===pilotAutonomyMode.value)return;pilotAutonomyBusy.value=true;error.value='';try{const updated=await api(`projects/${session.project_slug}/pilots/${pilot}`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({autonomy_mode:mode})});if(pilotRoomState.value)pilotRoomState.value={...pilotRoomState.value,pilot:updated};const descriptions={manual:'Le mode manuel remplace maintenant le mode précédent. Attends une instruction humaine avant toute réponse, délégation, poursuite ou décision.',semi:'Le mode semi-automatique remplace maintenant le mode précédent. Coordonne, réponds et poursuis automatiquement toute action opérationnelle réversible dans le périmètre ; soumets uniquement les décisions produit ou matérielles à l’humain.',auto:'Le mode automatique remplace maintenant le mode précédent. Coordonne, réponds et prends automatiquement les décisions réversibles dans le périmètre. Arrête-toi uniquement aux limites de permission, sécurité, destruction ou périmètre.'},result=await api(`projects/${session.project_slug}/pilots/${pilot}/rooms/${run}/messages`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({content:descriptions[mode],target:'all',sender:'Orchestrator'})});pilotRoomState.value={...result.room,pilot:updated};pilotRoomNotice.value=`Mode ${pilotAutonomyLabel(mode).toLowerCase()} activé.`}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{pilotAutonomyBusy.value=false}}
+async function setPilotRotation(mode:'manual'|'auto'){const session=selectedSession.value,pilot=session?.metadata?.pilot_uid;if(!session||!pilot||mode===pilotRotation.value.mode)return;pilotRotationBusy.value=true;error.value='';try{const updated=await api(`projects/${session.project_slug}/pilots/${pilot}`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({rotation_mode:mode})});if(pilotRoomState.value)pilotRoomState.value={...pilotRoomState.value,pilot:updated,context_rotation:{...pilotRotation.value,mode,automatic_at_checkpoint:mode==='auto'}};pilotRoomNotice.value=mode==='auto'?'Relève automatique activée au prochain checkpoint dépassant le seuil.':'Relève manuelle activée.'}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{pilotRotationBusy.value=false}}
+async function setPilotRotationThreshold(threshold:number){const session=selectedSession.value,pilot=session?.metadata?.pilot_uid;if(!session||!pilot||threshold===pilotRotation.value.threshold_tokens)return;pilotRotationBusy.value=true;error.value='';try{const updated=await api(`projects/${session.project_slug}/pilots/${pilot}`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({rotation_threshold_tokens:threshold})});if(pilotRoomState.value)pilotRoomState.value={...pilotRoomState.value,pilot:updated,context_rotation:{...pilotRotation.value,threshold_tokens:updated.rotation_threshold_tokens,percent:Math.round(pilotRotation.value.estimated_tokens/updated.rotation_threshold_tokens*100),should_rotate:pilotRotation.value.estimated_tokens>=updated.rotation_threshold_tokens}};pilotRoomNotice.value=`Seuil de relève réglé à ${Math.round(updated.rotation_threshold_tokens/1000)}k tokens.`}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{pilotRotationBusy.value=false}}
+async function rotatePilotContext(){const session=selectedSession.value,run=session?.metadata?.pilot_run_uid,pilot=session?.metadata?.pilot_uid,root=pilotRoomRoot.value;if(!session||!run||!pilot||!root)return;pilotRotationBusy.value=true;pilotRoomNotice.value='';error.value='';try{const result=await api(`projects/${session.project_slug}/pilots/${pilot}/rooms/${run}/rotate`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({source_session_uid:root.uid,reason:'manual_cockpit'})});await refreshSessions();await mountTerminal(result.session,result.session.attach_token);await loadPilotRoom();pilotRoomNotice.value=`Relève ${result.session.metadata?.rotation_index||''} créée avec les décisions, preuves et checkpoints hérités.`}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{pilotRotationBusy.value=false}}
+async function sendPilotDirect(content=pilotDirectMessage.value.trim()){const session=selectedSession.value,run=session?.metadata?.pilot_run_uid,pilot=session?.metadata?.pilot_uid,root=pilotRoomRoot.value,target=root?.active?root.uid:null,attachments=sessionPendingAttachments.value;if(!session||!run||!pilot||(!content&&!attachments.length))return;if(!target){error.value='Le pilote central est arrêté. Reprenez sa session avant de lui écrire.';return}const files=attachments.length?`Fichiers joints à ce message :\n${attachments.map(item=>`- ${item.name} : ${item.path}`).join('\n')}`:'',attachedPaths=new Set(attachments.map(item=>String(item.path||''))),contextAssets=pilotCurrentAssets.value.filter((item:any)=>item.path&&!attachedPaths.has(String(item.path))),assetContext=contextAssets.length?`Contexte actuellement affiché dans Orchestrator — les formulations « ça », « ceci », « cette capture » ou « ce résultat » désignent ces preuves. Consulte-les directement en lecture seule si la demande nécessite de les voir :\n${contextAssets.map((item:any)=>`- ${item.label||item.name||item.path} : ${item.path}`).join('\n')}`:'',message=[content,assetContext,files].filter(Boolean).join('\n\n'),explicitDecision=Boolean(pilotDecisionRequest.value&&/^(?:oui\b|non\b|j['’]autorise\b|je\s+(?:valide|refuse|confirme)\b|autorisé\b|refusé\b|accord\b)/i.test(content));pilotAgentBusy.value=true;pilotRoomNotice.value='';error.value='';try{const result=await api(`projects/${session.project_slug}/pilots/${pilot}/rooms/${run}/messages`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({content:message,target,sender:'Vous',kind:explicitDecision?'decision':'message'})});if(result.delivered!==1)throw new Error('Le message n’a pas atteint le pilote.');pilotRoomState.value=result.room;pilotDirectMessage.value='';sessionPendingAttachments.value=[];pilotRoomNotice.value='Message envoyé. Le pilote consulte le contexte et prépare sa réponse…';await refreshSessions();await loadPilotRoom();scrollPilotChat()}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{pilotAgentBusy.value=false}}
+function focusPilotDecision(){pilotDecisionOpen.value=true}
+async function selectPilotDecisionChoice(choice:any){const current=selectedSession.value,run=current?.metadata?.pilot_run_uid,pilot=current?.metadata?.pilot_uid;if(!current||!run||!pilot||!pilotDecisionRequest.value||!choice?.label)return;pilotDecisionBusy.value=true;error.value='';pilotRoomNotice.value='';try{if(!pilotRoomRoot.value?.active)await resumePilotRoot();const root=pilotRoomRoot.value;if(!root?.active)throw new Error('Le pilote central n’a pas pu être repris.');const content=`Décision humaine explicite — Choix confirmé : ${choice.label}.\n${choice.description||''}\n\nCe choix clôt la demande précédente. Intègre-le, puis réponds sans utiliser d’outil avec exactement : État, Analyse, Preuves consultées, Décision demandée, Prochaine action. Si aucune autre décision n’est nécessaire, écris « Décision demandée : Aucune » et donne une mission bornée directement délégable.`,result=await api(`projects/${current.project_slug}/pilots/${pilot}/rooms/${run}/messages`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({content,target:root.uid,sender:'Vous',kind:'decision'})});if(result.delivered!==1)throw new Error('Le choix n’a pas atteint le pilote central.');pilotRoomState.value=result.room;pilotDecisionOpen.value=false;pilotDecisionNote.value='';pilotRoomNotice.value=`Choix « ${choice.label} » confirmé. Le pilote prépare la suite.`;scrollPilotChat()}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{pilotDecisionBusy.value=false}}
+async function resolvePilotDecision(decision:'approved'|'rejected'){
+const current=selectedSession.value,run=current?.metadata?.pilot_run_uid,pilot=current?.metadata?.pilot_uid
+if(!current||!run||!pilot||!pilotDecisionRequest.value)return
+pilotDecisionBusy.value=true;error.value='';pilotRoomNotice.value=''
+try{
+if(!pilotRoomRoot.value?.active)await resumePilotRoot()
+const root=pilotRoomRoot.value
+if(!root?.active)throw new Error('Le pilote central n’a pas pu être repris.')
+if(decision==='approved'){
+const mission=pilotRecommendedAction.value,delegable=Boolean(mission&&!/^(?:reprendre le pilote|aucune|aucun|attendre|en attente)\b/i.test(mission))
+if(delegable){const result=await api(`projects/${current.project_slug}/pilots/${pilot}/rooms/${run}/delegate`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mission,name:'Action autorisée',role:pilotRoomState.value?.pilot?.default_agent_role||'executor',permission_profile:pilotRoomState.value?.pilot?.worker_permission_profile})});pilotRoomNotice.value='Décision autorisée : une sous-session exécute maintenant l’action.';pilotDecisionOpen.value=false;await refreshSessions();await loadPilotRoom();await openPilotAgentTerminal(result.session)}
+else{const content=`Décision humaine — Autorisé. La demande suivante est acceptée :\n${pilotDecisionRequest.value.content}\n\nReformule maintenant un checkpoint strict avec « Décision demandée : Aucune » et une « Prochaine action » bornée directement délégable. Ne l’exécute pas toi-même : Orchestrator la confiera automatiquement à une sous-session.`,result=await api(`projects/${current.project_slug}/pilots/${pilot}/rooms/${run}/messages`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({content,target:root.uid,sender:'Vous',kind:'decision'})});if(result.delivered!==1)throw new Error('La décision n’a pas atteint le pilote central.');pilotRoomState.value=result.room;pilotRoomNotice.value='Décision autorisée. Le pilote prépare la délégation explicite.';pilotDecisionOpen.value=false}
+}else{const content='Décision humaine — Refusé. N’exécute aucune des actions demandées dans cet arbitrage. Indique l’impact du refus et propose une alternative sans l’exécuter.',result=await api(`projects/${current.project_slug}/pilots/${pilot}/rooms/${run}/messages`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({content,target:root.uid,sender:'Vous',kind:'decision'})});if(result.delivered!==1)throw new Error('La décision n’a pas atteint le pilote central.');pilotRoomState.value=result.room;pilotRoomNotice.value='Décision refusée et reçue par le pilote central.';pilotDecisionOpen.value=false}
+}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{pilotDecisionBusy.value=false}
 }
-async function copyContextLink() {
-  await navigator.clipboard.writeText(new URL(urlForContext(), window.location.origin).href);
-  shareState.value = "Copied";
-  window.setTimeout(() => shareState.value = "Copy context link", 1600);
-}
-function loadSavedViews() {
-  try { savedViews.value = JSON.parse(localStorage.getItem(savedViewsKey) || "[]"); }
-  catch { savedViews.value = []; }
-}
-function persistSavedViews() { localStorage.setItem(savedViewsKey, JSON.stringify(savedViews.value)); }
-function saveCurrentView() {
-  const chapter = detail.value?.chapters.find(row => row.uid === selectedChapter.value);
-  const context = [activeView.value, chapter?.title, selectedPass.value ? `Pass ${selectedPass.value}` : ""].filter(Boolean).join(" · ");
-  const url = urlForContext(), id = btoa(unescape(encodeURIComponent(url))).replace(/=+$/g, "");
-  savedViews.value = [{ id, label: detail.value?.name || "Project view", context, url, saved_at: new Date().toISOString() }, ...savedViews.value.filter(row => row.id !== id)].slice(0, 8);
-  persistSavedViews();
-  saveState.value = "Saved";
-  window.setTimeout(() => saveState.value = "Save shortcut", 1600);
-}
-function openSavedView(view: SavedView) {
-  window.history.pushState(null, "", view.url);
-  restoreFromHistory();
-}
-function removeSavedView(id: string) {
-  savedViews.value = savedViews.value.filter(row => row.id !== id);
-  persistSavedViews();
-}
-const activeView = ref<
-    "today" | "reports" | "team" | "search" | "management" | "briefing" | "attention" | "health" | "sync-center" | "projects" | "overview" | "ai" | "planning" | "chapters" | "evidence" | "diagram" | "snapshots" | "analytics" | "memory"
-  >("overview"),
-  selectedChapter = ref(""),
-  selectedPass = ref(""),
-  query = ref(""),
-  assertion = ref(""),
-  loading = ref(true),
-  error = ref("");
-const globalQuery=ref("")
-const searchType=ref("all"),searchPage=ref(1)
-const openPreview = ref(""),
-  textPreviews = ref<Record<string, string>>({}),
-  previewErrors = ref<Record<string, string>>({});
-const previewImage = ref<Evidence | null>(null);
-const verification = ref<Record<string, any>>({}),
-  verifying = ref(""),
-  comparisonIndex = ref(0);
-const evidenceType = ref<"all" | "images" | "text">("all"),
-  evidencePage = ref(1),
-  passPage = ref(1),
-  eventPage = ref(1);
-const activeProjectSection = computed(() => projectSections.find(section => section.views.some(view => view.id === activeView.value)) || projectSections[0]);
-function openProjectView(view: string) {
-  activeView.value = view as typeof activeView.value;
-  if (view === "analytics") loadAnalytics();
-  if (view === "ai") loadAiWorkspace();
-  if (view === "planning") loadPlanning();
-}
-const judgmentText = ref(""),
-  judgmentVerdict = ref<"pass" | "fail" | "inconclusive">("inconclusive"),
-  judgmentBusy = ref(false);
-const api = async <T,>(path: string): Promise<T> => {
-  const response = await fetch(`/api${path}`);
-  if (!response.ok) throw new Error((await response.json()).message);
-  return response.json();
-};
-async function loadProjects() {
-  projects.value = await api("/projects");
-  connections.value = await api("/sync");
-  if (!selected.value && projects.value[0]) selected.value = projects.value[0].slug;
-  applyUrlState();
-}
-async function loadPortfolio() {
-  portfolioBusy.value = true;
-  try {
-    portfolio.value = await api("/portfolio");
-  } catch (e: any) {
-    error.value = e.message;
-  } finally {
-    portfolioBusy.value = false;
-  }
-}
-async function loadAttention(){attentionBusy.value=true;try{attention.value=await api('/attention')}catch(e:any){error.value=e.message}finally{attentionBusy.value=false}}
-async function loadBriefing(){briefingBusy.value=true;try{const since=localStorage.getItem('orchestrator:briefing-reviewed')||new Date(Date.now()-86400000).toISOString();briefing.value=await api(`/briefing?since=${encodeURIComponent(since)}`)}catch(e:any){error.value=e.message}finally{briefingBusy.value=false}}
-async function loadSystemHealth(){systemHealthBusy.value=true;try{systemHealth.value=await api('/system/health')}catch(e:any){error.value=e.message}finally{systemHealthBusy.value=false}}
-async function loadSyncCenter(){syncCenterBusy.value=true;try{[syncCenter.value,syncConflicts.value]=await Promise.all([api('/clickup/sync-center'),api('/sync/conflicts')])}catch(e:any){error.value=e.message}finally{syncCenterBusy.value=false}}
-async function loadTeam(){teamBusy.value=true;try{team.value=await api('/team');if(!externalForm.value.project&&team.value.projects[0])externalForm.value.project=team.value.projects[0].slug;if(!projectMemberForm.value.project&&team.value.projects[0])projectMemberForm.value.project=team.value.projects[0].slug}catch(e:any){error.value=e.message}finally{teamBusy.value=false}}
-async function addTeamMember(){if(!memberForm.value.display_name.trim())return;teamBusy.value=true;try{const response=await fetch('/api/team/members',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(memberForm.value)});if(!response.ok)throw new Error((await response.json()).message);memberForm.value={display_name:"",email:""};await loadTeam()}catch(e:any){error.value=e.message}finally{teamBusy.value=false}}
-async function linkExternalItem(item?:any){const payload={...externalForm.value,...(item||{})};teamBusy.value=true;try{const response=await fetch('/api/team/external-items',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)});if(!response.ok)throw new Error((await response.json()).message);externalForm.value={project:externalForm.value.project,provider:'clickup',external_id:'',title:'',status:'',url:'',chapter_uid:'',objective_uid:'',pass_ref:'',assignee_uid:''};clickupTaskResults.value=[];await loadTeam()}catch(e:any){error.value=e.message}finally{teamBusy.value=false}}
-async function searchExistingClickup(){if(!externalForm.value.project)return;teamBusy.value=true;try{const result=await api<any>(`/projects/${externalForm.value.project}/external-items/clickup?q=${encodeURIComponent(clickupTaskSearch.value)}`);clickupTaskResults.value=result.tasks}catch(e:any){error.value=e.message}finally{teamBusy.value=false}}
-async function assignMachine(machine:any,memberUid:string){teamBusy.value=true;try{const response=await fetch(`/api/team/machines/${encodeURIComponent(machine.machine_key)}`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({member_uid:memberUid||null,label:machine.label,platform:machine.platform,last_seen_at:machine.last_seen_at})});if(!response.ok)throw new Error((await response.json()).message);await loadTeam()}catch(e:any){error.value=e.message}finally{teamBusy.value=false}}
-async function assignProjectMember(){const value=projectMemberForm.value;if(!value.project||!value.member_uid)return;teamBusy.value=true;try{const response=await fetch(`/api/team/projects/${value.project}/members/${value.member_uid}`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({role:value.role})});if(!response.ok)throw new Error((await response.json()).message);await loadTeam()}catch(e:any){error.value=e.message}finally{teamBusy.value=false}}
-function chooseExternalTask(task:any){externalForm.value={...externalForm.value,...task};clickupTaskResults.value=[]}
-async function resolveSyncConflict(uid:string,action:string){syncCenterBusy.value=true;try{const response=await fetch(`/api/sync/conflicts/${uid}/resolve`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action})});if(!response.ok)throw new Error((await response.json()).message);await Promise.all([loadSyncCenter(),loadProject(true)])}catch(e:any){error.value=e.message}finally{syncCenterBusy.value=false}}
-async function loadManagement(){managementBusy.value=true;management.value=null;try{[management.value,managementReports.value,managementSettings.value]=await Promise.all([api<any>(`/management?days=${managementDays.value}`),api<any[]>('/management/reports'),api<any>('/management/settings')])}catch(e:any){error.value=e.message}finally{managementBusy.value=false}}
-async function loadToday(){managementBusy.value=true;try{[today.value,reviews.value,managementReminders.value]=await Promise.all([api<any>('/management/today'),api<any[]>('/management/reviews'),api<any>('/management/reminders')])}catch(e:any){error.value=e.message}finally{managementBusy.value=false}}
-async function loadReportHistory(){try{[managementReports.value,managementSettings.value]=await Promise.all([api<any[]>('/management/reports'),api<any>('/management/settings')]);if(managementReports.value.length>1){reportAfter.value=reportAfter.value||managementReports.value[0].uid;reportBefore.value=reportBefore.value||managementReports.value[1].uid;await compareSelectedReports()}}catch{reportComparison.value=null}}
-async function compareSelectedReports(){if(!reportBefore.value||!reportAfter.value)return;reportComparison.value=await api<any>(`/management/reports/compare?before=${encodeURIComponent(reportBefore.value)}&after=${encodeURIComponent(reportAfter.value)}`)}
-async function saveManagementPreferences(){const response=await fetch('/api/management/settings',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(managementSettings.value)});if(!response.ok)throw new Error((await response.json()).message);managementSettings.value=await response.json();await loadManagement()}
-async function saveReportTemplate(){const name=templateName.value.trim();if(!name)return;managementSettings.value.templates=[...(managementSettings.value.templates||[]),{name,days:reportForm.value.days,audience:reportForm.value.audience,projects:[...reportForm.value.projects]}];templateName.value='';await saveManagementPreferences()}
-function applyReportTemplate(template:any){reportForm.value={...reportForm.value,days:template.days,audience:template.audience,projects:[...(template.projects||[])],title:template.name}}
-async function previewSoloReport(){reportBusy.value=true;try{const response=await fetch('/api/management/report/preview',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(reportForm.value)});if(!response.ok)throw new Error((await response.json()).message);reportPreview.value=await response.json()}catch(e:any){error.value=e.message}finally{reportBusy.value=false}}
-async function renderSoloReport(kind:string){reportBusy.value=true;try{const response=await fetch(`/api/management/report/render/${kind}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(reportForm.value)});if(!response.ok)throw new Error((await response.json()).message);const blob=await response.blob(),url=URL.createObjectURL(blob);if(kind==='html'){window.open(url,'_blank','noopener')}else{const link=document.createElement('a');link.href=url;link.download=`orchestrator-solo-report-${new Date().toISOString().slice(0,10)}.${kind==='markdown'?'md':kind}`;link.click();window.setTimeout(()=>URL.revokeObjectURL(url),1000)}}catch(e:any){error.value=e.message}finally{reportBusy.value=false}}
-async function saveManagementReview(){reportBusy.value=true;try{const response=await fetch('/api/management/reviews',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({...reviewForm.value,followups:String(reviewForm.value.followups||'').split('\n')})});if(!response.ok)throw new Error((await response.json()).message);reviewForm.value.notes='';reviewForm.value.followups='';await loadToday()}catch(e:any){error.value=e.message}finally{reportBusy.value=false}}
-async function captureManagement(){managementBusy.value=true;try{const response=await fetch('/api/management/reports',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({days:managementDays.value})});if(!response.ok)throw new Error((await response.json()).message);await loadManagement()}catch(e:any){error.value=e.message}finally{managementBusy.value=false}}
-async function syncAllProjects(){syncCenterBusy.value=true;error.value="";try{const request=fetch('/api/clickup/sync-all',{method:'POST'});const poll=window.setInterval(loadSyncCenter,800);const response=await request;window.clearInterval(poll);if(!response.ok)throw new Error((await response.json()).message);await loadSyncCenter()}catch(e:any){error.value=e.message}finally{syncCenterBusy.value=false}}
-function markBriefingReviewed(){localStorage.setItem('orchestrator:briefing-reviewed',new Date().toISOString());loadBriefing()}
-function openBriefingItem(item:any){selected.value=item.project.slug;window.setTimeout(()=>{selectedChapter.value=item.target.objective_uid||'';selectedPass.value=item.target.pass_ref||'';pendingEvidence.value=item.target.evidence_uid||'';focusedEvidence.value=pendingEvidence.value;activeView.value=item.target.view||'overview'},0)}
-function openAttention(item:any){selected.value=item.project.slug;window.setTimeout(()=>{selectedChapter.value=item.target.objective_uid||'';selectedPass.value=item.target.pass_ref||'';activeView.value=item.target.view||'overview'},0)}
-async function runSearch(){const value=globalQuery.value.trim();if(value.length<2){searchResults.value=[];return}searchBusy.value=true;try{const data=await api<any>(`/search?q=${encodeURIComponent(value)}&limit=100`);searchResults.value=data.results;searchPage.value=1;activeView.value='search'}catch(e:any){error.value=e.message}finally{searchBusy.value=false}}
-function openSearchResult(item:any){selected.value=item.project.slug;window.setTimeout(()=>{selectedChapter.value=item.target.objective_uid||'';selectedPass.value=item.target.pass_ref||'';activeView.value=item.target.view||'overview'},0)}
-const filteredSearchResults=computed(()=>searchType.value==='all'?searchResults.value:searchResults.value.filter(item=>item.type===searchType.value))
-const searchPages=computed(()=>Math.max(1,Math.ceil(filteredSearchResults.value.length/15)))
-const pagedSearchResults=computed(()=>filteredSearchResults.value.slice((searchPage.value-1)*15,searchPage.value*15))
-watch(searchType,()=>searchPage.value=1)
-const snapshotKey=()=>`orchestrator:snapshots:${selected.value}`
-function loadSnapshots(){try{snapshots.value=JSON.parse(localStorage.getItem(snapshotKey())||'[]')}catch{snapshots.value=[]}snapshotDiff.value=null}
-async function captureSnapshot(){snapshotBusy.value=true;try{const snapshot=await api<any>(`/projects/${selected.value}/snapshot`);snapshots.value=[snapshot,...snapshots.value.filter(row=>row.state_hash!==snapshot.state_hash)].slice(0,10);localStorage.setItem(snapshotKey(),JSON.stringify(snapshots.value));if(snapshots.value.length>1)await compareSnapshots()}catch(e:any){error.value=e.message}finally{snapshotBusy.value=false}}
-async function compareSnapshots(){if(snapshots.value.length<2)return;const response=await fetch('/api/snapshots/compare',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({after:snapshots.value[0],before:snapshots.value[1]})});if(!response.ok)throw new Error((await response.json()).message);snapshotDiff.value=await response.json()}
-function downloadSnapshot(snapshot:any){const url=URL.createObjectURL(new Blob([JSON.stringify(snapshot,null,2)],{type:'application/json'})),link=document.createElement('a');link.href=url;link.download=`orchestrator-${snapshot.project.slug}-${snapshot.captured_at.replace(/[: ]/g,'-')}.json`;link.click();URL.revokeObjectURL(url)}
-async function loadAnalytics() {
-  if (!selected.value) return;
-  analyticsBusy.value = true;
-  try {
-    const scope = analyticsScope.value === "project" ? `&project=${selected.value}` : "";
-    analytics.value = await api(`/analytics?days=${analyticsDays.value}${scope}`);
-  } catch (e: any) {
-    error.value = e.message;
-  } finally {
-    analyticsBusy.value = false;
-  }
-}
-async function loadAiWorkspace() {
-  if (!selected.value) return;
-  aiWorkspaceBusy.value = true;
-  try { aiWorkspace.value = await api(`/projects/${selected.value}/ai-workspace`); }
-  catch (e: any) { error.value = e.message; }
-  finally { aiWorkspaceBusy.value = false; }
-}
-async function loadPlanning(showBusy=true){if(!selected.value)return;if(showBusy)planningBusy.value=true;try{planning.value=await api(`/projects/${selected.value}/planning`);const connection=planning.value?.clickup;if(connection)clickupForm.value={workspace_id:connection.workspace_id||"",list_id:connection.list_id||"",tag_name:connection.tag_name||selected.value,tag_color:connection.tag_color||"#247a5a",token:"",enabled:connection.enabled!==0,status_mapping:{...(connection.status_mapping||{})}}}catch(e:any){error.value=e.message}finally{if(showBusy)planningBusy.value=false}}
-async function loadClickupResources(){clickupBusy.value=true;clickupActivity.value="Loading ClickUp workspaces and lists…";try{clickupResourcesData.value=await api(`/projects/${selected.value}/clickup/resources`);if(!clickupForm.value.workspace_id&&clickupResourcesData.value.workspaces[0])clickupForm.value.workspace_id=clickupResourcesData.value.workspaces[0].id;if(clickupForm.value.list_id)await loadClickupStatuses();clickupActivity.value=`${clickupResourcesData.value.lists.length} ClickUp destinations loaded`}catch(e:any){error.value=e.message;clickupActivity.value=`ClickUp loading failed: ${e.message}`}finally{clickupBusy.value=false}}
-async function loadClickupStatuses(){clickupListStatusesData.value=[];if(!clickupForm.value.list_id)return;clickupActivity.value="Loading the selected ClickUp workflow…";try{const data:any=await api(`/projects/${selected.value}/clickup/statuses?list=${encodeURIComponent(clickupForm.value.list_id)}`);clickupListStatusesData.value=data.statuses||[];clickupActivity.value=`${clickupListStatusesData.value.length} workflow statuses loaded`}catch(e:any){error.value=e.message;clickupActivity.value=`Workflow loading failed: ${e.message}`}}
-async function connectPersonalToken(){clickupBusy.value=true;clickupActivity.value="Connecting the global ClickUp account…";error.value="";try{const response=await fetch(`/api/projects/${selected.value}/clickup/token`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({token:clickupForm.value.token})});if(!response.ok)throw new Error((await response.json()).message);const data=await response.json();clickupForm.value.token="";clickupResourcesData.value=data.resources;await loadPlanning(false);if(!clickupForm.value.workspace_id&&data.resources.workspaces[0])clickupForm.value.workspace_id=data.resources.workspaces[0].id;clickupActivity.value="ClickUp connected · choose this project's destination"}catch(e:any){error.value=e.message;clickupActivity.value=`ClickUp connection failed: ${e.message}`}finally{clickupBusy.value=false}}
-async function runClickupSync(){clickupBusy.value=true;clickupActivity.value="Synchronizing this registry and reading ClickUp feedback…";error.value="";clickupSync.value={active:true,percent:1,message:"Starting synchronization"};const poll=window.setInterval(async()=>{try{clickupSync.value=await api(`/projects/${selected.value}/clickup/progress`)}catch{}},350);try{const response=await fetch(`/api/projects/${selected.value}/clickup/sync`,{method:'POST'});if(!response.ok)throw new Error((await response.json()).message);clickupSync.value={active:false,percent:100,message:"Registry and feedback synchronized"};clickupActivity.value="ClickUp registry and rejected-ticket feedback are up to date";await loadPlanning(false);await loadProject()}catch(e:any){error.value=e.message;clickupActivity.value=`ClickUp synchronization failed: ${e.message}`;clickupSync.value={active:false,percent:0,message:e.message,error:true}}finally{window.clearInterval(poll);clickupBusy.value=false}}
-async function planningAction(path:string,body:any={}){planningBusy.value=true;error.value="";try{const response=await fetch(`/api/projects/${selected.value}/${path}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!response.ok)throw new Error((await response.json()).message);await loadPlanning();await loadProject()}catch(e:any){error.value=e.message}finally{planningBusy.value=false}}
-async function moveObjective(uid:string,direction:number){const rows=[...(planning.value?.plan?.objectives||[])],index=rows.findIndex((row:any)=>row.uid===uid),target=index+direction;if(index<0||target<0||target>=rows.length)return;[rows[index],rows[target]]=[rows[target],rows[index]];planningBusy.value=true;try{const response=await fetch(`/api/projects/${selected.value}/planning/order`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({objectives:rows.map((row:any)=>row.uid)})});if(!response.ok)throw new Error((await response.json()).message);await loadPlanning(false);await loadProject(true)}catch(e:any){error.value=e.message}finally{planningBusy.value=false}}
-async function addDependency(uid:string){const dependsOn=dependencyDraft.value[uid];if(!dependsOn)return;planningBusy.value=true;try{const response=await fetch(`/api/projects/${selected.value}/planning/dependencies`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({objective:uid,depends_on:dependsOn})});if(!response.ok)throw new Error((await response.json()).message);dependencyDraft.value[uid]='';await loadPlanning(false);await loadProject(true)}catch(e:any){error.value=e.message}finally{planningBusy.value=false}}
-async function removeDependency(objective:string,dependsOn:string){planningBusy.value=true;try{const response=await fetch(`/api/projects/${selected.value}/planning/dependencies`,{method:'DELETE',headers:{'content-type':'application/json'},body:JSON.stringify({objective,depends_on:dependsOn})});if(!response.ok)throw new Error((await response.json()).message);await loadPlanning(false);await loadProject(true)}catch(e:any){error.value=e.message}finally{planningBusy.value=false}}
-async function saveObjectiveSchedule(objective:any){planningBusy.value=true;try{const response=await fetch(`/api/projects/${selected.value}/planning/objectives/${objective.uid}/schedule`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({due_at:objective.due_at,estimate_minutes:objective.estimate_minutes})});if(!response.ok)throw new Error((await response.json()).message);planning.value.plan=await response.json();await loadToday()}catch(e:any){error.value=e.message}finally{planningBusy.value=false}}
-async function saveClickup(){clickupBusy.value=true;clickupActivity.value="Saving this project's ClickUp destination…";try{const response=await fetch(`/api/projects/${selected.value}/clickup`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(clickupForm.value)});if(!response.ok)throw new Error((await response.json()).message);clickupForm.value.token="";await loadPlanning(false);clickupActivity.value="Project destination saved"}catch(e:any){error.value=e.message;clickupActivity.value=`Destination save failed: ${e.message}`}finally{clickupBusy.value=false}}
-function openAiTarget(target:any){if(!target)return;selectedChapter.value=target.objective_uid||'';activeView.value=target.view||'overview'}
-function openProposalEvidence(proposal:any){if(!proposal.objective_uid)return;selectedChapter.value=proposal.objective_uid;selectedPass.value="";activeView.value="evidence"}
-const compactNumber=(value:number)=>new Intl.NumberFormat("en",{notation:"compact",maximumFractionDigits:1}).format(value||0)
-const money=(value:number)=>new Intl.NumberFormat("en",{style:"currency",currency:"USD",maximumFractionDigits:2}).format(value||0)
-const maxDailyCost=computed(()=>Math.max(0,...(analytics.value?.daily||[]).map((row:any)=>row.cost)))
-const maxDailyTokens=computed(()=>Math.max(0,...(analytics.value?.daily||[]).map((row:any)=>row.tokens)))
-const todayAnalytics=computed(()=>analytics.value?.daily?.find((row:any)=>row.key===new Date().toISOString().slice(0,10))||null)
-const attentionItems=computed(()=>{const rows=attention.value?.items||[],groups=new Map<string,any>(),visible=[];for(const item of rows){if(item.type!=='evidence'||item.severity==='blocked'){visible.push(item);continue}const key=item.project.slug,current=groups.get(key)||{...item,id:`evidence-group:${key}`,objective:{uid:null,title:null},title:'Evidence records need verification',detail:'',count:0};current.count++;current.detail=`${current.count} unverified or unhashed evidence records`;groups.set(key,current)}return[...visible,...groups.values()].sort((a:any,b:any)=>String(b.occurred_at).localeCompare(String(a.occurred_at)))})
-function openPortfolioProject(project: any) {
-  selected.value = project.slug;
-  activeView.value = "overview";
-}
-function openTrackedProject(project: Project) {
-  selected.value = project.slug;
-  activeView.value = "overview";
-}
-async function setPortfolioTracking(project: any) {
-  const status = project.status === "archived" ? "active" : "archived";
-  portfolioBusy.value = true;
-  try {
-    const response = await fetch("/api/ingest", {
-      method: "POST",
-      headers: { "content-type": "application/json", "Idempotency-Key": `portfolio-status:${project.uid}:${status}:${Date.now()}` },
-      body: JSON.stringify({ project: project.slug, kind: "project.updated", actor_kind: "human", actor: "dashboard", assertion: "human_judgment", summary: `Project tracking ${status}`, payload: { status } }),
-    });
-    if (!response.ok) throw new Error((await response.json()).message);
-    await loadProjects();
-    await loadAttention();
-    await loadPortfolio();
-  } catch (e: any) {
-    error.value = e.message;
-  } finally {
-    portfolioBusy.value = false;
-  }
-}
-async function loadProject(silent=false) {
-  if (!selected.value) return;
-  if(!silent)loading.value = true;
-  error.value = "";
-  try {
-    const visitKey=`orchestrator:last-visit:${selected.value}`,since=localStorage.getItem(visitKey)||new Date(Date.now()-86400000).toISOString();
-    [detail.value, diagram.value, coordination.value, resume.value, confidence.value, projectProfile.value, gitGuard.value] = await Promise.all([
-      api<Detail>(`/projects/${selected.value}`),
-      api<Diagram>(`/projects/${selected.value}/diagram`),
-      api<any>(`/projects/${selected.value}/coordination`),
-      api<any>(`/projects/${selected.value}/resume?since=${encodeURIComponent(since)}`),
-      api<any>(`/projects/${selected.value}/confidence`),
-      api<any>(`/projects/${selected.value}/profile`),
-      api<any>(`/projects/${selected.value}/git-guard`),
-    ]);
-    localStorage.setItem(visitKey,new Date().toISOString())
-    await loadMemory();
-  } catch (e: any) {
-    error.value = e.message;
-  } finally {
-    if(!silent)loading.value = false;
-  }
-}
-async function saveProjectProfile(){if(!projectProfile.value)return;const response=await fetch(`/api/projects/${selected.value}/profile`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({type:projectProfile.value.type,criteria:projectProfile.value.criteria})});if(!response.ok)throw new Error((await response.json()).message);projectProfile.value=await response.json()}
-async function loadMemory() {
-  if (!selected.value) return;
-  const p = new URLSearchParams();
-  if (query.value) p.set("q", query.value);
-  if (assertion.value) p.set("assertion", assertion.value);
-  if (selectedChapter.value) p.set("objective", selectedChapter.value);
-  const ep = new URLSearchParams();
-  if (selectedChapter.value) ep.set("objective", selectedChapter.value);
-  [events.value, evidence.value] = await Promise.all([
-    api<Event[]>(`/projects/${selected.value}/timeline?${p}`),
-    api<Evidence[]>(`/projects/${selected.value}/evidence?${ep}`),
-  ]);
-  if (pendingEvidence.value) {
-    const proof = evidence.value.find(row => row.uid === pendingEvidence.value);
-    if (proof && isImage(proof)) previewImage.value = proof;
-    else if (proof && isText(proof) && openPreview.value !== proof.uid) await previewText(proof);
-    pendingEvidence.value = "";
-  }
-  evidencePage.value = 1;
-  passPage.value = 1;
-  eventPage.value = 1;
-  comparisonIndex.value = 0;
-}
-watch(selected, () => {
-  if (!restoringNavigation) {
-    selectedChapter.value = "";
-    selectedPass.value = "";
-  }
-  loadSnapshots();
-  loadProject();
-  if(activeView.value==='analytics')loadAnalytics()
-  if(activeView.value==='ai')loadAiWorkspace()
-  if(activeView.value==='planning')loadPlanning()
-});
-watch([selected, activeView, selectedChapter, selectedPass, previewImage, openPreview], syncContextUrl);
-watch(activeView, (view) => {
-  if (view === "today") loadToday();
-  if (view === "reports") { if (!today.value) loadToday(); loadReportHistory(); if (!reportPreview.value) previewSoloReport(); }
-  if (view === "management") loadManagement();
-  if (view === "briefing" && !briefing.value) loadBriefing();
-  if (view === "health" && !systemHealth.value) loadSystemHealth();
-  if (view === "sync-center") loadSyncCenter();
-  if (view === "team") loadTeam();
-  if (view === "projects" && !portfolio.value) loadPortfolio();
-  if (view === "analytics" && !analytics.value) loadAnalytics();
-  if (view === "ai") loadAiWorkspace();
-  if (view === "planning") loadPlanning();
-});
-let timer: number;
-let clickupProgressTimer: number, projectRefreshTimer: number;
-async function autoRefreshProject(){if(!selected.value||document.hidden||autoRefreshBusy.value||isGlobalView(activeView.value))return;autoRefreshBusy.value=true;try{await fetch(`/api/projects/${selected.value}/planning/generate`,{method:'POST',headers:{'content-type':'application/json'},body:'{}'});[followerState.value]=await Promise.all([api('/followers'),loadProject(true)]);if(activeView.value==='planning')await loadPlanning(false);lastAutoRefresh.value=new Date()}catch{}finally{autoRefreshBusy.value=false}}
-watch([query, assertion, selectedChapter, selectedPass], () => {
-  clearTimeout(timer);
-  timer = window.setTimeout(loadMemory, 200);
-});
-const closeOnEscape = (event: KeyboardEvent) => {
-  if (event.key === "Escape") previewImage.value = null;
-  if (event.key === "ArrowLeft" && previewImage.value) moveImage(-1);
-  if (event.key === "ArrowRight" && previewImage.value) moveImage(1);
-};
-onMounted(async () => {
-  systemTheme.addEventListener("change", followSystemTheme);
-  window.addEventListener("keydown", closeOnEscape);
-  window.addEventListener("popstate", restoreFromHistory);
-  try {
-    await loadProjects();
-    await loadAttention();
-    loadSavedViews();
-    restoringNavigation = false;
-    window.history.replaceState(null, "", urlForContext());
-    clickupProgressTimer=window.setInterval(async()=>{if(activeView.value==='planning'&&selected.value)try{clickupSync.value=await api(`/projects/${selected.value}/clickup/progress`)}catch{}},1500)
-    projectRefreshTimer=window.setInterval(autoRefreshProject,15000)
-    await autoRefreshProject()
-  } catch (e: any) {
-    error.value = e.message;
-    loading.value = false;
-  }
-});
-function restoreFromHistory() {
-  restoringNavigation = true;
-  applyUrlState();
-  window.setTimeout(() => restoringNavigation = false, 0);
-}
-onBeforeUnmount(() => {
-  systemTheme.removeEventListener("change", followSystemTheme);
-  window.clearInterval(clickupProgressTimer);
-  window.clearInterval(projectRefreshTimer);
-  window.removeEventListener("keydown", closeOnEscape);
-  window.removeEventListener("popstate", restoreFromHistory);
-});
-const progress = computed(() => {
-  const all = detail.value?.objectives || [];
-  return all.length
-    ? Math.round(
-        (all.filter((o) => o.status === "proven").length / all.length) * 100,
-      )
-    : 0;
-});
-const assertionLabel = (v: string) =>
-  ({
-    measured_fact: "Measured fact",
-    agent_statement: "Agent statement",
-    human_judgment: "Human judgment",
-    system_record: "System record",
-  })[v] || v;
-const eventLabel = (event: Event) =>
-  event.kind === "cleanup.recorded" ? "Cleanup completed" : assertionLabel(event.assertion);
-const cleanupDetail = (event: Event) => {
-  if (event.kind !== "cleanup.recorded") return "";
-  const removed = Array.isArray(event.payload?.removed) ? event.payload.removed.join(", ") : "generated artifacts";
-  const preserved = typeof event.payload?.preserved === "string" ? event.payload.preserved : "source and retained evidence";
-  return `Removed: ${removed}. Preserved: ${preserved}.`;
-};
-const date = (v: string | null) =>
-  v
-    ? new Date(v).toLocaleString("en-GB", {
-        dateStyle: "medium",
-        timeStyle: "short",
-      })
-    : "No activity yet";
-const bytes = (v: number | null) =>
-  v == null
-    ? "Unknown size"
-    : v < 1024
-      ? `${v} B`
-      : v < 1048576
-        ? `${(v / 1024).toFixed(1)} KB`
-        : `${(v / 1048576).toFixed(1)} MB`;
-const previewUrl = (proof: Evidence) => `/api/evidence/${proof.uid}/content`;
-const isImage = (proof: Evidence) =>
-  /\.(png|jpe?g|webp|gif)$/i.test(proof.locator || "");
-const isText = (proof: Evidence) =>
-  /\.(txt|md|json|csv|log)$/i.test(proof.locator || "");
-async function previewText(proof: Evidence) {
-  if (openPreview.value === proof.uid) {
-    openPreview.value = "";
-    return;
-  }
-  openPreview.value = proof.uid;
-  if (textPreviews.value[proof.uid]) return;
-  previewErrors.value[proof.uid] = "";
-  try {
-    const response = await fetch(previewUrl(proof));
-    if (!response.ok) throw new Error((await response.json()).message);
-    textPreviews.value[proof.uid] = await response.text();
-  } catch (e: any) {
-    previewErrors.value[proof.uid] = e.message;
-  }
-}
-async function verifyProof(proof: Evidence) {
-  verifying.value = proof.uid;
-  try {
-    verification.value[proof.uid] = await api(`/evidence/${proof.uid}/verify`);
-  } catch (e: any) {
-    error.value = e.message;
-  } finally {
-    verifying.value = "";
-  }
-}
-async function downloadProof(proof: Evidence) {
-  verifying.value = proof.uid;
-  try {
-    const response = await fetch(`/api/evidence/${proof.uid}/download`, { method: "POST" });
-    if (!response.ok) throw new Error((await response.json()).message);
-    await loadMemory();
-  } catch (e: any) { error.value = e.message; }
-  finally { verifying.value = ""; }
-}
-const scopedEvidence = computed(() =>
-  evidence.value.filter(
-    (p) =>
-      (!selectedPass.value || String(p.pass_ref) === selectedPass.value) &&
-      (evidenceType.value === "all" ||
-        (evidenceType.value === "images" && isImage(p)) ||
-        (evidenceType.value === "text" && isText(p))),
-  ),
-);
-const previewImages = computed(() =>
-  evidence.value.filter(
-    (proof) => proof.status === "available" && isImage(proof),
-  ),
-);
-const comparisonPairs = computed(() => {
-  const groups = new Map<string, { before?: Evidence; after?: Evidence }>();
-  for (const proof of evidence.value.filter(
-    (p) => p.status === "available" && isImage(p),
-  )) {
-    const before = /(^|[\s_-])before(?=$|[\s_.-])/i.test(proof.label),
-      after = /(^|[\s_-])after(?=$|[\s_.-])/i.test(proof.label);
-    if (before === after) continue;
-    const key = `${proof.objective_title}|${proof.pass_ref}|${proof.label
-      .toLowerCase()
-      .replace(/(^|[\s_-])(before|after)(?=$|[\s_.-])/g, "$1{state}")
-      .replace(/\.(png|jpe?g|webp)$/, "")}`;
-    const pair = groups.get(key) || {};
-    if (before) pair.before = proof;
-    if (after) pair.after = proof;
-    groups.set(key, pair);
-  }
-  return [...groups.values()].filter(
-    (pair): pair is { before: Evidence; after: Evidence } =>
-      Boolean(pair.before && pair.after),
-  );
-});
-const comparisonPair = computed(
-  () => comparisonPairs.value[comparisonIndex.value] || null,
-);
-const previewImageIndex = computed(() =>
-  previewImage.value
-    ? previewImages.value.findIndex(
-        (proof) => proof.uid === previewImage.value?.uid,
-      )
-    : -1,
-);
-function moveImage(direction: number) {
-  if (!previewImages.value.length) return;
-  const current = Math.max(0, previewImageIndex.value),
-    next =
-      (current + direction + previewImages.value.length) %
-      previewImages.value.length;
-  previewImage.value = previewImages.value[next];
-}
-const evidencePages = computed(() =>
-  Math.max(1, Math.ceil(scopedEvidence.value.length / 20)),
-);
-const pagedEvidence = computed(() =>
-  scopedEvidence.value.slice(
-    (evidencePage.value - 1) * 20,
-    evidencePage.value * 20,
-  ),
-);
-const passGroups = computed(() => {
-  const groups = new Map<string, Evidence[]>();
-  for (const proof of evidence.value) {
-    if (!proof.pass_ref) continue;
-    const k = String(proof.pass_ref);
-    groups.set(k, [...(groups.get(k) || []), proof]);
-  }
-  return [...groups.entries()]
-    .map(([id, proofs]) => {
-      const ordered = [...proofs].sort((a,b) => String(a.created_at).localeCompare(String(b.created_at)));
-      const imageProofs=proofs.filter(isImage),images=imageProofs.filter(proof => proof.status === "available");
-      return { id, proofs, images, unavailableImages:imageProofs.length-images.length, started_at: ordered[0]?.created_at || null, latest_at: ordered.at(-1)?.created_at || null };
-    })
-    .sort((a, b) => String(b.latest_at || "").localeCompare(String(a.latest_at || "")));
-});
-const passPages = computed(() =>
-  Math.max(1, Math.ceil(passGroups.value.length / 10)),
-);
-const pagedPasses = computed(() =>
-  passGroups.value.slice((passPage.value - 1) * 10, passPage.value * 10),
-);
-const eventPages = computed(() =>
-  Math.max(1, Math.ceil(events.value.length / 20)),
-);
-const pagedEvents = computed(() =>
-  events.value.slice((eventPage.value - 1) * 20, eventPage.value * 20),
-);
-const judgmentRequest = computed(() => {
-  const chapter = detail.value?.chapters.find(
-    (c) => c.uid === selectedChapter.value,
-  );
-  return chapter
-    ? detail.value?.judgment_requests.find(
-        (request) => request.objective_id === chapter.id,
-      )
-    : null;
-});
-const blockedContext = computed(() =>
-  detail.value?.blockers.find(
-    (blocker) => blocker.objective_uid === selectedChapter.value,
-  ),
-);
-const currentChapter = computed(() => detail.value?.chapters.find(row => row.status === "blocked") || detail.value?.chapters.find(row => row.status === "in_progress") || detail.value?.chapters.find(row => row.status !== "proven") || null);
-const graphNodes = computed(() => {
-  const roots =
-    diagram.value?.nodes.filter(
-      (node) =>
-        !diagram.value?.edges.some(
-          (edge) => edge.type === "contains" && edge.to === node.id,
-        ),
-    ) || [];
-  return roots.map((node, index) => {
-    const row = Math.floor(index / 3),
-      slot = index % 3,
-      col = row % 2 ? 2 - slot : slot;
-    return {
-      ...node,
-      x: 50 + col * 330,
-      y: 55 + row * 150,
-      width: 260,
-      height: 82,
-    };
-  });
-});
-const graphHeight = computed(() =>
-  Math.max(300, Math.ceil(graphNodes.value.length / 3) * 150 + 80),
-);
-const flowSummary=computed(()=>{const roots=graphNodes.value,current=roots.find(node=>node.phase==='blocked')||roots.find(node=>node.phase==='active')||null,next=roots.find(node=>node.phase==='planned')||null;return{current,next,completed:roots.filter(node=>node.phase==='completed').length,returns:(diagram.value?.edges||[]).filter(edge=>['returns','retry'].includes(edge.type)).length}})
-const graphNode = (id: string) =>
-  graphNodes.value.find((node) => node.id === id);
-const edgeCritical=(edge:{from:string;to:string;type:string})=>{const from=graphNode(edge.from),to=graphNode(edge.to);return edge.type==='precedes'&&Boolean(from&&to&&['active','blocked'].includes(from.phase)&&to.phase==='planned')}
-function inspectGraphNode(id:string){if(id.startsWith('proposal:')){activeView.value='planning';return}const chapter=detail.value?.chapters.find(row=>row.uid===id);if(chapter)inspectChapter(chapter)}
-function graphPath(edge: { from: string; to: string; type: string }) {
-  const a = graphNode(edge.from),
-    b = graphNode(edge.to);
-  if (!a || !b) return "";
-  if (edge.type === "retry")
-    return `M ${a.x + a.width} ${a.y + 20} C ${a.x + a.width + 85} ${a.y - 45}, ${a.x + a.width + 85} ${a.y + a.height + 45}, ${a.x + a.width} ${a.y + a.height - 18}`;
-  if (edge.type === "returns")
-    return `M ${a.x} ${a.y + 40} C ${a.x - 90} ${a.y + 40}, ${b.x - 90} ${b.y + 40}, ${b.x} ${b.y + 40}`;
-  return `M ${a.x + a.width / 2} ${a.y + a.height} C ${a.x + a.width / 2} ${(a.y + b.y + a.height) / 2}, ${b.x + b.width / 2} ${(a.y + b.y + a.height) / 2}, ${b.x + b.width / 2} ${b.y}`;
-}
-function inspectChapter(chapter: Chapter) {
-  selectedChapter.value = chapter.uid;
-  selectedPass.value = "";
-  if (chapter.status === "blocked") {
-    const blocker = detail.value?.blockers.find(
-      (item) => item.objective_id === chapter.id,
-    );
-    if (blocker?.pass_ref) selectedPass.value = String(blocker.pass_ref);
-    activeView.value = "evidence";
-  } else activeView.value = "chapters";
-}
-async function sync(provider: string) {
-  syncing.value = provider;
-  error.value = "";
-  try {
-    await fetch(`/api/sync/${provider}`, { method: "POST" }).then(async (r) => {
-      if (!r.ok) throw new Error((await r.json()).message);
-    });
-    connections.value = await api("/sync");
-  } catch (e: any) {
-    error.value = e.message;
-  } finally {
-    syncing.value = "";
-  }
-}
-async function toggleProject() {
-  if (!detail.value) return;
-  const status = detail.value.status === "archived" ? "active" : "archived";
-  const response = await fetch("/api/ingest", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "Idempotency-Key": `project-status:${detail.value.uid}:${status}:${Date.now()}`,
-    },
-    body: JSON.stringify({
-      project: detail.value.slug,
-      kind: "project.updated",
-      actor_kind: "human",
-      actor: "dashboard",
-      assertion: "human_judgment",
-      summary: `Project tracking ${status}`,
-      payload: { status },
-    }),
-  });
-  if (!response.ok) throw new Error((await response.json()).message);
-  await loadProjects();
-  await loadProject();
-}
-async function scanMemory() {
-  memoryBusy.value = true;
-  error.value = "";
-  try {
-    localMemory.value = await api("/memory/local");
-  } catch (e: any) {
-    error.value = e.message;
-  } finally {
-    memoryBusy.value = false;
-  }
-}
-async function previewRecovery(){if(!selected.value)return;recoveryBusy.value=true;error.value="";try{memoryRecovery.value=await api(`/projects/${selected.value}/memory/recovery`)}catch(e:any){error.value=e.message}finally{recoveryBusy.value=false}}
-async function importRecovery(){if(!selected.value||!memoryRecovery.value?.summary?.new)return;recoveryBusy.value=true;error.value="";try{const paths=memoryRecovery.value.candidates.filter((row:any)=>!row.already_recorded).map((row:any)=>row.path),response=await fetch(`/api/projects/${selected.value}/memory/recovery`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({since:memoryRecovery.value.since,paths})});if(!response.ok)throw new Error((await response.json()).message);await response.json();await Promise.all([previewRecovery(),loadProject(true)]);activeView.value='evidence';selectedChapter.value=''}catch(e:any){error.value=e.message}finally{recoveryBusy.value=false}}
-async function addDiscovered(project: any) {
-  memoryBusy.value = true;
-  try {
-    const response = await fetch("/api/memory/local/apply", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ projects: [project] }),
-    });
-    if (!response.ok) throw new Error((await response.json()).message);
-    await loadProjects();
-    await scanMemory();
-    await loadPortfolio();
-  } catch (e: any) {
-    error.value = e.message;
-  } finally {
-    memoryBusy.value = false;
-  }
-}
-async function openProjectAdd(){projectAddOpen.value=true;projectPreview.value=null;projectCandidatePath.value="";projectCandidateName.value="";await scanMemory()}
-async function previewProjectCandidate(project?:any){memoryBusy.value=true;error.value="";projectPreview.value=null;try{const path=project?.path||projectCandidatePath.value,name=project?.name||projectCandidateName.value;projectCandidatePath.value=path;projectCandidateName.value=name||"";const response=await fetch('/api/memory/local/preview',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({path,name})});if(!response.ok)throw new Error((await response.json()).message);projectPreview.value=await response.json();projectCandidateName.value=projectPreview.value.name}catch(e:any){error.value=e.message}finally{memoryBusy.value=false}}
-async function confirmProjectCandidate(){if(!projectPreview.value||projectPreview.value.tracked)return;await addDiscovered({...projectPreview.value,name:projectCandidateName.value});projectAddOpen.value=false;const added=projects.value.find(project=>project.description?.includes(projectPreview.value.path));if(added){selected.value=added.slug;activeView.value='overview';await loadProject()}}
-async function recordJudgment() {
-  if (!selectedChapter.value || !judgmentText.value.trim()) return;
-  judgmentBusy.value = true;
-  error.value = "";
-  try {
-    const response = await fetch("/api/ingest", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "Idempotency-Key": `human-judgment:${selectedChapter.value}:${Date.now()}`,
-      },
-      body: JSON.stringify({
-        project: selected.value,
-        objective: selectedChapter.value,
-        kind: "verdict.recorded",
-        actor_kind: "human",
-        actor: "dashboard user",
-        assertion: "human_judgment",
-        summary: judgmentText.value.trim(),
-        payload: {
-          verdict: judgmentVerdict.value,
-          rationale: judgmentText.value.trim(),
-        },
-        source: "orchestrator dashboard",
-      }),
-    });
-    if (!response.ok) throw new Error((await response.json()).message);
-    judgmentText.value = "";
-    judgmentVerdict.value = "inconclusive";
-    await loadProject();
-  } catch (e: any) {
-    error.value = e.message;
-  } finally {
-    judgmentBusy.value = false;
-  }
-}
+async function addPilotDecisionNote(){const session=selectedSession.value,run=session?.metadata?.pilot_run_uid,pilot=session?.metadata?.pilot_uid,note=pilotDecisionNote.value.trim();if(!session||!run||!pilot||!pilotDecisionRequest.value||!note)return;pilotDecisionBusy.value=true;error.value='';pilotRoomNotice.value='';try{if(!pilotRoomRoot.value?.active)await resumePilotRoot();const root=pilotRoomRoot.value;if(!root?.active)throw new Error('Le pilote central n’a pas pu être repris.');const content=`Commentaire humain sur l’action proposée — ${note}\n\nCe commentaire ne vaut ni autorisation ni refus. Intègre-le à ton analyse, réponds ou reformule ta proposition, puis reste en attente d’une décision explicite.`;const result=await api(`projects/${session.project_slug}/pilots/${pilot}/rooms/${run}/messages`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({content,target:root.uid,sender:'Votre note',kind:'note'})});if(result.delivered!==1)throw new Error('La note n’a pas atteint le terminal du pilote.');pilotRoomState.value=result.room;pilotDecisionNote.value='';pilotRoomNotice.value='Note transmise. L’arbitrage reste en attente de votre décision.'}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{pilotDecisionBusy.value=false}}
+async function resumePilotRoot(){const root=pilotRoomRoot.value;if(!root)return;pilotTechnicalOpen.value=true;pilotChatOpen.value=false;await nextTick();await mountTerminal(root);if(!root.active)await resumeSession();pilotTechnicalOpen.value=false;pilotChatOpen.value=true;await nextTick();scrollPilotChat()}
+async function continuePilotWorkflow(){const current=selectedSession.value,run=current?.metadata?.pilot_run_uid,pilot=current?.metadata?.pilot_uid;if(!current||!run||!pilot||sessionResumeBusy.value)return;sessionResumeBusy.value=true;error.value='';try{const result=await api(`projects/${current.project_slug}/pilots/${pilot}/rooms/${run}/continue`,{method:'POST'});await loadPilotRoom();if(result.session)await mountTerminal(result.session)}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{sessionResumeBusy.value=false}}
+async function showPilotTechnical(item:Session=selectedSession.value as Session){if(!item)return;pilotChatOpen.value=false;pilotTechnicalOpen.value=true;await nextTick();await mountTerminal(item);fitAddon?.fit()}
+async function openPilotConversation(item:Session=pilotRoomRoot.value as Session){if(!item)return;disposeTerminal();pilotTechnicalOpen.value=false;pilotChatOpen.value=true;view.value='terminal';selectedSession.value=item;if(item.project_slug)selectedProject.value=item.project_slug;syncRoute();await loadSessionAssets();await loadPilotRoom();await nextTick();scrollPilotChat();document.querySelector<HTMLTextAreaElement>('.pilot-chat-main textarea')?.focus({preventScroll:true});pilotRoomNotice.value=item.active?'Conversation prête : écrivez votre message au pilote central.':'Le pilote central doit être repris avant de recevoir un message.';pilotConversationFocus.value=true;if(pilotConversationTimer!==null)window.clearTimeout(pilotConversationTimer);pilotConversationTimer=window.setTimeout(()=>{pilotConversationFocus.value=false;pilotConversationTimer=null},1800)}
+async function openPilotAgentTerminal(item:Session){if(!item.metadata?.pilot_parent_session_uid)return openPilotConversation(item);pilotChatOpen.value=false;pilotTechnicalOpen.value=true;await nextTick();await mountTerminal(item);fitAddon?.fit()}
+function cleanTechnicalHistory(value:string){return value.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g,'').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').replace(/\x1b[()][A-Z0-9]/g,'').replace(/\x1b[@-_]/g,'').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g,'').replace(/\r/g,'').replace(/\n{4,}/g,'\n\n\n').trim()}
+async function openPilotTechnicalHistory(item:Session|null=pilotRoomRoot.value||selectedSession.value){if(!item)return;pilotDecisionOpen.value=false;pilotTechnicalSession.value=item;pilotTechnicalHistoryOpen.value=true;pilotTechnicalHistoryLoading.value=false;pilotTechnicalHistoryRaw.value=false;pilotTechnicalHistoryError.value='';pilotTechnicalAsset.value=null;const insight=pilotRoomState.value?.insights?.find((row:any)=>row.session_uid===item.uid&&row.checkpoint),recent=pilotConversationMessages.value.slice(-8);pilotTechnicalHistory.value=insight?.checkpoint||(recent.length?`Échanges récents de la salle\n\n${recent.map((row:any)=>`${row.sender}\n${row.content}`).join('\n\n')}`:'Aucun résumé structuré n’a encore été publié pour cette session. Vous pouvez consulter la sortie technique brute si nécessaire.')}
+async function loadPilotTechnicalRawHistory(){const item=pilotTechnicalSession.value;if(!item)return;pilotTechnicalHistoryLoading.value=true;pilotTechnicalHistoryRaw.value=true;pilotTechnicalHistoryError.value='';pilotTechnicalHistory.value='';try{const assets=(await api(`terminal/sessions/${item.uid}/assets`)).assets||[],asset=assets.find((row:any)=>row.type==='report'&&row.mime==='text/plain')||assets.find((row:any)=>/transcription/i.test(row.label||''));pilotTechnicalAsset.value=asset||null;if(asset){const content=String(await api(`terminal/sessions/${item.uid}/assets/${asset.uid}`));pilotTechnicalHistory.value=cleanTechnicalHistory(content)}else{const transcript=await api(`terminal/sessions/${item.uid}/transcript?latest=1&limit=1500`);pilotTechnicalHistory.value=cleanTechnicalHistory(transcript.chunks.map((chunk:any)=>chunk.content).join(''))||'Aucune sortie enregistrée.'}}catch(value){pilotTechnicalHistoryError.value=value instanceof Error?value.message:String(value)}finally{pilotTechnicalHistoryLoading.value=false}}
+async function openRawPilotTerminal(){const item=pilotTechnicalSession.value;pilotTechnicalHistoryOpen.value=false;if(item)await showPilotTechnical(item)}
+async function resumeTechnicalSession(){const item=pilotTechnicalSession.value;pilotTechnicalHistoryOpen.value=false;if(!item)return;await mountTerminal(item);if(!item.active)await resumeSession();pilotTechnicalOpen.value=false}
+function browserNotify(title:string,body:string,session:Session|null,eventKey:string){if(!notificationsEnabled.value||notificationPermission.value!=='granted'||notifiedBrowserEvents.has(eventKey))return;notifiedBrowserEvents.add(eventKey);const notice=new Notification(title,{body,tag:eventKey,icon:orchestratorMark});notice.onclick=()=>{window.focus();notice.close();if(session){const current=sessions.value.find(row=>row.uid===session.uid)||session;void mountTerminal(current)}}}
+function promptFingerprint(value:string){let hash=5381;for(const character of cleanTechnicalHistory(value).slice(-1200))hash=((hash<<5)+hash)^character.charCodeAt(0);return(hash>>>0).toString(36)}
+function notifyHumanInput(session:Session,content:string){if(waitingSessionPrompts.has(session.uid))return;waitingSessionPrompts.add(session.uid);const key=`confirmation:${session.uid}:${promptFingerprint(content)}`;browserNotify('Confirmation requise',`${session.title} attend votre réponse.`,session,key)}
+async function toggleBrowserNotifications(){error.value='';if(!notificationsSupported){error.value='Les notifications ne sont pas disponibles dans ce navigateur.';return}if(notificationsEnabled.value){notificationsEnabled.value=false;localStorage.setItem('orchestrator-browser-notifications','disabled');return}const permission=Notification.permission==='default'?await Notification.requestPermission():Notification.permission;notificationPermission.value=permission;if(permission==='granted'){notificationsEnabled.value=true;localStorage.setItem('orchestrator-browser-notifications','enabled');const notice=new Notification('Alertes Orchestrator activées',{body:'Les fins de session et demandes de confirmation seront signalées.',tag:'notifications-enabled',icon:orchestratorMark});window.setTimeout(()=>notice.close(),4500);void pollSessionNotifications()}else{notificationsEnabled.value=false;localStorage.setItem('orchestrator-browser-notifications','disabled');if(permission==='denied')error.value='Les notifications sont bloquées dans les réglages du navigateur.'}}
+async function refreshSessions(){const previous=new Map(sessions.value.map(row=>[row.uid,row])),next:Session[]=(await api('terminal/sessions')).sessions;if(sessionStateReady)for(const row of next){const old=previous.get(row.uid);if(old?.active&&!row.active)browserNotify(row.status==='failed'?'Session en échec':'Session terminée',row.title,row,`exit:${row.uid}`)}sessions.value=next;const current=sessions.value.find(row=>row.uid===selectedSession.value?.uid);if(current)selectedSession.value=current}
+async function pollSessionNotifications(){if(!remoteGate.value.authenticated)return;try{await refreshSessions();if(!notificationsEnabled.value)return;const active=sessions.value.filter(row=>row.active);await Promise.all(active.map(async row=>{try{const transcript=await api(`terminal/sessions/${row.uid}/transcript?limit=20`),tail=transcript.chunks.map((chunk:any)=>chunk.content).join('').slice(-5000);if(terminalNeedsDirectInput(tail))notifyHumanInput(row,tail);else waitingSessionPrompts.delete(row.uid)}catch{}}))}catch{}}
+function disposeTerminal(){socket?.close();socket=null;resizeObserver?.disconnect();resizeObserver=null;if(sessionAssetsInterval!==null)window.clearInterval(sessionAssetsInterval);sessionAssetsInterval=null;if(sessionAssetsDebounce!==null)window.clearTimeout(sessionAssetsDebounce);sessionAssetsDebounce=null;if(pilotRoomInterval!==null)window.clearInterval(pilotRoomInterval);pilotRoomInterval=null;if(terminalSelectionTimer!==null)window.clearTimeout(terminalSelectionTimer);terminalSelectionTimer=null;if(terminalCopyNoticeTimer!==null)window.clearTimeout(terminalCopyNoticeTimer);terminalCopyNoticeTimer=null;terminalLastSelection='';terminalCopyNotice.value=false;terminal?.dispose();terminal=null;fitAddon=null;terminalPromptTail='';terminalHistoryOpen.value=false;terminalHistoryText.value='';sessionArchiveMessages.value=[];connection.value='idle'}
+async function writeClipboard(text:string){try{await navigator.clipboard.writeText(text)}catch{const area=document.createElement('textarea');area.value=text;area.setAttribute('readonly','');area.style.position='fixed';area.style.opacity='0';document.body.appendChild(area);area.select();document.execCommand('copy');area.remove()}}
+function copySelectedTerminalText(){if(terminalSelectionTimer!==null)window.clearTimeout(terminalSelectionTimer);const selection=terminal?.getSelection()||'';if(!selection){terminalLastSelection='';return}terminalSelectionTimer=window.setTimeout(async()=>{terminalSelectionTimer=null;const current=terminal?.getSelection()||'';if(!current||current!==selection||current===terminalLastSelection)return;try{await writeClipboard(current);terminalLastSelection=current;terminalCopyNotice.value=true;if(terminalCopyNoticeTimer!==null)window.clearTimeout(terminalCopyNoticeTimer);terminalCopyNoticeTimer=window.setTimeout(()=>{terminalCopyNotice.value=false;terminalCopyNoticeTimer=null},1600)}catch{}},300)}
+async function showTerminalHistory(offset=0){terminalHistoryOpen.value=true;await nextTick();const host=terminalHistoryHost.value;if(host){host.scrollTop=host.scrollHeight;if(offset)host.scrollTop=Math.max(0,host.scrollTop-offset)}}
+async function hideTerminalHistory(){terminalHistoryOpen.value=false;await nextTick();fitAddon?.fit();if(terminalInputMode.value==='direct')terminal?.focus()}
+function handleTerminalWheel(event:WheelEvent){if(event.deltaY>=0||terminalHistoryOpen.value||!terminal)return;if(terminal.buffer.active.baseY>0)return;event.preventDefault();void showTerminalHistory(Math.max(140,Math.abs(event.deltaY)*3))}
+function appendTerminalHistory(content:string){const cleaned=cleanTechnicalHistory(content);if(!cleaned)return;terminalHistoryText.value=`${terminalHistoryText.value}${terminalHistoryText.value?'\n':''}${cleaned}`.slice(-500000)}
+async function setTerminalInputMode(mode:'composer'|'direct'){terminalInputMode.value=mode;if(terminal){terminal.options.disableStdin=mode!=='direct';if(mode==='direct')terminal.focus();else terminal.blur()}if(mode==='composer'){await nextTick();document.querySelector<HTMLTextAreaElement>('.session-composer textarea')?.focus()}}
+function terminalNeedsDirectInput(content:string){return /(?:Enter\s+to\s+confirm|Esc\s+to\s+cancel|Resume\s+from\s+summary|Resume\s+full\s+session|Don't\s+ask\s+me\s+again|Press\s+(?:Enter|Return)|Select\s+(?:an?|the)\s+option|Use\s+(?:the\s+)?(?:arrow|up|down))/i.test(content)}
+async function loadSessionAssets(refreshRoom=true){const sessionUid=selectedSession.value?.uid;if(!sessionUid){sessionAssets.value=[];pilotRoomState.value=null;return}try{const assets=(await api(`terminal/sessions/${sessionUid}/assets`)).assets;if(selectedSession.value?.uid===sessionUid)sessionAssets.value=assets}catch{if(selectedSession.value?.uid===sessionUid)sessionAssets.value=[]}if(refreshRoom)await loadPilotRoom()}
+function isReadableSessionAsset(item:any){return /^(text\/|application\/(?:json|javascript|xml))/i.test(item?.mime||'')||/\.(?:txt|md|json|ya?ml|xml|csv|log|js|jsx|ts|tsx|vue|css|scss|html|php|py|rb|java|kt|swift|go|rs|c|cc|cpp|h|hpp|cs|shader|sql|sh)$/i.test(item?.path||item?.name||'')}
+async function openSessionAsset(item:any){selectedSessionAsset.value=item;selectedSessionAssetContent.value='';selectedSessionAssetError.value='';if(String(item?.mime||'').startsWith('image/')||!isReadableSessionAsset(item))return;selectedSessionAssetLoading.value=true;try{const response=await api(`terminal/sessions/${selectedSession.value?.uid}/assets/${item.uid}`),raw=typeof response==='string'?response:JSON.stringify(response,null,2),content=item.type==='report'?cleanTechnicalHistory(raw):raw.replace(/\r/g,'');selectedSessionAssetContent.value=content.slice(0,250000);if(content.length>250000)selectedSessionAssetContent.value+='\n\n[Contenu tronqué à 250 000 caractères]'}catch(value){selectedSessionAssetError.value=value instanceof Error?value.message:String(value)}finally{selectedSessionAssetLoading.value=false}}
+function scheduleSessionAssetsRefresh(delay=250){if(sessionAssetsDebounce!==null)window.clearTimeout(sessionAssetsDebounce);sessionAssetsDebounce=window.setTimeout(()=>{sessionAssetsDebounce=null;void loadSessionAssets()},delay)}
+async function mountTerminal(session:Session,attachToken?:string,historyMode:'push'|'none'='push'){disposeTerminal();terminalInputMode.value='composer';sessionMessage.value='';sessionPendingAttachments.value=[];sessionAssets.value=[];selectedSessionAsset.value=null;view.value='terminal';selectedSession.value=session;if(session.project_slug)selectedProject.value=session.project_slug;if(historyMode==='push')syncRoute();await loadSessionAssets();await nextTick();if(!terminalHost.value)return;terminal=new Terminal({cursorBlink:true,disableStdin:true,fontFamily:"'SFMono-Regular',Consolas,monospace",fontSize:14,lineHeight:1.15,theme:{background:'#080b10',foreground:'#e7edf5',cursor:'#7cf6bf',selectionBackground:'#305a4d'},scrollback:20000});fitAddon=new FitAddon();terminal.loadAddon(fitAddon);terminal.open(terminalHost.value);terminal.onSelectionChange(copySelectedTerminalText);fitAddon.fit();const transcript=await api(`terminal/sessions/${session.uid}/transcript?latest=1&limit=2000`),rawHistory=transcript.chunks.map((chunk:any)=>chunk.content).join('');terminalHistoryText.value=cleanTechnicalHistory(rawHistory).slice(-500000);terminalPromptTail=transcript.chunks.slice(-30).map((chunk:any)=>chunk.content).join('').slice(-3000);if(!session.active){try{const conversation=await api(`terminal/sessions/${session.uid}/conversation?limit=100`);if(!Array.isArray(conversation?.messages))throw new Error('Native conversation unavailable.');sessionArchiveMessages.value=conversation.messages}catch{let messages:any[]=pilotRoomState.value?.messages||[];if(session.project_slug&&session.metadata?.pilot_uid&&session.metadata?.pilot_run_uid)try{const room=await api(`projects/${session.project_slug}/pilots/${session.metadata.pilot_uid}/rooms/${session.metadata.pilot_run_uid}`);messages=room.messages||messages}catch{}const checkpoint=[...messages].reverse().find((item:any)=>item.kind==='agent_checkpoint'&&(!session.metadata?.pilot_agent_name||item.sender===session.metadata.pilot_agent_name));if(checkpoint)sessionArchiveMessages.value=[{uid:`checkpoint-${session.uid}`,role:'assistant',content:String(checkpoint.content||'').replace(/^Checkpoint automatique[^\n]*\n?/i,''),created_at:checkpoint.created_at}]}terminalHistoryOpen.value=true;connection.value='closed';return}for(const chunk of transcript.chunks)terminal.write(chunk.content);if(terminalNeedsDirectInput(terminalPromptTail)){await setTerminalInputMode('direct');notifyHumanInput(session,terminalPromptTail)}sessionAssetsInterval=window.setInterval(()=>void loadSessionAssets(false),2000);connection.value='connecting';const attachment=attachToken?{attach_token:attachToken}:await api(`terminal/sessions/${session.uid}/attach`,{method:'POST'}),scheme=location.protocol==='https:'?'wss':'ws';socket=new WebSocket(`${scheme}://${location.host}/api/terminal/sessions/${session.uid}/stream?token=${encodeURIComponent(attachment.attach_token)}`);socket.onopen=()=>{connection.value='live';fitAddon?.fit();socket?.send(JSON.stringify({type:'resize',cols:terminal?.cols,rows:terminal?.rows}))};socket.onmessage=event=>{const message=JSON.parse(event.data);if(message.type==='output'){terminal?.write(message.content);appendTerminalHistory(message.content);terminalPromptTail=(terminalPromptTail+message.content).slice(-3000);if(terminalNeedsDirectInput(terminalPromptTail)){if(terminalInputMode.value!=='direct')void setTerminalInputMode('direct');notifyHumanInput(session,terminalPromptTail)}if(/\.(?:png|jpe?g|webp|gif|svg|pdf|md|json|txt)\b/i.test(message.content))scheduleSessionAssetsRefresh()}if(message.type==='assets_changed')scheduleSessionAssetsRefresh(80);if(message.type==='exit'){connection.value='closed';browserNotify(message.status==='failed'?'Session en échec':'Session terminée',session.title,session,`exit:${session.uid}`);void refreshSessions();void loadSessionAssets()}};socket.onclose=()=>connection.value='closed';terminal.onData(content=>{if(terminalInputMode.value==='direct'&&socket?.readyState===WebSocket.OPEN){waitingSessionPrompts.delete(session.uid);socket.send(JSON.stringify({type:'input',content}))}});resizeObserver=new ResizeObserver(()=>{if(terminalHistoryOpen.value)return;fitAddon?.fit();if(socket?.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'resize',cols:terminal?.cols,rows:terminal?.rows}))});resizeObserver.observe(terminalHost.value)}
+async function createSession(){busy.value=true;error.value='';try{if((launchOptions.value.dangerously_bypass||launchOptions.value.permission_profile==='full_access')&&!dangerConfirmed.value)throw new Error('Confirmez le mode sans permissions avant de démarrer.');const linked=pendingSessionObjective.value,created=await api('terminal/sessions',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({provider:provider.value,project:selectedProject.value||null,title:sessionTitle.value||null,options:launchOptions.value,cols:120,rows:34,objective:linked?.uid||null,pass:linked?{source:'plan_direct'}:null,context:linked?{gdd_chapter_key:linked.gdd_chapter_key||null}:null})});sessionTitle.value='';launchOptions.value.prompt='';pendingSessionObjective.value=null;dangerConfirmed.value=false;await refreshSessions();await mountTerminal(created,created.attach_token)}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{busy.value=false}}
+async function stopSession(){if(!selectedSession.value)return;await api(`terminal/sessions/${selectedSession.value.uid}/stop`,{method:'POST'});await refreshSessions()}
+const fileDataUrl=(file:File)=>new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result||''));reader.onerror=()=>reject(reader.error||new Error('Impossible de lire cette pièce jointe.'));reader.readAsDataURL(file)})
+async function queueSessionFiles(files:File[]){const session=selectedSession.value;if(!session||!files.length||sessionUploading.value)return;sessionUploading.value=true;error.value='';try{for(const file of files){const attachment=await api(`terminal/sessions/${session.uid}/attachments`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:file.name||`image-collee-${Date.now()}.png`,data_url:await fileDataUrl(file)})});sessionPendingAttachments.value.push(attachment);session.metadata.attachments=[...(session.metadata.attachments||[]),attachment]}await loadSessionAssets()}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{sessionUploading.value=false}}
+async function uploadSessionFiles(event:Event){const input=event.target as HTMLInputElement;await queueSessionFiles(Array.from(input.files||[]));input.value=''}
+function pasteSessionFiles(event:ClipboardEvent){const clipboard=event.clipboardData;if(!clipboard)return;const files=Array.from(clipboard.files||[]);if(!files.length)for(const item of Array.from(clipboard.items||[])){if(item.kind!=='file')continue;const file=item.getAsFile();if(file)files.push(file)}if(!files.length)return;event.preventDefault();void queueSessionFiles(files)}
+function sessionAttachmentUrl(item:any){return selectedSession.value?`/api/terminal/sessions/${selectedSession.value.uid}/attachments/${item.uid}`:''}
+function sessionAssetUrl(item:any){return selectedSession.value?`/api/terminal/sessions/${selectedSession.value.uid}/assets/${item.uid}`:''}
+function sendSessionMessage(){const session=selectedSession.value,text=sessionMessage.value.trim(),attachments=sessionPendingAttachments.value;if(!session||(!text&&!attachments.length))return;if(socket?.readyState!==WebSocket.OPEN){error.value='La session n’est plus connectée.';return}const files=attachments.length?`Pièces jointes fournies par l’utilisateur :\n${attachments.map(item=>`- ${item.name} : ${item.path}`).join('\n')}`:'';waitingSessionPrompts.delete(session.uid);socket.send(JSON.stringify({type:'message',content:[text,files].filter(Boolean).join('\n\n')}));sessionMessage.value='';sessionPendingAttachments.value=[]}
+async function reportSession(){const session=selectedSession.value;if(!session||sessionReportBusy.value)return;sessionReportBusy.value=true;error.value='';try{const result=await api(`terminal/sessions/${session.uid}/report`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({summary:`Résultat de la session « ${session.title} » transmis pour vérification humaine.`})});selectedSession.value=result.session;browserNotify('Résultat prêt à vérifier',session.title,result.session,`verification:${session.uid}`);await refreshSessions();await openSessionVerification(result.session)}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{sessionReportBusy.value=false}}
+async function resumeSession(){const session=selectedSession.value;if(!session||sessionResumeBusy.value)return;sessionResumeBusy.value=true;error.value='';try{const resumed=await api(`terminal/sessions/${session.uid}/resume`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({})});await refreshSessions();await mountTerminal(resumed,resumed.attach_token)}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{sessionResumeBusy.value=false}}
+function isTextProof(item:any){return /^(text\/|application\/json)/i.test(item?.mime||'')||/\.(txt|md|json|csv|log)$/i.test(item?.locator||'')}
+async function openProofDetail(item:any){proofDetail.value=item;proofDetailContent.value='';proofDetailError.value='';if(isImageProof(item)||!item.local_available||!isTextProof(item))return;proofDetailLoading.value=true;try{const response=await fetch(previewUrl(item));if(!response.ok)throw new Error(`Lecture impossible (${response.status})`);const raw=await response.text(),content=raw.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g,'').replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').replace(/\x1b[@-_]/g,'').replace(/\r/g,'');proofDetailContent.value=content.slice(0,200000);if(content.length>200000)proofDetailContent.value+='\n\n[Contenu tronqué à 200 000 caractères]'}catch(value){proofDetailError.value=value instanceof Error?value.message:String(value)}finally{proofDetailLoading.value=false}}
+async function verifyProof(item:any){item.verificationBusy=true;try{const result=await api(`evidence/${item.uid}/verify`,{method:'POST'});item.verification=result.verification;item.verified_at=result.verified_at;item.actual_sha256=result.actual_sha256??null;item.actual_bytes=result.actual_bytes??null;return result}finally{item.verificationBusy=false}}
+async function verifyDisplayedProofs(){const proofs=[...verificationEvidence.value];if(!proofs.length||verificationBulkBusy.value)return;verificationBulkBusy.value=true;verificationBulkProgress.value={done:0,total:proofs.length};error.value='';try{for(const proof of proofs){await verifyProof(proof);verificationBulkProgress.value={...verificationBulkProgress.value,done:verificationBulkProgress.value.done+1}}}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{verificationBulkBusy.value=false}}
+function previewUrl(item:any,thumbnail=false){return `/api/evidence/${item.uid}/content${thumbnail?'?thumbnail=1':''}`}
+function openPlanEditor(){planOrder.value=activePlanObjectives.value.map((item:any)=>({...item}));planChapterLinks.value=Object.fromEntries(planOrder.value.map((item:any)=>[item.uid,item.gdd_chapter_key||'']));planEditing.value=true}
+function movePlanObjective(index:number,direction:-1|1){const target=index+direction;if(target<0||target>=planOrder.value.length)return;const rows=[...planOrder.value],[item]=rows.splice(index,1);rows.splice(target,0,item);planOrder.value=rows}
+async function savePlanOrder(){planSaving.value=true;error.value='';try{planning.value.plan=await api(`projects/${selectedProject.value}/planning/order`,{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({scope:'active',objectives:planOrder.value.map((item:any)=>item.uid),chapter_links:planChapterLinks.value})});planEditing.value=false}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{planSaving.value=false}}
+async function reviewProposal(item:any,status:'approved'|'rejected'){const placement=proposalPlacement.value[item.uid]||{chapter_key:'',before_uid:''};await api(`projects/${selectedProject.value}/planning/${item.uid}/review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({status,reviewer:'dashboard',...(status==='approved'?placement:{})})});await loadWorkspace()}
+async function scanReconciliation(){reconciliationBusy.value=true;error.value='';try{reconciliation.value=await api(`projects/${selectedProject.value}/reconciliation/scan`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({days:30,limit:120})})}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{reconciliationBusy.value=false}}
+async function refreshReconciledPlanning(){const plan=await api(`projects/${selectedProject.value}/planning`);planning.value=plan;selectedExecutionObjective.value=(plan.plan?.active||[]).find((row:any)=>row.status==='in_progress')||(plan.plan?.active||[]).find((row:any)=>row.status==='ready'&&!row.unmet_dependencies)||(plan.plan?.active||[]).find((row:any)=>row.status==='draft'&&!row.unmet_dependencies)||(plan.plan?.active||[])[0]||null;proposalPlacement.value=Object.fromEntries((plan.proposals||[]).filter((row:any)=>row.status==='proposed').map((row:any)=>[row.uid,{chapter_key:row.gdd_chapter_key||'',before_uid:''}]))}
+async function reviewReconciliation(item:any,decision:'accepted'|'rejected'){if(reconciliationBulk.value)return;reconciliationReviewing.value=item.fingerprint;error.value='';try{const result=await api(`projects/${selectedProject.value}/reconciliation/${item.fingerprint}/review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({decision})});reconciliation.value=result.workspace;if(decision==='accepted')await refreshReconciledPlanning()}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{reconciliationReviewing.value=''}}
+async function reviewAllReconciliation(decision:'accepted'|'rejected'){const items=[...(reconciliation.value.suggestions||[])];if(!items.length||reconciliationBulk.value)return;reconciliationBulk.value=decision;reconciliationBulkProgress.value={done:0,total:items.length};error.value='';try{for(const item of items){reconciliationReviewing.value=item.fingerprint;const result=await api(`projects/${selectedProject.value}/reconciliation/${item.fingerprint}/review`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({decision})});reconciliation.value=result.workspace;reconciliationBulkProgress.value={...reconciliationBulkProgress.value,done:reconciliationBulkProgress.value.done+1}}if(decision==='accepted')await refreshReconciledPlanning()}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{reconciliationReviewing.value='';reconciliationBulk.value='';reconciliationBulkProgress.value={done:0,total:0}}}
+async function openReconciliationSession(source:any){const sessionId=source.session_id||source.id;sourceConversationLoading.value=true;error.value='';try{sourceConversation.value={source:{id:sessionId},provider:source.provider,title:source.title,messages:[]};const result=await api(`projects/${selectedProject.value}/reconciliation/sessions/${encodeURIComponent(source.provider)}/${encodeURIComponent(sessionId)}`);sourceConversation.value={...result,source:{id:sessionId},provider:source.provider||result.provider,title:source.title||result.title}}catch(value){sourceConversation.value=null;error.value=value instanceof Error?value.message:String(value)}finally{sourceConversationLoading.value=false}}
+async function resolveJudgment(item:any,outcome:'accepted'|'rejected'){await api(`projects/${selectedProject.value}/judgments/${item.uid}/resolve`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({outcome})});await loadWorkspace();attention.value=await api('attention')}
+async function loadTokens(){tokens.value=await api('security/tokens')}
+async function loadCloudSync(){try{cloudConnections.value=await api('sync')}catch(value){error.value=value instanceof Error?value.message:String(value)}}
+async function runCloudSync(item:any){if(cloudSyncing.value)return;cloudSyncing.value=item.provider;cloudSyncNotice.value='';error.value='';const poll=window.setInterval(()=>void loadCloudSync(),900);try{await api(`sync/${encodeURIComponent(item.provider)}`,{method:'POST'});cloudSyncNotice.value=language.value==='fr'?`${item.label} synchronisé.`:`${item.label} synchronized.`;await loadCloudSync()}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{window.clearInterval(poll);cloudSyncing.value=''}}
+async function checkRemoteGate(){const headers=new Headers(),token=localStorage.getItem('orchestrator-remote-token');if(token)headers.set('authorization',`Bearer ${token}`);const response=await fetch('/api/remote/access/bootstrap',{headers}),result=await response.json();remoteGate.value={checked:true,remote:Boolean(result.remote),authenticated:Boolean(result.authenticated),device_label:result.device_label||''}}
+async function unlockRemote(){if(remoteUnlockBusy.value)return;remoteUnlockBusy.value=true;error.value='';try{const response=await fetch('/api/remote/access/pair',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({code:remoteCode.value,label:remoteDeviceLabel.value,machine_id:navigator.userAgent.slice(0,120)})}),result=await response.json();if(!response.ok)throw new Error(result.message||`Erreur (${response.status})`);localStorage.setItem('orchestrator-remote-token',result.token);remoteGate.value={checked:true,remote:true,authenticated:true,device_label:result.label};remoteCode.value='';await bootstrap()}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{remoteUnlockBusy.value=false}}
+async function loadRemoteAccess(){try{const previousUrl=remoteAccess.value?.public_url;remoteAccess.value=await api('remote/access/status');if(remoteAccess.value?.public_url!==previousUrl)remoteQr.value=remoteAccess.value?.public_url?await QRCode.toDataURL(remoteAccess.value.public_url,{width:320,margin:1,color:{dark:'#102119',light:'#ffffff'}}):'';if(['starting','installing','online'].includes(remoteAccess.value?.phase)&&!remoteAccessInterval)remoteAccessInterval=window.setInterval(()=>void loadRemoteAccess(),3000);if(!['starting','installing','online'].includes(remoteAccess.value?.phase)&&remoteAccessInterval){clearInterval(remoteAccessInterval);remoteAccessInterval=null}}catch(value){error.value=value instanceof Error?value.message:String(value)}}
+async function remoteAction(action:'install'|'start'|'stop'|'code'){if(remoteAccessBusy.value)return;remoteAccessBusy.value=true;error.value='';try{remoteAccess.value=await api(`remote/access/${action}`,{method:'POST'});await loadRemoteAccess()}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{remoteAccessBusy.value=false}}
+async function togglePreventIdle(){if(preventIdleBusy.value||!remoteAccess.value?.prevent_idle?.available)return;preventIdleBusy.value=true;error.value='';try{remoteAccess.value=await api('remote/access/prevent-idle',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({enabled:!remoteAccess.value.prevent_idle.active})})}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{preventIdleBusy.value=false}}
+async function copyRemoteLink(){if(!remoteAccess.value?.public_url)return;await navigator.clipboard.writeText(remoteAccess.value.public_url);remoteCopied.value=true;window.setTimeout(()=>remoteCopied.value=false,1800)}
+async function loadAiUsage(){if(aiUsageRefreshBusy.value)return;aiUsageRefreshBusy.value=true;aiUsageRefreshNotice.value='';error.value='';try{aiUsage.value=await api(`ai-usage?refresh=${Date.now()}`);aiUsageDraft.value=JSON.parse(JSON.stringify(aiUsage.value.settings));const at=new Intl.DateTimeFormat(language.value==='fr'?'fr-FR':'en-US',{hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(new Date(aiUsage.value.generated_at));aiUsageRefreshNotice.value=language.value==='fr'?`Quotas relus à ${at}.`:`Quotas refreshed at ${at}.`}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{aiUsageRefreshBusy.value=false}}
+async function saveAiUsage(){aiUsageBusy.value=true;error.value='';try{const result=await api('ai-usage/settings',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify(aiUsageDraft.value)});aiUsage.value=result.dashboard;aiUsageDraft.value=JSON.parse(JSON.stringify(result.dashboard.settings))}catch(value){error.value=value instanceof Error?value.message:String(value)}finally{aiUsageBusy.value=false}}
+const usagePeriodLabel=(period:string)=>language.value==='fr'?(period==='daily'?'Aujourd’hui':period==='weekly'?'Cette semaine':'Ce mois'):(period==='daily'?'Today':period==='weekly'?'This week':'This month')
+const quotaResetDate=(value:string)=>value?new Intl.DateTimeFormat(language.value==='fr'?'fr-FR':'en-US',{dateStyle:'long',timeStyle:'short'}).format(new Date(value)):tr('Date et heure non communiquées')
+async function revokeToken(item:any){await api(`security/tokens/${item.uid}/revoke`,{method:'POST'});await loadTokens()}
+async function revokeAllTokens(){if(!tokens.value.some(item=>!item.revoked_at)||!confirm('Révoquer immédiatement tous les appareils associés ?'))return;await api('security/tokens/revoke-all',{method:'POST'});await loadTokens()}
+function applyTheme(){document.documentElement.dataset.theme=resolvedTheme.value;document.documentElement.style.colorScheme=resolvedTheme.value}
+function setTheme(value:ThemePreference){theme.value=value;localStorage.setItem('orchestrator-theme',value);applyTheme()}
+function handleSystemThemeChange(event:MediaQueryListEvent){systemDark.value=event.matches;if(theme.value==='system')applyTheme()}
+
+const handlePopState=()=>{void restoreLocation()}
+onMounted(async()=>{applyTheme();document.documentElement.lang=language.value;systemThemeQuery.addEventListener('change',handleSystemThemeChange);window.addEventListener('popstate',handlePopState);try{await checkRemoteGate();if(remoteGate.value.authenticated)await bootstrap()}catch(value){remoteGate.value={...remoteGate.value,checked:true};error.value=value instanceof Error?value.message:String(value)}})
+onBeforeUnmount(()=>{systemThemeQuery.removeEventListener('change',handleSystemThemeChange);window.removeEventListener('popstate',handlePopState);if(remoteAccessInterval)clearInterval(remoteAccessInterval);if(sessionNotificationsInterval)clearInterval(sessionNotificationsInterval);disposeTerminal()})
 </script>
 
 <template>
-  <a class="skip-link" href="#main-content">Skip to content</a>
-  <div class="shell">
-    <aside>
-      <a class="brand" href="#" @click.prevent="activeView = 'projects'; loadPortfolio()"
-        ><img :src="orchestratorMark" alt="" width="40" height="40">
-        <div>Orchestrator<small>Project memory</small></div></a
-      >
-      <section class="nav-section nav-section-global">
-        <div class="nav-heading"><span>Workspace</span><small>Global</small></div>
-        <nav aria-label="Workspace" class="workspace-nav">
-          <span class="nav-group-label">Review</span>
-          <button class="all-projects" :class="{ active: activeView === 'today' }" @click="activeView = 'today'; loadToday()"><span>Today</span><small>Priorities and follow-up</small></button>
-          <button class="all-projects" :class="{ active: activeView === 'projects' }" @click="activeView = 'projects'; loadPortfolio()"><span>Projects</span><small>Portfolio overview</small></button>
-          <button class="all-projects" :class="{ active: activeView === 'briefing' }" @click="activeView = 'briefing'; loadBriefing()"><span>Recent briefing</span><small>What changed</small></button>
-          <button class="all-projects" :class="{ active: activeView === 'attention' }" @click="activeView = 'attention'; loadAttention()"><span>Attention center</span><small>{{ attentionItems.length }} signals</small></button>
-          <button class="all-projects" :class="{ active: activeView === 'management' }" @click="activeView = 'management'; loadManagement()"><span>Management cockpit</span><small>Reports and activity</small></button>
-          <button class="all-projects" :class="{ active: activeView === 'reports' }" @click="activeView = 'reports'"><span>Reports & reviews</span><small>Daily and weekly ritual</small></button>
-          <button class="all-projects" :class="{ active: activeView === 'team' }" @click="activeView = 'team'; loadTeam()"><span>Team workspace</span><small>People, machines and tickets</small></button>
-          <span class="nav-group-label">Tools</span>
-          <button class="all-projects" :class="{ active: activeView === 'search' }" @click="activeView = 'search'"><span>Search memory</span><small>All records</small></button>
-          <button class="all-projects" :class="{ active: activeView === 'sync-center' }" @click="activeView = 'sync-center'; loadSyncCenter()"><span>Sync center</span><small>External registries</small></button>
-          <button class="all-projects" :class="{ active: activeView === 'health' }" @click="activeView = 'health'; loadSystemHealth()"><span>System health</span><small>Read-only checks</small></button>
-        </nav>
-      </section>
-      <section class="nav-section nav-section-projects">
-        <div class="nav-heading"><span>Tracked projects</span><small>{{ projects.length }}</small></div>
-        <nav aria-label="Tracked projects" class="project-nav">
-          <button
-            v-for="p in projects"
-            :key="p.uid"
-            :class="{ active: !isGlobalView(activeView) && selected === p.slug }"
-            :aria-current="!isGlobalView(activeView) && selected === p.slug ? 'page' : undefined"
-            @click="openTrackedProject(p)"
-          >
-            <span>{{ p.name }}</span
-            ><small>{{ p.open_blockers ? `${p.open_blockers} blocked` : 'On track' }}</small>
-          </button>
-        </nav>
-      </section>
-      <section v-if="savedViews.length" class="nav-section nav-section-saved">
-        <div class="nav-heading"><span>Saved views</span><small>{{ savedViews.length }}</small></div>
-        <nav aria-label="Saved views" class="saved-nav">
-          <div v-for="view in savedViews" :key="view.id" class="saved-nav-row">
-            <button @click="openSavedView(view)"><span>{{ view.label }}</span><small>{{ view.context }}</small></button>
-            <button class="saved-remove" :aria-label="`Remove ${view.label} saved view`" @click="removeSavedView(view.id)">×</button>
-          </div>
-        </nav>
-      </section>
-      <div class="boundary">
-        <strong>Observation only</strong>
-        <p>Orchestrator records state and evidence. It never executes work.</p>
-      </div>
-    </aside>
-    <main id="main-content" tabindex="-1">
-      <header>
-        <div>
-          <p class="eyebrow">{{ activeView === "today" ? "Solo management" : activeView === "reports" ? "Management ritual" : activeView === "team" ? "Team coordination" : activeView === "search" ? "Universal search" : activeView === "management" ? "Engineering management" : activeView === "briefing" ? "Global resume" : activeView === "attention" ? "Global attention" : activeView === "health" ? "Register integrity" : activeView === "sync-center" ? "Passive connectors" : activeView === "projects" ? "Global portfolio" : "Project record" }}</p>
-          <h1>{{ activeView === "today" ? "Today" : activeView === "reports" ? "Reports & reviews" : activeView === "team" ? "Team workspace" : activeView === "search" ? "Search memory" : activeView === "management" ? "Management cockpit" : activeView === "briefing" ? "Recent briefing" : activeView === "attention" ? "Attention center" : activeView === "health" ? "System health" : activeView === "sync-center" ? "Sync center" : activeView === "projects" ? "Projects" : detail?.name || "Project memory" }}</h1>
-          <p>
-            {{
-              activeView === "today" ? "Priorities, gaps and follow-up across your active projects." : activeView === "reports" ? "Build a clear review, record your notes and export the result." : activeView === "team" ? "People, machines, existing tickets and evidence links across every project." : activeView === "search" ? "Projects, objectives, events, decisions, evidence, paths and hashes." : activeView === "management" ? "Delivery flow, Git activity, blockers, evidence and contributors across every machine." : activeView === "briefing" ? "Changes across every active project since your last review." : activeView === "attention" ? "Decisions and risks that require a closer look." : activeView === "health" ? "Read-only integrity, backup and evidence-retention checks." : activeView === "sync-center" ? "Scheduled ClickUp registry synchronization across every connected project." : activeView === "projects"
-                ? "Tracked work, local discoveries and multi-machine state."
-                : detail?.description ||
-              "Auditable history and conversation handoff."
-            }}
-          </p>
-        </div>
-        <div class="header-tools">
-          <form class="global-search" role="search" @submit.prevent="runSearch"><input v-model="globalQuery" aria-label="Search all project memory" placeholder="Search memory…" minlength="2"><button :disabled="searchBusy || globalQuery.trim().length < 2">{{ searchBusy ? 'Searching…' : 'Search' }}</button></form>
-          <div class="theme-switcher" role="group" aria-label="Color theme">
-            <button v-for="theme in (['light','dark','system'] as ThemePreference[])" :key="theme" type="button" :class="{ active: themePreference === theme }" :aria-pressed="themePreference === theme" @click="setTheme(theme)">{{ theme === 'light' ? 'Light' : theme === 'dark' ? 'Dark' : 'System' }}</button>
-          </div>
-        </div>
-        <div v-if="!isGlobalView(activeView)" class="exports">
-          <button @click="copyContextLink">{{ shareState }}</button>
-          <button @click="saveCurrentView">{{ saveState }}</button>
-          <button v-if="detail" @click="toggleProject">
-            {{
-              detail.status === "archived"
-                ? "Enable tracking"
-                : "Disable tracking"
-            }}</button
-          ><a :href="`/api/export/json?project=${selected}`">Export JSON</a
-          ><a :href="`/api/export/markdown?project=${selected}`"
-            >Export Markdown</a
-          >
-        </div>
-      </header>
-      <nav v-if="!isGlobalView(activeView)" class="project-navigation" aria-label="Project workspace">
-        <div class="journey-tabs" role="tablist" aria-label="Project workflow">
-          <button v-for="section in projectSections" :key="section.id" :class="{ active: activeProjectSection.id === section.id }" role="tab" :aria-selected="activeProjectSection.id === section.id" @click="openProjectView(section.defaultView)">
-            <strong>{{ section.label }}</strong><small>{{ section.hint }}</small>
-          </button>
-        </div>
-        <div class="view-tabs" role="tablist" :aria-label="`${activeProjectSection.label} views`">
-          <button v-for="view in activeProjectSection.views" :key="view.id" :class="{ active: activeView === view.id }" role="tab" :aria-selected="activeView === view.id" :aria-label="`${view.id} view`" @click="openProjectView(view.id)">{{ view.label }}</button>
-        </div>
-      </nav>
-      <div v-if="!isGlobalView(activeView)" class="live-refresh" role="status" aria-live="polite"><span :class="{ pulse: autoRefreshBusy }"></span><strong>{{ autoRefreshBusy ? 'Refreshing project state…' : followerState?.active ? 'Automatic follower active' : 'Follower unavailable' }}</strong><small>{{ followerState?.projects?.find((row:any)=>row.slug===selected)?.last_change_at ? `Change detected ${date(followerState.projects.find((row:any)=>row.slug===selected).last_change_at)}` : lastAutoRefresh ? `Checked ${lastAutoRefresh.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'})}` : 'Watching local changes' }}</small><button class="secondary" :disabled="autoRefreshBusy" @click="autoRefreshProject">Refresh now</button></div>
-      <p v-if="error" class="error" role="alert">{{ error }}</p>
-      <section v-if="activeView === 'today'" class="today-screen">
-        <div v-if="managementBusy && !today" class="panel empty">Building today’s review…</div>
-        <template v-else-if="today">
-          <section v-if="managementReminders?.daily.due || managementReminders?.weekly.due" class="review-reminder"><div><strong>Management review due</strong><span><template v-if="managementReminders.daily.due">Daily review</template><template v-if="managementReminders.daily.due && managementReminders.weekly.due"> · </template><template v-if="managementReminders.weekly.due">Weekly review</template></span></div><button @click="activeView='reports'">Review now →</button></section>
-          <section class="today-summary" aria-label="Today summary"><article><span>Needs attention</span><strong>{{ today.summary.needs_attention }}</strong></article><article><span>Stale projects</span><strong>{{ today.summary.stale }}</strong></article><article><span>Overdue objectives</span><strong>{{ today.summary.overdue }}</strong></article><article><span>Changes today</span><strong>{{ today.summary.changes_today }}</strong></article><article><span>New proofs</span><strong>{{ today.summary.evidence_today }}</strong></article></section>
-          <section class="panel today-priorities"><div class="panel-head"><div><p class="eyebrow">Ordered by attention</p><h2>What needs your focus</h2></div><button @click="activeView='reports'">Start review →</button></div><article v-for="project in today.projects" :key="project.slug" :data-signal="project.status_signal"><button @click="selected=project.slug;activeView=project.blocked?'chapters':'overview'"><span class="status" :data-status="project.status_signal==='attention'?'blocked':project.status_signal">{{ project.status_signal }}</span><div><strong>{{ project.name }}</strong><p>{{ project.next?.title || 'No unfinished objective recorded' }}</p><small>{{ project.changes_today }} changes today · {{ project.evidence_today }} proofs · Last activity {{ date(project.last_activity) }}</small></div><b>Open →</b></button><dl><div><dt>Progress</dt><dd>{{ project.progress }}%</dd></div><div><dt>Estimate</dt><dd>{{ Math.round(project.schedule.estimated_minutes/60) }}h</dd></div><div><dt>Observed</dt><dd>{{ Math.round(project.schedule.observed_minutes/60) }}h</dd></div><div><dt>Overdue</dt><dd>{{ project.schedule.overdue }}</dd></div></dl></article></section>
-          <section class="panel review-history"><div class="panel-head"><div><p class="eyebrow">Personal management memory</p><h2>Latest reviews</h2></div><span>{{ reviews.length }} saved</span></div><p v-if="!reviews.length" class="empty">No daily or weekly review recorded yet.</p><article v-for="review in reviews.slice(0,5)" :key="review.uid"><div><strong>{{ review.cadence }} review</strong><p>{{ review.notes || 'No note' }}</p><small>{{ date(review.created_at) }} · {{ review.project_slugs.length || 'All' }} projects</small></div><ul><li v-for="item in review.followups" :key="item">{{ item }}</li></ul></article></section>
-        </template>
-      </section>
-      <section v-if="activeView === 'reports'" class="reports-screen">
-        <section class="panel report-builder"><div class="panel-head"><div><p class="eyebrow">Guided generator</p><h2>Build a management report</h2></div><button :disabled="reportBusy" @click="previewSoloReport">{{ reportBusy ? 'Building…' : 'Refresh preview' }}</button></div><div v-if="managementSettings.templates?.length" class="report-templates" aria-label="Saved report templates"><button v-for="template in managementSettings.templates" :key="template.uid" class="secondary" @click="applyReportTemplate(template)">{{ template.name }}</button></div><div class="report-fields"><label><span>Title</span><input v-model="reportForm.title"></label><label><span>Period</span><select v-model.number="reportForm.days"><option :value="1">Today</option><option :value="7">7 days</option><option :value="30">30 days</option><option :value="90">90 days</option></select></label><label><span>Audience</span><select v-model="reportForm.audience"><option value="self">Personal review</option><option value="stakeholder">Stakeholder</option><option value="technical">Technical</option></select></label><label class="report-notes"><span>Context and personal notes</span><textarea v-model="reportForm.notes" placeholder="Decisions, context, risks or interpretation…"></textarea></label></div><fieldset><legend>Projects</legend><label v-for="project in projects" :key="project.slug"><input v-model="reportForm.projects" type="checkbox" :value="project.slug"><span>{{ project.name }}</span></label><small>Leave all unchecked to include every active project.</small></fieldset><div class="template-editor"><label><span>Save as reusable template</span><input v-model="templateName" placeholder="Monthly stakeholder report"></label><button class="secondary" :disabled="!templateName.trim()" @click="saveReportTemplate">Save template</button></div><div class="report-actions"><button :disabled="reportBusy" @click="renderSoloReport('markdown')">Export Markdown</button><button :disabled="reportBusy" @click="renderSoloReport('json')">Export JSON</button><button :disabled="reportBusy" @click="renderSoloReport('pdf')">Download PDF</button><button class="secondary" :disabled="reportBusy" @click="renderSoloReport('html')">Print preview</button></div></section>
-        <section v-if="reportPreview" class="panel report-preview"><div class="panel-head"><div><p class="eyebrow">Live preview</p><h2>{{ reportPreview.title }}</h2></div><span>{{ reportPreview.summary.projects }} projects · {{ reportPreview.days }} days</span></div><div class="report-preview-summary"><article><strong>{{ reportPreview.summary.average_progress }}%</strong><span>Progress</span></article><article><strong>{{ reportPreview.summary.open_blockers }}</strong><span>Blockers</span></article><article><strong>{{ Math.round(reportPreview.schedule.estimated_minutes/60) }}h</strong><span>Estimated</span></article><article><strong>{{ Math.round(reportPreview.schedule.observed_minutes/60) }}h</strong><span>Observed</span></article></div><p v-if="reportPreview.notes" class="report-note">{{ reportPreview.notes }}</p><article v-for="project in reportPreview.projects" :key="project.slug" class="report-project"><div><strong>{{ project.name }}</strong><small>{{ project.last_summary || 'No recent summary' }}</small></div><span>{{ project.progress }}%</span><span>{{ project.blocked }} blockers</span><span>{{ Math.round(project.schedule.estimated_minutes/60) }}h est.</span><span>{{ Math.round(project.schedule.observed_minutes/60) }}h observed</span></article></section>
-        <section v-if="managementReports.length>1" class="panel report-comparison"><div class="panel-head"><div><p class="eyebrow">Report evolution</p><h2>Compare any two snapshots</h2></div><div class="compare-selectors"><label><span>Before</span><select v-model="reportBefore"><option v-for="report in managementReports" :key="report.uid" :value="report.uid">{{ date(report.generated_at) }}</option></select></label><label><span>After</span><select v-model="reportAfter"><option v-for="report in managementReports" :key="report.uid" :value="report.uid">{{ date(report.generated_at) }}</option></select></label><button @click="compareSelectedReports">Compare</button></div></div><template v-if="reportComparison"><div class="comparison-deltas"><article v-for="(value,key) in reportComparison.delta" :key="key"><span>{{ String(key).replaceAll('_',' ') }}</span><strong :class="{warn:Number(value)<0}">{{ Number(value)>0?'+':'' }}{{ value }}</strong></article></div><div class="comparison-projects"><article v-for="project in reportComparison.projects" :key="project.slug"><strong>{{ project.name }}</strong><span>{{ project.progress>=0?'+':'' }}{{ project.progress }} progress</span><span>{{ project.evidence>=0?'+':'' }}{{ project.evidence }} proofs</span><span>{{ project.blockers>=0?'+':'' }}{{ project.blockers }} blockers</span></article></div></template></section>
-        <section class="panel review-editor"><div class="panel-head"><div><p class="eyebrow">Daily or weekly ritual</p><h2>Record this review</h2></div></div><div class="review-fields"><label><span>Cadence</span><select v-model="reviewForm.cadence"><option value="daily">Daily review</option><option value="weekly">Weekly review</option></select></label><label><span>Notes</span><textarea v-model="reviewForm.notes" placeholder="What changed, what matters, what you decided…"></textarea></label><label><span>Follow-ups, one per line</span><textarea v-model="reviewForm.followups" placeholder="Review Blockrise blocker\nValidate Nationfall U09 proofs"></textarea></label></div><button :disabled="reportBusy" @click="saveManagementReview">Save review</button></section>
-      </section>
-      <section v-if="activeView === 'search'" class="search-screen"><section class="panel search-results"><div class="panel-head"><div><p class="eyebrow">{{ filteredSearchResults.length }} results</p><h2>“{{ globalQuery }}”</h2></div><select v-model="searchType" aria-label="Filter search results by type"><option value="all">All types</option><option v-for="type in [...new Set(searchResults.map(item=>item.type))]" :key="type" :value="type">{{ type }}</option></select></div><p v-if="!searchBusy && !filteredSearchResults.length" class="empty">No matching memory records.</p><button v-for="item in pagedSearchResults" :key="item.id" class="search-row" @click="openSearchResult(item)"><span class="attention-kind">{{ item.type }}</span><div><strong>{{ item.title }}</strong><p>{{ item.project.name }} · {{ item.subtitle }}</p></div><time>{{ date(item.occurred_at) }}</time><span>Open →</span></button><div v-if="filteredSearchResults.length" class="pagination"><button :disabled="searchPage===1" @click="searchPage--">Previous</button><span>{{ filteredSearchResults.length }} results · Page {{ searchPage }} / {{ searchPages }}</span><button :disabled="searchPage===searchPages" @click="searchPage++">Next</button></div></section></section>
-      <section v-else-if="activeView === 'management'" class="management-screen">
-        <div v-if="managementBusy && !management" class="panel empty" role="status">Building management cockpit…</div>
-        <template v-else-if="management">
-          <section class="panel management-hero"><div><p class="eyebrow">Recorded delivery flow</p><h2>{{ management.summary.projects }} active projects · {{ management.summary.average_progress }}% average progress</h2><p>Technical management based on auditable events, Git observations and proof manifests—not commit-count productivity scoring.</p><small v-if="managementReports[0]">Latest archived report {{ date(managementReports[0].generated_at) }} · generated automatically every 24 hours</small></div><div class="management-actions"><select v-model="managementDays" aria-label="Management reporting period" @change="loadManagement"><option :value="30">30 days</option><option :value="90">90 days</option><option :value="180">180 days</option><option :value="365">365 days</option></select><a :href="`/api/management/report/json?days=${managementDays}`">Export JSON</a><a :href="`/api/management/report/markdown?days=${managementDays}`">Export report</a><button :disabled="managementBusy" @click="captureManagement">Archive now</button><button class="secondary" :disabled="managementBusy" @click="loadManagement">Refresh</button></div></section>
-          <section class="management-summary" aria-label="Management summary"><article><span>Portfolio progress</span><strong>{{ management.summary.average_progress }}%</strong></article><article><span>Open blockers</span><strong>{{ management.summary.open_blockers }}</strong><small>{{ management.summary.blocked_projects }} affected projects</small></article><article><span>Observed commits</span><strong>{{ management.summary.commits }}</strong><small>{{ management.summary.pushes_verified }} verified pushes</small></article><article><span>Trusted evidence</span><strong>{{ management.summary.trusted_evidence }} / {{ management.summary.evidence }}</strong></article><article><span>Recorded AI cost</span><strong>{{ money(management.summary.cost) }}</strong></article></section>
-          <section class="management-command-grid"><section class="panel management-alerts"><div class="panel-head"><div><p class="eyebrow">Configurable signals</p><h2>{{ management.alerts.length }} management alerts</h2></div></div><p v-if="!management.alerts.length" class="empty good">All configured thresholds are healthy.</p><button v-for="alert in management.alerts" :key="alert.id" :data-severity="alert.severity" @click="selected=alert.project;activeView='overview'"><span>{{ alert.type }}</span><strong>{{ alert.project }}</strong><p>{{ alert.message }}</p></button></section><section class="panel management-calendar"><div class="panel-head"><div><p class="eyebrow">Portfolio calendar</p><h2>Dated objectives</h2></div></div><p v-if="!management.calendar.length" class="empty">No dated objective yet.</p><button v-for="item in management.calendar.slice(0,20)" :key="item.uid" @click="selected=item.slug;selectedChapter=item.uid;activeView='chapters'"><time>{{ item.due_at }}</time><div><strong>{{ item.title }}</strong><small>{{ item.project_name }} · {{ item.status }} · {{ item.estimate_minutes||0 }} min</small></div></button></section><section class="panel management-decisions"><div class="panel-head"><div><p class="eyebrow">Executive review</p><h2>{{ management.decisions.length }} decisions expected</h2></div></div><p v-if="!management.decisions.length" class="empty good">No human judgment is currently requested.</p><button v-for="decision in management.decisions" :key="decision.uid" @click="selected=decision.slug;selectedChapter=decision.objective_uid||'';activeView='chapters'"><strong>{{ decision.project_name }}</strong><p>{{ decision.summary }}</p><time>{{ date(decision.occurred_at) }}</time></button></section></section>
-          <section class="panel activity-calendar"><div class="panel-head"><div><p class="eyebrow">{{ management.days }}-day heartbeat</p><h2>Engineering activity</h2></div><div class="heat-legend"><span>Less</span><i v-for="level in [0,1,2,3,4]" :key="level" :data-level="level"></i><span>More</span></div></div><div class="heatmap" :style="{gridTemplateColumns:`repeat(${Math.ceil(management.activity.length/7)}, 13px)`}"><span v-for="day in management.activity" :key="day.date" :data-level="managementLevel(day)" :title="`${day.date}: ${day.events} events, ${day.commits} commits, ${day.evidence} evidence, ${day.push_attempts} push attempts, ${day.pushes_verified} verified pushes`"></span></div><p class="provenance-note">Commits come from post-commit observations. Push attempts are not successful pushes; only provider/remote verification is counted as verified.</p></section>
-          <section class="panel management-projects"><div class="panel-head"><div><p class="eyebrow">Delivery portfolio</p><h2>Projects, flow and risk</h2></div></div><div class="management-table" role="table"><div class="management-table-head" role="row"><span>Project</span><span>Progress</span><span>Blockers</span><span>Git activity</span><span>Evidence</span><span>Latest state</span></div><button v-for="project in management.projects" :key="project.slug" role="row" @click="selected=project.slug;activeView='overview'"><span><strong>{{ project.name }}</strong><small>{{ project.objectives }} objectives · {{ project.in_progress }} active</small></span><span><strong>{{ project.progress }}%</strong><i><b :style="{width:`${project.progress}%`}"></b></i></span><span :class="{risk:project.blocked}"><strong>{{ project.blocked }}</strong><small>{{ project.oldest_blocker_days ? `oldest ${project.oldest_blocker_days}d` : 'clear' }}</small></span><span><strong>{{ project.commits }} commits</strong><small>{{ project.pushes_verified }} verified · {{ project.push_attempts }} attempted</small></span><span><strong>{{ project.evidence_coverage }}%</strong><small>{{ project.trusted_evidence }}/{{ project.evidence }} trusted</small></span><span><strong>{{ project.git ? `${project.git.branch} · ${project.git.dirty ? 'dirty' : 'clean'}` : 'Git unknown' }}</strong><small>{{ date(project.last_activity) }}</small></span></button></div></section>
-          <section class="panel weekly-goals"><div class="panel-head"><div><p class="eyebrow">Weekly commitments</p><h2>Goals and delivery forecast</h2></div><button @click="saveManagementPreferences">Save goals</button></div><article v-for="project in management.projects" :key="project.slug"><div><strong>{{ project.name }}</strong><small>{{ project.weekly.completed }} completed this week · {{ project.forecast.remaining }} remaining</small></div><label><span>Weekly goal</span><input v-model.number="managementSettings.weekly_goals[project.slug]" type="number" min="0" max="1000"></label><span class="forecast" :data-status="project.forecast.status">{{ project.forecast.days==null?'Forecast needs more completion data':`${project.forecast.days} estimated days remaining` }}</span></article></section>
-          <details class="panel management-preferences"><summary>Alert thresholds</summary><div><label><span>Inactive after days</span><input v-model.number="managementSettings.stale_days" type="number" min="1"></label><label><span>Blocker age days</span><input v-model.number="managementSettings.blocker_days" type="number" min="1"></label><label><span>Minimum evidence %</span><input v-model.number="managementSettings.evidence_coverage" type="number" min="0" max="100"></label><label><span>Cost limit ($)</span><input v-model.number="managementSettings.cost_limit" type="number" min="0"></label><button @click="saveManagementPreferences">Save thresholds</button></div></details>
-          <section class="management-lower"><section class="panel management-blockers"><div class="panel-head"><div><p class="eyebrow">Blocker aging</p><h2>Management attention</h2></div></div><p v-if="!management.blockers.length" class="empty good">No open blocker recorded.</p><button v-for="blocker in management.blockers" :key="blocker.uid" @click="selected=blocker.slug;activeView='chapters';selectedChapter=blocker.objective_uid||''"><span :data-age="blocker.age_days>7?'old':'recent'">{{ blocker.age_days }}d</span><div><strong>{{ blocker.title }}</strong><p>{{ blocker.project_name }}<template v-if="blocker.objective_title"> · {{ blocker.objective_title }}</template></p></div><b>Open →</b></button></section><section class="panel management-contributors"><div class="panel-head"><div><p class="eyebrow">Provenance, not ranking</p><h2>Machines and agents</h2></div></div><article v-for="person in management.contributors.slice(0,12)" :key="person.id"><div><span>{{ person.kind }}</span><strong>{{ person.name }}</strong><small>{{ person.projects.join(', ') }}</small></div><dl><div><dt>Events</dt><dd>{{ person.events }}</dd></div><div><dt>Commits</dt><dd>{{ person.commits }}</dd></div><div><dt>Evidence</dt><dd>{{ person.evidence }}</dd></div></dl></article></section></section>
-        </template>
-      </section>
-      <section v-else-if="activeView === 'briefing'" class="briefing-screen"><div v-if="briefingBusy && !briefing" class="panel empty">Building recent briefing…</div><template v-else-if="briefing"><section class="briefing-summary" aria-label="Briefing summary"><article><span>Changes</span><strong>{{ briefing.summary.events }}</strong></article><article><span>Active projects changed</span><strong>{{ briefing.summary.projects }}</strong></article><article><span>New evidence</span><strong>{{ briefing.summary.evidence }}</strong></article><article><span>Decisions and blockers</span><strong>{{ briefing.summary.decisions + briefing.summary.blockers }}</strong></article></section><section class="panel briefing-projects"><div class="panel-head"><div><p class="eyebrow">Since {{ date(briefing.since) }}</p><h2>Changes by project</h2></div><div class="briefing-actions"><a :href="`/api/briefing/export/json?since=${encodeURIComponent(briefing.since)}`">Export JSON</a><a :href="`/api/briefing/export/markdown?since=${encodeURIComponent(briefing.since)}`">Export Markdown</a><button class="text-button" :disabled="briefingBusy" @click="markBriefingReviewed">Mark all reviewed</button></div></div><p v-if="!briefing.projects.length" class="empty good">No changes since your last review.</p><button v-for="project in briefing.projects" :key="project.slug" class="briefing-project" @click="selected=project.slug;activeView='overview'"><div><strong>{{ project.name }}</strong><p>{{ project.latest_summary }}</p></div><span>{{ project.events }} changes · {{ project.evidence }} evidence · {{ project.decisions }} decisions</span></button></section><section v-if="briefing.recent.length" class="panel briefing-feed"><div class="panel-head"><div><p class="eyebrow">Latest records</p><h2>Activity feed</h2></div></div><button v-for="item in briefing.recent" :key="item.uid" @click="openBriefingItem(item)"><span class="attention-kind">{{ item.kind.replace('.recorded','').replace('.',' ') }}</span><div><strong>{{ item.summary }}</strong><p>{{ item.project.name }}<template v-if="item.objective_title"> · {{ item.objective_title }}</template> · {{ item.actor }}</p></div><time>{{ date(item.occurred_at) }}</time><span>Open →</span></button></section></template></section>
-      <section v-else-if="activeView === 'attention'" class="attention-screen">
-        <div v-if="attentionBusy && !attention" class="panel empty" role="status" aria-live="polite">Collecting attention signals…</div>
-        <template v-else-if="attention">
-          <section class="attention-summary" aria-label="Attention summary"><article><span>Actionable signals</span><strong>{{ attentionItems.length }}</strong></article><article><span>Human decisions</span><strong>{{ attention.counts.judgments }}</strong></article><article><span>Open blockers</span><strong>{{ attention.counts.blockers }}</strong></article><article><span>Evidence debt</span><strong>{{ attention.counts.evidence }}</strong></article></section>
-          <section class="panel attention-list"><div class="panel-head"><div><p class="eyebrow">Actionable signals</p><h2>Across active projects</h2></div><button class="text-button" :disabled="attentionBusy" @click="loadAttention">Refresh</button></div><p v-if="!attentionItems.length" class="empty good">Nothing currently requires attention.</p><button v-for="item in attentionItems" :key="item.id" class="attention-row" :data-severity="item.severity" @click="openAttention(item)"><span class="attention-kind">{{ item.type.replace('_',' ') }}</span><div><strong>{{ item.title }}</strong><p>{{ item.project.name }}<template v-if="item.objective.title"> · {{ item.objective.title }}</template></p><small>{{ item.detail || 'Open context' }} · {{ date(item.occurred_at) }}</small></div><span class="attention-open">Open →</span></button></section>
-        </template>
-      </section>
-      <SystemHealthPanel v-else-if="activeView === 'health'" :health="systemHealth" :busy="systemHealthBusy" @refresh="loadSystemHealth" />
-      <section v-else-if="activeView === 'team'" class="team-screen">
-        <div v-if="teamBusy && !team" class="panel empty" role="status">Loading team workspace…</div>
-        <template v-else-if="team">
-          <section class="team-summary"><article><span>Members</span><strong>{{ team.summary.members }}</strong></article><article><span>Machines</span><strong>{{ team.summary.machines }}</strong></article><article><span>Projects</span><strong>{{ team.summary.projects }}</strong></article><article><span>Linked tickets</span><strong>{{ team.summary.external_items }}</strong></article><article><span>Unassigned</span><strong>{{ team.summary.unassigned_items }}</strong></article></section>
-          <section class="team-grid">
-            <section class="panel team-members"><div class="panel-head"><div><p class="eyebrow">People directory</p><h2>Collaborators</h2></div></div><form class="team-inline-form" @submit.prevent="addTeamMember"><input v-model="memberForm.display_name" aria-label="Collaborator name" placeholder="Name"><input v-model="memberForm.email" aria-label="Collaborator email" placeholder="Email (optional)" type="email"><button :disabled="teamBusy||!memberForm.display_name.trim()">Add member</button></form><article v-for="member in team.members" :key="member.uid"><div><strong>{{ member.display_name }}</strong><small>{{ member.email || 'No email recorded' }}</small></div><span>{{ member.project_count }} projects · {{ member.machine_count }} machines</span></article></section>
-            <section class="panel team-assignment"><div class="panel-head"><div><p class="eyebrow">Project responsibility</p><h2>Assign a role</h2></div></div><div class="team-inline-form"><select v-model="projectMemberForm.project" aria-label="Assignment project"><option v-for="project in team.projects" :key="project.slug" :value="project.slug">{{ project.name }}</option></select><select v-model="projectMemberForm.member_uid" aria-label="Assigned collaborator"><option value="">Choose member…</option><option v-for="member in team.members" :key="member.uid" :value="member.uid">{{ member.display_name }}</option></select><select v-model="projectMemberForm.role" aria-label="Project role"><option value="owner">Owner</option><option value="manager">Manager</option><option value="contributor">Contributor</option><option value="reviewer">Reviewer</option><option value="observer">Observer</option></select><button :disabled="teamBusy||!projectMemberForm.member_uid" @click="assignProjectMember">Assign role</button></div><div class="onboarding-projects"><article v-for="project in team.projects" :key="project.slug"><div><strong>{{ project.name }}</strong><small>{{ project.member_count }} members · {{ project.external_count }} linked tickets</small></div><a :href="`/api/team/onboarding/${project.slug}`" target="_blank">Onboarding bundle →</a></article></div></section>
-          </section>
-          <section class="panel team-machines"><div class="panel-head"><div><p class="eyebrow">Observed origins</p><h2>Machines and ownership</h2></div><span class="scope-note">Derived from immutable events</span></div><p v-if="!team.machines.length" class="empty">Machines appear after journals or Git observations are imported.</p><article v-for="machine in team.machines" :key="machine.uid"><div><strong>{{ machine.label }}</strong><small>{{ machine.machine_key }} · {{ machine.event_count }} events · Last {{ date(machine.last_seen_at) }}</small></div><select :value="machine.member_uid||''" :aria-label="`Owner for ${machine.label}`" @change="assignMachine(machine,($event.target as HTMLSelectElement).value)"><option value="">Unassigned</option><option v-for="member in team.members" :key="member.uid" :value="member.uid">{{ member.display_name }}</option></select></article></section>
-          <section class="panel external-linker"><div class="panel-head"><div><p class="eyebrow">Provider-independent registry</p><h2>Link an existing ticket</h2></div><span class="scope-note">ClickUp, GitHub, Linear, Jira, Asana or other</span></div><div class="external-grid"><label><span>Project</span><select v-model="externalForm.project"><option v-for="project in team.projects" :key="project.slug" :value="project.slug">{{ project.name }}</option></select></label><label><span>Provider</span><select v-model="externalForm.provider"><option v-for="provider in ['clickup','github','linear','jira','asana','other']" :key="provider">{{ provider }}</option></select></label><label><span>Ticket ID</span><input v-model="externalForm.external_id" placeholder="ABC-123"></label><label><span>Status</span><input v-model="externalForm.status" placeholder="in progress"></label><label class="wide"><span>Title</span><input v-model="externalForm.title" placeholder="Existing ticket title"></label><label class="wide"><span>URL</span><input v-model="externalForm.url" placeholder="https://…"></label><label><span>Chapter</span><select v-model="externalForm.chapter_uid"><option value="">Whole project</option><option v-for="chapter in team.projects.find((row:any)=>row.slug===externalForm.project)?.chapters||[]" :key="chapter.uid" :value="chapter.uid">{{ chapter.title }}</option></select></label><label><span>Objective</span><select v-model="externalForm.objective_uid"><option value="">No objective</option><option v-for="objective in team.projects.find((row:any)=>row.slug===externalForm.project)?.objectives||[]" :key="objective.uid" :value="objective.uid">{{ objective.title }}</option></select></label><label><span>Pass</span><input v-model="externalForm.pass_ref" placeholder="pass-42"></label><label><span>Assignee</span><select v-model="externalForm.assignee_uid"><option value="">Unassigned</option><option v-for="member in team.members" :key="member.uid" :value="member.uid">{{ member.display_name }}</option></select></label></div><div class="external-actions"><div v-if="externalForm.provider==='clickup'" class="clickup-existing-search"><input v-model="clickupTaskSearch" aria-label="Search existing ClickUp tickets" placeholder="Search configured ClickUp list…" @keyup.enter="searchExistingClickup"><button class="secondary" :disabled="teamBusy||!externalForm.project" @click="searchExistingClickup">Find existing tickets</button></div><button :disabled="teamBusy||!externalForm.project||!externalForm.external_id.trim()||!externalForm.title.trim()" @click="linkExternalItem()">Link ticket</button></div><div v-if="clickupTaskResults.length" class="external-search-results"><button v-for="task in clickupTaskResults" :key="task.external_id" @click="chooseExternalTask(task)"><span><strong>{{ task.title }}</strong><small>{{ task.external_id }} · {{ task.status }}</small></span><b>Select →</b></button></div></section>
-          <section class="panel external-registry"><div class="panel-head"><div><p class="eyebrow">Shared work registry</p><h2>Linked tickets and proof coverage</h2></div><span class="scope-note">{{ team.external_items.length }} records</span></div><p v-if="!team.external_items.length" class="empty">No existing external ticket has been linked yet.</p><article v-for="item in team.external_items" :key="item.uid"><span class="provider-pill">{{ item.provider }}</span><div><strong>{{ item.title }}</strong><small>{{ item.project_name }} · {{ item.chapter_title||'whole project' }} · {{ item.objective_title||'no objective' }}<template v-if="item.pass_ref"> · {{ item.pass_ref }}</template></small></div><span>{{ item.status||'unknown' }}</span><span>{{ item.assignee_name||'Unassigned' }}</span><span>{{ item.evidence_count }} proofs</span><a v-if="item.url" :href="item.url" target="_blank" rel="noreferrer">Open →</a></article></section>
-        </template>
-      </section>
-      <section v-else-if="activeView === 'sync-center'" class="sync-center-screen">
-        <div v-if="syncCenterBusy && !syncCenter" class="panel empty" role="status">Loading connector state…</div>
-        <template v-else-if="syncCenter">
-          <section class="panel sync-center-hero"><div><p class="eyebrow">Portfolio schedule</p><h2>{{ syncCenter.scheduler.enabled ? `Every ${syncCenter.scheduler.minutes} minutes` : 'Scheduled sync disabled' }}</h2><p>Next cycle: {{ date(syncCenter.scheduler.next_run_at) }} · Last started: {{ date(syncCenter.scheduler.last_started_at) }}</p></div><button :disabled="syncCenterBusy || syncCenter.all_progress.active" @click="syncAllProjects">{{ syncCenter.all_progress.active ? `${syncCenter.all_progress.percent}% · ${syncCenter.all_progress.message}` : 'Sync all projects now' }}</button></section>
-          <section v-if="syncCenter.all_progress.active || syncCenter.all_progress.percent" class="panel portfolio-sync-progress"><div><span>{{ syncCenter.all_progress.message }}</span><strong>{{ syncCenter.all_progress.percent }}%</strong></div><progress :value="syncCenter.all_progress.percent" max="100"></progress></section>
-          <section class="sync-project-grid"><article v-for="connection in syncCenter.connections" :key="connection.slug" class="panel sync-project-card" :data-status="connection.last_status"><div class="panel-head"><div><p class="eyebrow">{{ connection.tag_name || connection.slug }}</p><h2>{{ connection.name }}</h2></div><span class="status" :data-status="connection.last_status">{{ connection.last_status }}</span></div><p>{{ connection.last_detail || 'Never synchronized' }}</p><div class="sync-project-meta"><span>Last {{ date(connection.last_sync_at) }}</span><span>List {{ connection.list_id }}</span></div><div v-if="connection.progress.active" class="mini-sync"><i :style="{width:`${connection.progress.percent}%`}"></i><small>{{ connection.progress.message }}</small></div><button @click="selected=connection.slug;activeView='planning'">Open project settings →</button></article></section>
-          <section v-if="syncConflicts.open.length" class="panel sync-conflicts"><div class="panel-head"><div><p class="eyebrow">Multi-machine merge</p><h2>{{ syncConflicts.open.length }} conflict{{ syncConflicts.open.length===1?'':'s' }} need review</h2><p>Incoming journals are preserved; Orchestrator never silently overwrites divergent planning state.</p></div></div><article v-for="conflict in syncConflicts.open" :key="conflict.uid"><div><strong>{{ conflict.entity_type }} · {{ conflict.entity_uid }}</strong><small>{{ conflict.incoming_machine_id || 'unknown machine' }} · {{ date(conflict.created_at) }}</small></div><dl><div><dt>Local</dt><dd>{{ conflict.local_value.status }} · {{ conflict.local_value.title }}</dd></div><div><dt>Incoming</dt><dd>{{ conflict.incoming_value.status }} · {{ conflict.incoming_value.title }}</dd></div></dl><div><button class="secondary" @click="resolveSyncConflict(conflict.uid,'keep_local')">Keep local</button><button @click="resolveSyncConflict(conflict.uid,'accept_incoming')">Accept incoming</button><button class="text-button" @click="resolveSyncConflict(conflict.uid,'ignore')">Ignore</button></div></article></section>
-          <section class="panel sync-history"><div class="panel-head"><div><p class="eyebrow">Audit history</p><h2>Latest synchronization runs</h2></div><button class="secondary" :disabled="syncCenterBusy" @click="loadSyncCenter">Refresh</button></div><p v-if="!syncCenter.history.length" class="empty">No recorded run yet.</p><article v-for="run in syncCenter.history" :key="run.id"><span class="status" :data-status="run.status">{{ run.status }}</span><div><strong>{{ run.project_name }}</strong><p>{{ run.message }}</p></div><span>{{ run.trigger }}</span><span>{{ run.created }} created · {{ run.updated }} updated · {{ run.attachments }} files</span><time>{{ date(run.started_at) }}</time></article></section>
-        </template>
-      </section>
-      <section v-else-if="activeView === 'projects'" class="portfolio-screen">
-        <div v-if="portfolioBusy && !portfolio" class="panel empty" role="status" aria-live="polite">Loading local project inventory…</div>
-        <template v-else-if="portfolio">
-          <section class="portfolio-summary">
-            <article><span>Tracked projects</span><strong>{{ portfolio.projects.length }}</strong></article>
-            <article><span>Active tracking</span><strong>{{ portfolio.projects.filter((p:any) => p.status !== 'archived').length }}</strong></article>
-            <article><span>Detected locally</span><strong>{{ portfolio.detected.length }}</strong></article>
-            <article><span>Cloud providers</span><strong>{{ portfolio.sync.filter((s:any) => s.last_status === 'ok').length }} / {{ portfolio.sync.length }}</strong></article>
-          </section>
-          <section class="panel portfolio-list">
-            <div class="panel-head"><div><p class="eyebrow">Tracked memory</p><h2>All projects</h2></div><div class="portfolio-head-actions"><span class="scope-note">Independent of the selected project</span><button @click="openProjectAdd">Add local project</button></div></div>
-            <article v-for="project in portfolio.projects" :key="project.uid" class="portfolio-row" :data-tracking="project.status">
-              <div class="portfolio-main"><span class="status" :data-status="project.status">{{ project.status === 'archived' ? 'inactive' : project.status }}</span><h3>{{ project.name }}</h3><p>{{ project.last_summary || 'No recorded activity' }}</p><code v-if="project.local_memory">{{ project.local_memory.path }}</code></div>
-              <dl><div><dt>Progress</dt><dd>{{ project.proven }} / {{ project.objectives }}</dd></div><div><dt>Confidence</dt><dd><span class="confidence-pill" :data-level="project.confidence.label">{{ project.confidence.score }} · {{ project.confidence.label }}</span></dd></div><div><dt>Last activity</dt><dd>{{ date(project.last_activity) }}</dd></div><div><dt>Machines</dt><dd>{{ project.machines.length ? project.machines.join(', ') : 'None reported' }}</dd></div><div><dt>Git</dt><dd v-if="project.git">{{ project.git.branch }} · <code>{{ project.git.head_commit?.slice(0,10) }}</code><span :class="{warn:project.git.dirty}">{{ project.git.dirty ? 'dirty' : 'clean' }}</span></dd><dd v-else>Not reported</dd></div></dl>
-              <div class="portfolio-actions"><button @click="openPortfolioProject(project)">Open project</button><button class="secondary" :disabled="portfolioBusy" @click="setPortfolioTracking(project)">{{ project.status === 'archived' ? 'Enable tracking' : 'Disable tracking' }}</button></div>
-            </article>
-          </section>
-          <section class="panel detected-projects"><div class="panel-head"><div><p class="eyebrow">Local Codex and Claude memory</p><h2>Detected, not tracked</h2></div><span class="scope-note">{{ portfolio.detected.length }} candidates</span></div><p v-if="!portfolio.detected.length" class="empty good">Every detected local project is already tracked.</p><article v-for="project in portfolio.detected" :key="project.path"><div><h3>{{ project.name }}</h3><code>{{ project.path }}</code><p>{{ project.sessions }} sessions · {{ project.sources.join(' + ') }} · {{ date(project.last_activity) }}</p></div><button :disabled="portfolioBusy" @click="projectAddOpen=true;previewProjectCandidate(project)">Review and add</button></article></section>
-          <section class="panel portfolio-sync"><div class="panel-head"><div><p class="eyebrow">Shared memory</p><h2>Cloud status</h2></div></div><article v-for="connection in portfolio.sync" :key="connection.provider"><strong>{{ connection.label }}</strong><span :data-status="connection.last_status">{{ connection.last_status }}</span><p>{{ connection.shard_count }} immutable journals · Last pull {{ date(connection.last_pull_at) }}</p></article></section>
-          <div v-if="projectAddOpen" class="mapping-modal" role="dialog" aria-modal="true" aria-labelledby="project-add-title" @click.self="projectAddOpen=false"><section class="mapping-card project-add-card"><div class="panel-head"><div><p class="eyebrow">Passive local onboarding</p><h2 id="project-add-title">Add a project</h2></div><button class="icon-close secondary" aria-label="Close project addition" @click="projectAddOpen=false">×</button></div><p>Select a folder found in local Codex or Claude memory, or enter an absolute path. Previewing reads only metadata; it never executes project code.</p><div v-if="localMemory?.projects?.filter((row:any)=>!row.tracked).length" class="project-candidates"><button v-for="candidate in localMemory.projects.filter((row:any)=>!row.tracked)" :key="candidate.path" :class="{selected:projectPreview?.path===candidate.path}" @click="previewProjectCandidate(candidate)"><strong>{{ candidate.name }}</strong><code>{{ candidate.path }}</code><small>{{ candidate.sessions }} sessions · {{ candidate.sources.join(' + ') }}</small></button></div><label class="project-path-field"><span>Project folder</span><div><input v-model="projectCandidatePath" placeholder="/absolute/path/to/project" @keyup.enter="previewProjectCandidate()"><button :disabled="memoryBusy||!projectCandidatePath.trim()" @click="previewProjectCandidate()">{{ memoryBusy?'Analyzing…':'Analyze folder' }}</button></div></label><section v-if="projectPreview" class="project-preview"><div><span>Project name</span><input v-model="projectCandidateName"></div><dl><div><dt>Folder</dt><dd><code>{{ projectPreview.path }}</code></dd></div><div><dt>Technology</dt><dd>{{ projectPreview.stack.length?projectPreview.stack.join(' · '):'Not inferred' }}</dd></div><div><dt>Git</dt><dd>{{ projectPreview.git.present?`${projectPreview.git.branch} · ${projectPreview.git.head_commit?.slice(0,10)||'unborn'}`:'No .git metadata found' }}</dd></div><div><dt>AI memory</dt><dd>{{ projectPreview.memory?`${projectPreview.memory.sessions} sessions · ${projectPreview.memory.sources.join(' + ')}`:'No matching local session' }}</dd></div><div><dt>Planning files</dt><dd>{{ projectPreview.planning.length?projectPreview.planning.join(', '):'None at repository root' }}</dd></div></dl><p v-if="projectPreview.tracked" class="oauth-note">Already tracked as {{ projectPreview.tracked.name }}.</p></section><div class="mapping-actions"><button class="secondary" @click="projectAddOpen=false">Cancel</button><button :disabled="!projectPreview||projectPreview.tracked||!projectCandidateName.trim()" @click="confirmProjectCandidate">Add to Orchestrator</button></div></section></div>
-        </template>
-      </section>
-      <template v-else-if="detail">
-        <section class="metrics" aria-label="Project metrics">
-          <article>
-            <span>Overall progress</span><strong>{{ progress }}%</strong>
-            <div class="bar"><i :style="{ width: `${progress}%` }"></i></div>
-          </article>
-          <article>
-            <span>Chapters</span><strong>{{ detail.chapters.length }}</strong
-            ><small
-              >{{
-                detail.chapters.filter((c) => c.progress === 100).length
-              }}
-              complete</small
-            >
-          </article>
-          <article>
-            <span>Open blockers</span
-            ><strong :class="{ warn: detail.blockers.length }">{{
-              detail.blockers.length
-            }}</strong
-            ><small>{{ detail.blockers.length ? "Need attention" : "No active blockers" }}</small>
-          </article>
-          <article>
-            <span>Evidence records</span
-            ><strong>{{
-              projects.find((p) => p.slug === selected)?.proofs || 0
-            }}</strong
-            ><small>Available and hashed</small>
-          </article>
-        </section>
+<div class="app-shell workflow-app" :data-theme="resolvedTheme">
+<div v-if="apiActivity" class="global-activity" role="status" aria-live="polite"><i></i><span>{{ apiActivityLabel }}</span></div>
+  <div v-if="!remoteGate.checked" class="remote-boot"><img :src="orchestratorMark" alt=""><span>{{ tr('Connexion à Orchestrator…') }}</span></div>
+  <main v-else-if="remoteGate.remote&&!remoteGate.authenticated" class="remote-unlock">
+    <section>
+      <img :src="orchestratorMark" alt="">
+      <p class="eyebrow">{{ tr('Accès distant sécurisé') }}</p>
+      <h1>{{ tr('Associer cet appareil.') }}</h1>
+      <p>{{ tr('Entrez le code à 6 chiffres affiché dans Orchestrator sur votre ordinateur. Il expire après 10 minutes.') }}</p>
+      <label>{{ tr('Nom de cet appareil') }}<input v-model="remoteDeviceLabel" autocomplete="name"></label>
+      <label>{{ tr('Code d’appairage') }}<input v-model="remoteCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" @keyup.enter="unlockRemote"></label>
+      <button class="primary" :disabled="remoteUnlockBusy||remoteCode.replace(/\D/g,'').length!==6" @click="unlockRemote">{{ remoteUnlockBusy?'Connexion…':'Accéder à Orchestrator' }}</button>
+      <p v-if="error" class="error">{{ error }}</p>
+      <small>{{ tr('Aucun compte externe n’est nécessaire. Cet appareil pourra être révoqué depuis le PC.') }}</small>
+    </section>
+  </main>
+  <template v-else>
+  <header class="topbar">
+<button class="brand brand-button" @click="openView('home')">
+<img :src="orchestratorMark" alt="">
+<div>
+<strong>Orchestrator</strong>
+<span>AI control plane</span>
+</div>
+</button>
+<nav>
+<button v-for="item in nav" :key="item.id" :class="{active:view===item.id||(item.id==='projects'&&view==='workflow')}" @click="openView(item.id)">{{ tr(item.label) }}<b v-if="item.id==='terminal'&&allLiveSessions.length">{{ allLiveSessions.length }}</b>
+<b v-if="item.id==='home'&&attention.counts?.judgments">{{ attention.counts.judgments }}</b>
+</button>
+</nav>
+<div class="language-control" role="group" aria-label="Language"><button :class="{active:language==='fr'}" @click="setLanguage('fr')">FR</button><button :class="{active:language==='en'}" @click="setLanguage('en')">EN</button></div>
+<div class="theme-control" role="group" aria-label="Apparence">
+<button :class="{active:theme==='system'}" :aria-pressed="theme==='system'" title="Suivre le thème du système" @click="setTheme('system')">{{ tr('Système') }}</button>
+<button :class="{active:theme==='light'}" :aria-pressed="theme==='light'" @click="setTheme('light')">{{ tr('Jour') }}</button>
+<button :class="{active:theme==='dark'}" :aria-pressed="theme==='dark'" @click="setTheme('dark')">{{ tr('Nuit') }}</button>
+</div>
+<button v-if="notificationsSupported" type="button" class="notification-control" :class="{active:notificationsEnabled,blocked:notificationPermission==='denied'}" :aria-pressed="notificationsEnabled" :title="notificationPermission==='denied'?'Autorisez les notifications dans les réglages du navigateur':'Recevoir les alertes des sessions en arrière-plan'" @click="toggleBrowserNotifications">{{ notificationLabel }}</button>
+<div class="machine">
+<i>
+</i>
+<span>{{ tr('Ordinateur connecté') }}</span>
+<b>{{ tr(remoteGate.remote?'Distant':'Local') }}</b>
+</div>
+</header>
 
-        <section v-if="activeView === 'overview'" class="project-compass" aria-label="Project shortcuts">
-          <button v-if="currentChapter" @click="inspectChapter(currentChapter)"><span>{{ currentChapter.status === 'blocked' ? 'Needs attention' : 'Continue' }}</span><strong>{{ currentChapter.title }}</strong><small>Open chapter context →</small></button>
-          <button v-if="evidence[0]" @click="focusedEvidence=evidence[0].uid; selectedChapter=''; selectedPass=''; activeView='evidence'"><span>Latest proof</span><strong>{{ evidence[0].label }}</strong><small>{{ date(evidence[0].created_at) }} · Review evidence →</small></button>
-          <button @click="openProjectView('planning')"><span>Plan</span><strong>Sequence and dependencies</strong><small>Review the work plan →</small></button>
-          <button @click="openProjectView('memory')"><span>History</span><strong>Memory and recovery</strong><small>Resume context →</small></button>
-        </section>
+  <main v-if="view==='home'" class="page-shell home-page">
+    <header class="page-lead">
+<div>
+<p class="eyebrow">{{ tr('Centre de décision') }}</p>
+<h1>{{ tr('Ce qui demande votre attention.') }}</h1>
+<p>{{ tr('Commencez par une décision ou le prochain travail, puis suivez le projet étape par étape.') }}</p>
+</div>
+<button class="primary" @click="openView('terminal')">{{ tr('Nouvelle session IA') }}</button>
+</header>
+    <section class="home-metrics">
+<article>
+<span>{{ tr('Décisions humaines') }}</span>
+<strong>{{ attention.counts?.judgments||0 }}</strong>
+<small>{{ tr('à arbitrer') }}</small>
+</article>
+<article>
+<span>{{ tr('Blocages') }}</span>
+<strong>{{ attention.counts?.blockers||0 }}</strong>
+<small>{{ tr('à résoudre') }}</small>
+</article>
+<article>
+<span>{{ tr('Preuves fragiles') }}</span>
+<strong>{{ attention.counts?.evidence||0 }}</strong>
+<small>{{ tr('à vérifier') }}</small>
+</article>
+<article>
+<span>{{ tr('Sessions actives') }}</span>
+<strong>{{ allLiveSessions.length }}</strong>
+<small>{{ tr('IA') }}</small>
+</article>
+</section>
+    <section class="home-grid">
+<article class="inbox-panel">
+<div class="panel-title">
+<div>
+<p class="eyebrow">{{ tr('Boîte de décision') }}</p>
+<h2>{{ tr('À traiter maintenant') }}</h2>
+</div>
+<span>{{ attention.items.filter((row:any)=>['judgment','blocker'].includes(row.type)).length }} {{ language==='fr'?'à traiter':'to handle' }}</span>
+</div>
+<button v-for="item in attention.items.filter((row:any)=>['judgment','blocker'].includes(row.type)).slice(0,8)" :key="item.id" class="inbox-item" @click="openProject(item.project.slug,item.type==='judgment'?'decide':'plan')">
+<i :data-severity="item.severity">
+</i>
+<div>
+<small>{{ item.project.name }} · {{ item.type==='judgment'?'Décision':'Blocage' }}</small>
+<strong>{{ item.detail||item.title }}</strong>
+<span>{{ item.objective?.title||'Niveau projet' }}</span>
+</div>
+<b>→</b>
+</button>
+<p v-if="!attention.items.some((row:any)=>['judgment','blocker'].includes(row.type))" class="empty">{{ tr('Aucun arbitrage urgent. Vous pouvez poursuivre le prochain objectif.') }}</p>
+</article>
+      <article class="inbox-panel">
+<div class="panel-title">
+<div>
+<p class="eyebrow">{{ tr('Prochain travail') }}</p>
+<h2>{{ tr('Continuer sans chercher') }}</h2>
+</div>
+</div>
+<button v-for="item in today.projects.filter((row:any)=>row.next).slice(0,6)" :key="item.slug" class="next-item" @click="openProject(item.slug,'plan')">
+<div>
+<span class="status" :data-status="item.status_signal">{{ item.status_signal }}</span>
+<small>{{ item.progress }}% {{ language==='fr'?'terminé':'complete' }}</small>
+</div>
+<h3>{{ item.name }}</h3>
+<p>{{ item.next.title }}</p>
+<footer>
+<span>{{ statusLabel(item.next.status) }}</span>
+<b>{{ tr('Ouvrir le plan →') }}</b>
+</footer>
+</button>
+</article>
+</section>
+    <section class="portfolio-strip">
+<div class="panel-title">
+<div>
+<p class="eyebrow">Portfolio</p>
+<h2>{{ tr('Tous les projets') }}</h2>
+</div>
+<button @click="openView('projects')">{{ tr('Voir la vue complète') }}</button>
+</div>
+<div>
+<button v-for="item in projects" :key="item.uid" @click="openProject(item.slug)">
+<span class="status" :data-status="item.status">{{ statusLabel(item.status) }}</span>
+<strong>{{ item.name }}</strong>
+<small>{{ item.objectives }} {{ language==='fr'?'objectifs':'objectives' }} · {{ item.proofs }} {{ language==='fr'?'preuves':'evidence' }}</small>
+</button>
+</div>
+</section>
+  </main>
 
-        <div v-if="activeView === 'overview'" class="grid">
-          <section class="panel timeline">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Persistent memory</p>
-                <h2>Latest evolution</h2>
-              </div>
-            </div>
-            <ol>
-              <li v-for="event in events.slice(0, 20)" :key="event.uid">
-                <time>{{ date(event.occurred_at) }}</time>
-                <div>
-                  <span class="tag" :data-kind="event.kind === 'cleanup.recorded' ? 'cleanup' : event.assertion">{{
-                    eventLabel(event)
-                  }}</span>
-                  <h3>{{ event.summary }}</h3>
-                  <p v-if="cleanupDetail(event)" class="event-detail">{{ cleanupDetail(event) }}</p>
-                  <p>
-                    {{ event.objective_title || event.kind }} ·
-                    {{ event.actor }}
-                  </p>
-                </div>
-              </li>
-            </ol>
-          </section>
-          <div class="stack">
-            <section v-if="projectProfile" class="panel validation-profile"><div class="panel-head"><div><p class="eyebrow">Definition of done</p><h2>Validation profile</h2></div><select v-model="projectProfile.type" aria-label="Project type" @change="projectProfile.criteria=[...(projectProfile.templates?.[projectProfile.type] || [])]"><option v-for="(_,type) in projectProfile.templates" :key="type" :value="type">{{ String(type).replace('_',' ') }}</option></select></div><label v-for="(_,index) in projectProfile.criteria" :key="index"><span>{{ Number(index) + 1 }}</span><input v-model="projectProfile.criteria[index]" :aria-label="`Validation criterion ${Number(index) + 1}`"></label><button class="text-button" @click="saveProjectProfile">Save validation profile</button></section>
-            <section v-if="gitGuard" class="panel git-guard" :data-status="gitGuard.status"><div class="panel-head"><div><p class="eyebrow">Before starting work</p><h2>Git guard</h2></div><span class="status" :data-status="gitGuard.safe_to_start ? 'proven' : 'blocked'">{{ gitGuard.status }}</span></div><p>{{ gitGuard.safe_to_start ? 'Latest recorded Git state is suitable for a new pass.' : gitGuard.required_action }}</p><small v-if="gitGuard.expected_commit">Expected {{ gitGuard.expected_commit.slice(0,10) }} · {{ gitGuard.branch }}</small></section>
-            <section v-if="confidence" class="panel confidence-card"><div class="confidence-head"><div><p class="eyebrow">Auditable confidence</p><h2>Project confidence</h2></div><strong :data-level="confidence.label">{{ confidence.score }}</strong></div><div class="confidence-components"><div v-for="(component,key) in confidence.components" :key="key"><span>{{ String(key).replace('_',' ') }}</span><i><b :style="{width:`${component.score}%`}"></b></i><strong>{{ component.score }}</strong></div></div><p>{{ confidence.components.evidence.coverage }}% evidence coverage · {{ confidence.components.blockers.active }} blockers · {{ confidence.components.coordination.conflicts }} pass conflicts</p></section>
-            <section v-if="resume" class="panel resume-card"><div class="panel-head"><div><p class="eyebrow">Since your last visit</p><h2>{{ resume.summary.events ? `${resume.summary.events} changes` : 'No new changes' }}</h2></div><small>{{ date(resume.since) }}</small></div><div class="resume-metrics"><span><strong>{{ resume.summary.evidence }}</strong> evidence</span><span><strong>{{ resume.summary.decisions }}</strong> decisions</span><span><strong>{{ resume.summary.blockers }}</strong> blocker updates</span><span><strong>{{ resume.summary.changed_objectives }}</strong> objectives</span></div><p v-if="resume.recent[0]">Latest: {{ resume.recent[0].summary }}</p><p v-else>Your project state is unchanged since the previous visit.</p></section>
-            <section class="panel">
-              <div class="panel-head">
-                <div>
-                  <p class="eyebrow">Current state</p>
-                  <h2>Chapter progress</h2>
-                </div>
-                <button class="text-button" @click="activeView = 'chapters'">
-                  View all
-                </button>
-              </div>
-              <button
-                v-for="chapter in detail.chapters.slice(0, 6)"
-                :key="chapter.uid"
-                class="chapter-row"
-                @click="inspectChapter(chapter)"
-              >
-                <div>
-                  <h3>{{ chapter.title }}</h3>
-                  <p>
-                    {{ chapter.evidence_count }} evidence ·
-                    {{ chapter.event_count }} events
-                  </p>
-                </div>
-                <strong>{{ chapter.progress }}%</strong>
-                <div class="bar">
-                  <i :style="{ width: `${chapter.progress}%` }"></i>
-                </div>
-              </button>
-            </section>
-            <section class="panel">
-              <div class="panel-head">
-                <div>
-                  <p class="eyebrow">Multi-machine memory</p>
-                  <h2>Immutable cloud journals</h2>
-                  <p class="scope-note">
-                    Each machine publishes new records without overwriting
-                    another machine.
-                  </p>
-                </div>
-              </div>
-              <article
-                v-for="connection in connections"
-                :key="connection.provider"
-                class="sync-row"
-              >
-                <div>
-                  <strong>{{ connection.label }}</strong
-                  ><span :data-status="connection.last_status">{{
-                    connection.last_status
-                  }}</span>
-                  <p>{{ connection.last_detail || "Never synchronized" }}</p>
-                  <small
-                    >{{ connection.shard_count }} known journals ·
-                    {{ connection.cloud_evidence }} cloud evidence ·
-                    {{ connection.pending_events }} local events pending · Last
-                    push: {{ date(connection.last_push_at) }}</small
-                  >
-                </div>
-                <button
-                  :disabled="Boolean(syncing)"
-                  @click="sync(connection.provider)"
-                >
-                  {{
-                    syncing === connection.provider
-                      ? "Synchronizing…"
-                      : "Sync memory + evidence"
-                  }}
-                </button>
-              </article>
-            </section>
-            <section class="panel coordination">
-              <div class="panel-head">
-                <div>
-                  <p class="eyebrow">Multi-machine coordination</p>
-                  <h2>Pass activity</h2>
-                  <p class="scope-note">
-                    Reported state only · 15 minute heartbeat window
-                  </p>
-                </div>
-                <div class="coord-counts">
-                  <span>{{ coordination.counts.active }} active</span
-                  ><span :class="{ warn: coordination.counts.conflicts }"
-                    >{{ coordination.counts.conflicts }} conflicts</span
-                  >
-                </div>
-              </div>
-              <div v-if="coordination.latest_git" class="git-state">
-                <strong>{{ coordination.latest_git.branch }}</strong
-                ><code>{{
-                  coordination.latest_git.head_commit?.slice(0, 10)
-                }}</code
-                ><span :class="{ warn: coordination.latest_git.dirty }">{{
-                  coordination.latest_git.dirty
-                    ? "Uncommitted changes"
-                    : "Clean working tree"
-                }}</span>
-              </div>
-              <p v-if="!coordination.active.length" class="empty good">
-                No active pass reported.
-              </p>
-              <article
-                v-for="pass in coordination.active"
-                :key="pass.session_id"
-                class="pass-activity"
-                :data-state="pass.overlaps.length ? 'conflict' : pass.status"
-              >
-                <div>
-                  <span
-                    class="status"
-                    :data-status="
-                      pass.overlaps.length ? 'blocked' : pass.status
-                    "
-                    >{{ pass.overlaps.length ? "conflict" : pass.status }}</span
-                  >
-                  <h3>{{ pass.summary }}</h3>
-                  <p>
-                    {{ pass.session_id }} · {{ pass.machine }} ·
-                    {{ pass.branch }}
-                  </p>
-                </div>
-                <dl>
-                  <div>
-                    <dt>Base</dt>
-                    <dd>
-                      <code>{{ pass.base_commit.slice(0, 10) }}</code>
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Last signal</dt>
-                    <dd>{{ date(pass.last_seen_at) }}</dd>
-                  </div>
-                  <div>
-                    <dt>Files</dt>
-                    <dd>{{ pass.paths.join(", ") }}</dd>
-                  </div>
-                </dl>
-                <p v-if="pass.stale" class="coord-alert">
-                  Base commit differs from the latest reported Git state.
-                </p>
-                <p v-if="pass.overlaps.length" class="coord-alert">
-                  Overlaps {{ pass.overlaps.join(", ") }}
-                </p>
-              </article>
-              <details
-                v-if="
-                  coordination.recent.some(
-                    (pass: any) => pass.status === 'abandoned',
-                  )
-                "
-              >
-                <summary>
-                  Abandoned passes ({{ coordination.counts.abandoned }})
-                </summary>
-                <p
-                  v-for="pass in coordination.recent.filter(
-                    (item: any) => item.status === 'abandoned',
-                  )"
-                  :key="pass.session_id"
-                  class="abandoned-pass"
-                >
-                  {{ pass.session_id }} · {{ pass.machine }} · last signal
-                  {{ date(pass.last_seen_at) }}
-                </p>
-              </details>
-            </section>
-          </div>
+  <main v-else-if="view==='projects'" class="page-shell">
+<header class="page-lead">
+<div>
+<p class="eyebrow">Portfolio</p>
+<h1>{{ language==='fr'?'Choisissez un projet.':'Choose a project.' }}</h1>
+<p>{{ language==='fr'?'Chaque projet s’ouvre sur le même parcours guidé, de son cadrage jusqu’à sa mémoire.':'Every project follows the same guided workflow, from scope to durable memory.' }}</p>
+</div>
+</header>
+<div class="project-section-title"><div><span>{{ language==='fr'?'Projets actifs':'Active projects' }}</span><small>{{ activeProjects.length }} {{ language==='fr'?(activeProjects.length===1?'espace':'espaces'):(activeProjects.length===1?'workspace':'workspaces') }}</small></div></div>
+<section class="project-grid">
+<button v-for="item in activeProjects" :key="item.uid" class="project-card" @click="openProject(item.slug)">
+<div>
+<span class="status" :data-status="projectStats(item).state">{{ statusLabel(projectStats(item).state) }}</span>
+<small>{{ projectTypeLabel(item.project_type) }}</small>
+</div>
+<h2>{{ item.name }}</h2>
+<code>{{ projectPath(item) }}</code>
+<div class="project-progress"><span><b>{{ projectStats(item).progress }}%</b> {{ language==='fr'?'terminé':'complete' }}</span><i><em :style="{width:`${projectStats(item).progress}%`}"></em></i></div>
+<div class="project-last-pass"><small>{{ language==='fr'?'Passe actuelle / récente':'Current / recent pass' }}</small><strong>{{ projectStats(item).last?.title||(language==='fr'?'Aucune passe planifiée':'No planned pass') }}</strong><span v-if="projectStats(item).last">{{ objectiveStatusLabel(projectStats(item).last.status) }}<template v-if="projectStats(item).activity"> · {{ date(projectStats(item).activity) }}</template></span></div>
+<dl>
+<div>
+<dt>{{ language==='fr'?'Objectifs':'Objectives' }}</dt>
+<dd>{{ item.objectives }}</dd>
+</div>
+<div>
+<dt>{{ language==='fr'?'Preuves':'Evidence' }}</dt>
+<dd>{{ item.proofs }}</dd>
+</div>
+<div>
+<dt>{{ language==='fr'?'Blocages':'Blockers' }}</dt>
+<dd>{{ item.open_blockers }}</dd>
+</div>
+<div>
+<dt>{{ language==='fr'?'Sessions':'Sessions' }}</dt>
+<dd>{{ projectStats(item).sessions }}<small v-if="projectStats(item).activeSessions"> · {{ projectStats(item).activeSessions }} live</small></dd>
+</div>
+</dl>
+<footer>{{ language==='fr'?'Ouvrir l’espace projet':'Open project workspace' }} <b>→</b>
+</footer>
+</button>
+</section>
+<details v-if="archivedProjects.length" class="archived-projects"><summary>{{ archivedProjects.length }} {{ language==='fr'?(archivedProjects.length===1?'projet archivé':'projets archivés'):(archivedProjects.length===1?'archived project':'archived projects') }}</summary><section class="project-grid"><button v-for="item in archivedProjects" :key="item.uid" class="project-card" @click="openProject(item.slug)"><div><span class="status" data-status="archived">{{ statusLabel('archived') }}</span><small>{{ projectTypeLabel(item.project_type) }}</small></div><h2>{{ item.name }}</h2><code>{{ projectPath(item) }}</code><footer>{{ language==='fr'?'Consulter l’archive':'View archive' }} <b>→</b></footer></button></section></details>
+</main>
+
+  <main v-else-if="view==='usage'" class="page-shell ai-usage-page">
+    <header class="page-lead"><div><p class="eyebrow">{{ tr('Tableau de bord IA') }}</p><h1>{{ tr('Usage de vos IA.') }}</h1><p>{{ tr('Suivez les sessions réellement lancées par Orchestrator, les modèles utilisés et les plafonds qui déclenchent une bascule.') }}</p></div><button class="secondary" :disabled="aiUsageRefreshBusy" @click="loadAiUsage">{{ language==='fr'?(aiUsageRefreshBusy?'Lecture des quotas…':'Actualiser maintenant'):(aiUsageRefreshBusy?'Reading quotas…':'Refresh now') }}</button></header>
+    <p v-if="error" class="error page-error">{{ error }}</p>
+    <p v-else-if="aiUsageRefreshNotice" class="usage-refresh-notice">{{ aiUsageRefreshNotice }}</p>
+    <section v-if="!aiUsage" class="loading">{{ tr('Chargement de l’usage IA…') }}</section>
+    <template v-else>
+      <section class="usage-summary">
+        <article v-for="period in ['daily','weekly','monthly']" :key="period"><span>{{ usagePeriodLabel(period) }}</span><strong>{{ aiUsage.totals[period] }}</strong><small>{{ tr('sessions lancées') }}</small></article>
+        <article><span>{{ tr('Historique') }}</span><strong>{{ aiUsage.total_sessions }}</strong><small>{{ aiUsage.active_sessions }} {{ language==='fr'?(aiUsage.active_sessions===1?'active':'actives'):'active' }}</small></article>
+      </section>
+      <section class="usage-provider-grid">
+        <article v-for="item in providers" :key="item.id" class="usage-provider-card" :data-stale="Boolean(aiUsage.provider_limits[item.id]?.stale)">
+          <header><div><span class="provider-badge" :data-provider="item.id">{{ item.label }}</span><small>{{ aiUsage.provider_limits[item.id]?.source||(language==='fr'?'Source fournisseur indisponible':'Provider source unavailable') }}{{ aiUsage.provider_limits[item.id]?.stale?(language==='fr'?' · dernière valeur connue':' · last known value'):'' }}</small></div><strong>{{ aiUsage.counts[item.id].weekly.used }}<small> sessions</small></strong></header>
+          <div v-if="aiUsage.provider_limits[item.id]?.quotas?.length" class="provider-quota-list"><div v-for="quota in aiUsage.provider_limits[item.id].quotas" :key="quota.id" class="usage-meter" :data-reached="quota.reached"><div><span>{{ quota.label }} · {{ quota.group }}</span><b>{{ quota.used_percent }}% {{ language==='fr'?'utilisé':'used' }}</b></div><i><em :style="{width:`${Math.min(100,quota.used_percent)}%`}"></em></i><small><strong>{{ language==='fr'?(quota.reached?'Limite atteinte':'Réinitialisation'):(quota.reached?'Limit reached':'Reset') }}</strong><time v-if="quota.resets_at" :datetime="quota.resets_at">{{ quotaResetDate(quota.resets_at) }}</time><span v-else>{{ tr('Date et heure non communiquées') }}</span></small></div></div>
+          <div v-else class="quota-unavailable"><strong>{{ tr('Limite non lisible') }}</strong><span>{{ aiUsage.provider_limits[item.id]?.error||(language==='fr'?'Cette IA ne fournit aucun chiffre exploitable pour le moment.':'This AI currently provides no usable quota data.') }}</span></div>
+          <p v-if="aiUsage.provider_limits[item.id]?.stale" class="usage-stale-warning">{{ language==='fr'?'Lecture actuelle impossible':'Current reading unavailable' }} : {{ aiUsage.provider_limits[item.id]?.error||(language==='fr'?'le fournisseur ne répond pas':'the provider is not responding') }}. {{ language==='fr'?'Les pourcentages affichés sont la dernière valeur connue, pas le quota actuel.':'Displayed percentages are the last known values, not the current quota.' }}</p>
+          <footer><span :data-state="aiUsage.provider_limits[item.id]?.stale?'stale':aiUsage.provider_limits[item.id]?.exhausted?'reached':aiUsage.provider_limits[item.id]?.available?'live':'unknown'">{{ language==='fr'?(aiUsage.provider_limits[item.id]?.stale?'Donnée périmée':aiUsage.provider_limits[item.id]?.exhausted?'Quota atteint':aiUsage.provider_limits[item.id]?.available?'Quota fournisseur lu':'État inconnu'):(aiUsage.provider_limits[item.id]?.stale?'Stale data':aiUsage.provider_limits[item.id]?.exhausted?'Quota reached':aiUsage.provider_limits[item.id]?.available?'Provider quota read':'Unknown status') }}</span><small v-if="aiUsage.provider_limits[item.id]?.freshness">{{ language==='fr'?(aiUsage.provider_limits[item.id]?.stale?'Dernière lecture valide':'Mis à jour'):(aiUsage.provider_limits[item.id]?.stale?'Last valid reading':'Updated') }} {{ date(aiUsage.provider_limits[item.id].freshness) }}</small></footer>
+        </article>
+      </section>
+      <section class="usage-workspace">
+        <section class="panel usage-models"><div class="panel-title"><div><p class="eyebrow">{{ tr('Modèles') }}</p><h2>{{ tr('Les plus utilisés') }}</h2></div><span>{{ aiUsage.models.length }} {{ language==='fr'?'détectés':'detected' }}</span></div><div class="usage-model-head"><span>{{ tr('Modèle et effort') }}</span><span>{{ tr('IA') }}</span><span>{{ tr('Sessions') }}</span><span>{{ tr('Dernier usage') }}</span></div><div v-for="model in aiUsage.models" :key="`${model.provider}:${model.model}:${model.effort||''}`" class="usage-model-row"><strong>{{ model.model }}<small v-if="model.effort"> · {{ model.effort }}</small></strong><span>{{ model.provider }}</span><b>{{ model.sessions }}</b><small>{{ date(model.last_used_at) }}</small></div><p v-if="!aiUsage.models.length" class="empty">{{ tr('Aucune session enregistrée.') }}</p></section>
+        <form class="panel usage-policy" @submit.prevent="saveAiUsage"><div><p class="eyebrow">{{ tr('Routage') }}</p><h2>{{ tr('Bascule sur quota réel') }}</h2><p>{{ tr('Orchestrator lit les limites annoncées par les CLI. Aucun plafond n’est saisi manuellement.') }}</p></div><label class="usage-switch"><input v-model="aiUsageDraft.auto_switch" type="checkbox"><span><strong>{{ tr('Passer automatiquement à l’autre IA') }}</strong><small>{{ tr('La bascule se déclenche seulement si la source marque la limite à 100 % et que l’autre CLI est disponible.') }}</small></span></label><div class="usage-routing-state"><article v-for="item in providers" :key="item.id"><span>{{ item.label }}</span><strong>{{ language==='fr'?(aiUsage.provider_limits[item.id]?.exhausted?'Épuisé':aiUsage.provider_limits[item.id]?.available?'Disponible':'Inconnu'):(aiUsage.provider_limits[item.id]?.exhausted?'Exhausted':aiUsage.provider_limits[item.id]?.available?'Available':'Unknown') }}</strong></article></div><div v-if="aiUsage.last_switch" class="usage-last-switch"><strong>{{ tr('Dernière bascule') }}</strong><span>{{ aiUsage.last_switch.requested }} → {{ aiUsage.last_switch.provider }}</span><small>{{ aiUsage.last_switch.reason }} · {{ date(aiUsage.last_switch.created_at) }}</small></div><button class="primary" :disabled="aiUsageBusy">{{ language==='fr'?(aiUsageBusy?'Enregistrement…':'Enregistrer la bascule automatique'):(aiUsageBusy?'Saving…':'Save automatic switching') }}</button></form>
+      </section>
+      <p class="usage-provenance">{{ aiUsage.provenance.sessions }} {{ aiUsage.provenance.quotas }}</p>
+    </template>
+  </main>
+
+  <main v-else-if="view==='workflow'" class="workflow-shell">
+    <header class="workflow-head">
+<div>
+<button @click="openView('projects')">{{ tr('← Projets') }}</button>
+<p class="eyebrow">{{ tr('Espace projet') }}</p>
+<h1>{{ currentProject?.name }}</h1>
+<code>{{ currentProject?projectPath(currentProject):'' }}</code>
+</div>
+<div>
+<label>{{ tr('Changer de projet') }}<select v-model="selectedProject" @change="changeProject">
+<option v-for="item in projects" :key="item.uid" :value="item.slug">{{ item.name }}</option>
+</select>
+</label>
+<button class="primary" :disabled="!workspaceHydrated||!scopeApproved" :title="scopeApproved?'':`Validez le ${documentLabel} avant l’exécution`" @click="selectStage('execute')">{{ tr('Lancer une IA') }}</button>
+</div>
+</header>
+    <nav v-if="workspaceHydrated" class="stepper" :aria-label="language==='fr'?'Étapes du projet':'Project steps'">
+<button v-for="item in stages" :key="item.id" :class="{active:stage===item.id,locked:!scopeApproved&&['plan','execute'].includes(item.id)}" :disabled="!scopeApproved&&['plan','execute'].includes(item.id)" @click="selectStage(item.id)">
+<i>{{ item.index }}</i>
+<span>
+<strong>{{ tr(item.label) }}</strong>
+<small>{{ !scopeApproved&&['plan','execute'].includes(item.id)?(language==='fr'?'GDD requis':'GDD required'):stageHelp(item.id) }}</small>
+</span>
+<b>{{ stageCounts[item.id] }}</b>
+</button>
+</nav>
+    <p v-if="error" class="error page-error">{{ error }}</p>
+<section v-if="!workspaceHydrated" class="workspace-loading-card"><i></i><div><strong>{{ language==='fr'?'Ouverture de':'Opening' }} {{ currentProject?.name }}</strong><span>{{ tr('Lecture du cadrage, du plan, des sessions et des preuves…') }}</span></div></section>
+    <section v-else class="stage-content">
+      <p v-if="loading" class="workspace-refreshing">{{ tr('Actualisation du contexte…') }}</p>
+      <header class="stage-head">
+<div>
+<p class="eyebrow">{{ language==='fr'?'Étape':'Step' }} {{ stages.findIndex(item=>item.id===stage)+1 }} {{ language==='fr'?'sur':'of' }} 6</p>
+<h2>{{ tr(stages.find(item=>item.id===stage)?.label||'') }}</h2>
+</div>
+<div class="stage-jump">
+<button v-if="stage!=='scope'" @click="selectStage(stages[Math.max(0,stages.findIndex(item=>item.id===stage)-1)].id)">{{ tr('← Précédent') }}</button>
+<button v-if="stage!=='memory'" class="primary" :disabled="stage==='scope'&&!scopeApproved" :title="stage==='scope'&&!scopeApproved?`Validez le ${documentLabel} pour continuer`:''" @click="selectStage(stages[Math.min(5,stages.findIndex(item=>item.id===stage)+1)].id)">{{ tr('Étape suivante →') }}</button>
+</div>
+</header>
+
+      <section v-if="stage==='scope'&&!specEditing" class="panel gdd-ai-studio">
+        <div><p class="eyebrow">{{ tr('Atelier d’analyse IA') }}</p><h3>{{ tr('Confier la synthèse à une IA') }}</h3><p>{{ tr('Orchestrator rassemble les discussions et les preuves. L’IA choisie analyse les contradictions, structure les chapitres et cite ses sources.') }}</p><a v-if="pilots.pilots?.length" class="pilot-scope-shortcut" href="#project-pilots">{{ tr('Reprendre un pilote du projet →') }}</a></div>
+        <div class="gdd-ai-controls" :class="{initial:!specification?.uid}">
+          <div class="gdd-ai-control gdd-provider-control"><span>{{ tr('IA d’analyse') }}</span><div class="provider-grid compact"><button v-for="item in providers.filter(row=>row.id==='codex'||row.id==='claude')" :key="item.id" :class="{selected:specProvider===item.id}" :disabled="!item.available||specGenerating" @click="chooseSpecProvider(item.id)"><strong>{{ item.label }}</strong><small>{{ language==='fr'?(item.available?'Disponible':'Indisponible'):(item.available?'Available':'Unavailable') }}</small></button></div></div>
+          <label v-if="specification?.uid">{{ tr('Mode') }}<select v-model="specAnalysisMode" :disabled="specGenerating"><option value="audit">{{ tr('Analyser uniquement') }}</option><option value="proposal">{{ tr('Analyser et proposer') }}</option></select></label>
+          <label>{{ tr('Modèle') }}<select v-model="specModel" :disabled="specGenerating"><option value="">{{ language==='fr'?'Automatique':'Automatic' }}{{ selectedSpecProvider?.default_model?` · ${selectedSpecProvider.default_model}`:'' }}</option><option v-for="model in selectedSpecProvider?.models||[]" :key="model.id" :value="model.id">{{ model.label }}{{ language==='fr'?(model.configured?' · configuré':' · détecté'):(model.configured?' · configured':' · detected') }}</option></select></label>
+          <label>{{ tr('Effort') }}<select v-model="specEffort" :disabled="specGenerating"><option v-for="effort in selectedSpecProvider?.capabilities.efforts||[]" :key="effort" :value="effort">{{ effort }}</option></select></label>
+          <div class="gdd-ai-control gdd-run-control"><span>{{ tr('Action') }}</span><button class="primary" :disabled="specGenerating||!providers.find(item=>item.id===specProvider)?.available" @click="generateSpecification">{{ language==='fr'?(specGenerating?'Analyse en cours…':!specification?.uid?`Créer avec ${specProvider}`:specAnalysisMode==='audit'?`Analyser avec ${specProvider}`:'Analyser et proposer'):(specGenerating?'Analysis in progress…':!specification?.uid?`Create with ${specProvider}`:specAnalysisMode==='audit'?`Analyze with ${specProvider}`:'Analyze and propose') }}</button></div>
         </div>
+        <div v-if="specAnalysis" class="gdd-analysis-progress" :data-status="specAnalysis.status"><span></span><div><strong>{{ specAnalysis.phase }}</strong><small>{{ specAnalysis.provider }}{{ specAnalysis.model?` · ${specAnalysis.model}`:' · modèle automatique' }}{{ specAnalysis.effort?` · effort ${specAnalysis.effort}`:'' }}</small></div><em>{{ specAnalysis.status==='running'?'En direct':specAnalysis.status==='completed'?'Terminé':'Échec' }}</em></div>
+      </section>
 
-        <section v-else-if="activeView === 'chapters'" class="chapters-layout">
-          <div class="chapter-list panel">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Structure and progress</p>
-                <h2>Chapters</h2>
-              </div>
-              <button
-                v-if="selectedChapter"
-                class="text-button"
-                @click="selectedChapter = ''"
-              >
-                Show all history
-              </button>
-            </div>
-            <button
-              v-for="chapter in detail.chapters"
-              :key="chapter.uid"
-              class="chapter-card"
-              :class="{ selected: selectedChapter === chapter.uid }"
-              @click="inspectChapter(chapter)"
-            >
-              <div class="chapter-top">
-                <span class="status" :data-status="chapter.status">{{
-                  chapter.status
-                }}</span
-                ><strong>{{ chapter.progress }}%</strong>
-              </div>
-              <h3>{{ chapter.title }}</h3>
-              <p>
-                {{ chapter.proven_count }} of
-                {{ chapter.objective_count }} objectives proven ·
-                {{ chapter.evidence_count }} evidence records
-              </p>
-              <div class="bar">
-                <i :style="{ width: `${chapter.progress}%` }"></i>
-              </div>
-              <small>Last evolution: {{ date(chapter.last_activity) }}</small>
-            </button>
-          </div>
-          <section class="panel timeline">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">
-                  {{ selectedChapter ? "Selected chapter" : "All chapters" }}
-                </p>
-                <h2>Evolution history</h2>
-              </div>
-              <div class="filters">
-                <input
-                  v-model="query"
-                  aria-label="Search history"
-                  placeholder="Search history…"
-                /><select v-model="assertion" aria-label="Provenance">
-                  <option value="">All provenance</option>
-                  <option value="measured_fact">Measured facts</option>
-                  <option value="agent_statement">Agent statements</option>
-                  <option value="human_judgment">Human judgments</option>
-                  <option value="system_record">System records</option>
-                </select>
-              </div>
-            </div>
-            <form
-              v-if="judgmentRequest"
-              class="judgment-box"
-              @submit.prevent="recordJudgment"
-            >
-              <div>
-                <p class="eyebrow">Human judgment requested</p>
-                <h3>{{ judgmentRequest.summary }}</h3>
-                <p>
-                  {{
-                    detail.chapters.find((c) => c.uid === selectedChapter)
-                      ?.title
-                  }}
-                </p>
-              </div>
-              <textarea
-                v-model="judgmentText"
-                required
-                placeholder="Write your judgment…"
-                aria-label="Human judgment"
-              ></textarea>
-              <div>
-                <select v-model="judgmentVerdict" aria-label="Judgment verdict">
-                  <option value="pass">Pass</option>
-                  <option value="fail">Fail</option>
-                  <option value="inconclusive">Inconclusive</option></select
-                ><button
-                  :disabled="judgmentBusy || !judgmentText.trim()"
-                  type="submit"
-                >
-                  {{ judgmentBusy ? "Recording…" : "Record judgment" }}
-                </button>
-              </div>
-            </form>
-            <p v-if="!events.length" class="empty">No matching history.</p>
-            <ol>
-              <li v-for="event in pagedEvents" :key="event.uid">
-                <time>{{ date(event.occurred_at) }}</time>
-                <div>
-                  <span class="tag" :data-kind="event.kind === 'cleanup.recorded' ? 'cleanup' : event.assertion">{{
-                    eventLabel(event)
-                  }}</span>
-                  <h3>{{ event.summary }}</h3>
-                  <p v-if="cleanupDetail(event)" class="event-detail">{{ cleanupDetail(event) }}</p>
-                  <p>
-                    {{ event.objective_title || event.kind }} ·
-                    {{ event.actor }}
-                  </p>
-                </div>
-              </li>
-            </ol>
-            <div class="pagination">
-              <button :disabled="eventPage === 1" @click="eventPage--">
-                Previous</button
-              ><span>Page {{ eventPage }} / {{ eventPages }}</span
-              ><button
-                :disabled="eventPage === eventPages"
-                @click="eventPage++"
-              >
-                Next
-              </button>
-            </div>
-          </section>
-        </section>
+      <section v-if="stage==='scope'&&pilots.pilots?.length" class="panel scope-pilot-resume">
+        <div><p class="eyebrow">{{ tr('Reprise rapide') }}</p><h3>{{ tr('Pilotes du projet') }}</h3><p>{{ tr('Reprenez le contexte existant avant de relire tout le document.') }}</p></div>
+        <article v-for="item in pilots.pilots.slice(0,3)" :key="item.uid"><span>{{ pilotRoleLabel(item.role) }} · {{ pilotAutonomyLabel(item.autonomy_mode||'semi') }}</span><strong>{{ item.name }}</strong><small>{{ item.last_run_at?`${language==='fr'?'Dernier lancement':'Last launch'} ${date(item.last_run_at)}`:(language==='fr'?'Jamais lancé':'Never launched') }}</small><div><button v-if="item.last_session" @click="mountTerminal(item.last_session)">{{ tr('Voir la dernière') }}</button><button class="primary" :disabled="pilotBusy||(item.role==='executor'&&!scopeApproved)" @click="launchProjectPilot(item)">{{ tr('Lancer') }}</button></div></article>
+      </section>
 
-        <section v-else-if="activeView === 'evidence'" class="evidence-screen">
-          <section class="panel pass-browser">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Evidence by pass</p>
-                <h2>Passes</h2>
-              </div>
-              <span class="scope-note">{{ passGroups.length }} passes</span>
-            </div>
-            <article
-              v-for="pass in pagedPasses"
-              :key="pass.id"
-              class="pass-row"
-              :class="{ selected: selectedPass === pass.id }"
-            >
-              <button class="pass-select" :aria-pressed="selectedPass === pass.id" @click="selectedPass = selectedPass === pass.id ? '' : pass.id; evidencePage = 1">
-                <strong>Pass {{ pass.id }}</strong
-                ><span
-                  >{{ pass.proofs.length }} evidence records ·
-                  {{ pass.images.length }} available image{{ pass.images.length === 1 ? '' : 's' }}<template v-if="pass.unavailableImages"> · {{ pass.unavailableImages }} unavailable</template></span
-                ><time>{{ date(pass.started_at) }}<template v-if="pass.latest_at && pass.latest_at !== pass.started_at"> → {{ date(pass.latest_at) }}</template></time>
-              </button>
-              <div class="pass-thumbs">
-                <button
-                  v-for="proof in pass.images.slice(0, 4)"
-                  :key="proof.uid"
-                  :aria-label="`Open ${proof.label}`"
-                  @click="focusedEvidence = proof.uid; previewImage = proof"
-                ><img :src="previewUrl(proof)" :alt="proof.label" loading="lazy" /></button><span v-if="!pass.images.length">No image</span>
-              </div>
-            </article>
-            <div class="pagination">
-              <button :disabled="passPage === 1" @click="passPage--">
-                Previous</button
-              ><span>Page {{ passPage }} / {{ passPages }}</span
-              ><button :disabled="passPage === passPages" @click="passPage++">
-                Next
-              </button>
-            </div>
-          </section>
-          <section class="panel evidence-view">
-            <div class="panel-head">
-              <div>
-                <p class="eyebrow">Auditable material</p>
-                <h2>Evidence manifest</h2>
-                <p class="scope-note">
-                  Scope:
-                  {{
-                    selectedPass
-                      ? `pass ${selectedPass}`
-                      : selectedChapter
-                        ? "selected chapter"
-                        : "whole project"
-                  }}
-                </p>
-              </div>
-              <div class="evidence-filters">
-                <select
-                  v-model="selectedChapter"
-                  aria-label="Filter evidence by chapter"
-                  @change="selectedPass = ''"
-                >
-                  <option value="">Whole project</option>
-                  <option
-                    v-for="chapter in detail.chapters"
-                    :key="chapter.uid"
-                    :value="chapter.uid"
-                  >
-                    {{ chapter.title }}
-                  </option></select
-                ><select
-                  v-model="evidenceType"
-                  aria-label="Filter evidence by content type"
-                  @change="evidencePage = 1"
-                >
-                  <option value="all">All evidence</option>
-                  <option value="images">Images</option>
-                  <option value="text">Text files</option>
-                </select>
-              </div>
-            </div>
-            <div v-if="selectedChapter" class="evidence-context">
-              <div>
-                <span>Evidence for chapter</span
-                ><strong>{{
-                  detail.chapters.find((c) => c.uid === selectedChapter)?.title
-                }}</strong
-                ><small v-if="selectedPass"
-                  >Filtered further to pass {{ selectedPass }}</small
-                >
-              </div>
-              <button
-                @click="
-                  selectedChapter = '';
-                  selectedPass = '';
-                "
-              >
-                Show whole project
-              </button>
-            </div>
-            <section v-if="blockedContext" class="blocked-context">
-              <div>
-                <p class="eyebrow">Blocked chapter</p>
-                <h3>{{ blockedContext.title }}</h3>
-                <p>{{ blockedContext.detail || "No additional blocker detail." }}</p>
-                <small>{{ blockedContext.pass_ref ? `Related pass ${blockedContext.pass_ref}` : "No pass reference was recorded" }}</small>
-              </div>
-              <form v-if="judgmentRequest" class="blocked-decision" @submit.prevent="recordJudgment">
-                <strong>Human decision requested</strong>
-                <textarea v-model="judgmentText" required placeholder="Write your judgment…" aria-label="Human judgment"></textarea>
-                <div><select v-model="judgmentVerdict" aria-label="Judgment verdict"><option value="pass">Pass</option><option value="fail">Fail</option><option value="inconclusive">Inconclusive</option></select><button :disabled="judgmentBusy || !judgmentText.trim()" type="submit">{{ judgmentBusy ? "Recording…" : "Record judgment" }}</button></div>
-              </form>
-              <p v-else class="decision-not-requested">No human judgment requested for this blocker.</p>
-            </section>
-            <section v-if="comparisonPair" class="comparison">
-              <div class="comparison-head">
-                <div>
-                  <p class="eyebrow">Before / after</p>
-                  <h3>Visual comparison</h3>
-                  <p>
-                    {{ comparisonPair.before.objective_title }} ·
-                    {{
-                      comparisonPair.before.pass_ref
-                        ? `Pass ${comparisonPair.before.pass_ref}`
-                        : "No pass reference"
-                    }}
-                  </p>
-                </div>
-                <select
-                  v-model.number="comparisonIndex"
-                  aria-label="Choose before and after comparison"
-                >
-                  <option
-                    v-for="(pair, index) in comparisonPairs"
-                    :key="pair.before.uid + pair.after.uid"
-                    :value="index"
-                  >
-                    Comparison {{ index + 1 }} / {{ comparisonPairs.length }}
-                  </option>
-                </select>
-              </div>
-              <div class="comparison-grid">
-                <figure role="button" tabindex="0" :aria-label="`Open before image: ${comparisonPair.before.label}`" @click="previewImage = comparisonPair.before" @keydown.enter="previewImage = comparisonPair.before" @keydown.space.prevent="previewImage = comparisonPair.before">
-                  <span>Before</span>
-                  <img
-                    :src="previewUrl(comparisonPair.before)"
-                    :alt="comparisonPair.before.label"
-                  />
-                  <figcaption>{{ comparisonPair.before.label }}</figcaption>
-                </figure>
-                <figure role="button" tabindex="0" :aria-label="`Open after image: ${comparisonPair.after.label}`" @click="previewImage = comparisonPair.after" @keydown.enter="previewImage = comparisonPair.after" @keydown.space.prevent="previewImage = comparisonPair.after">
-                  <span>After</span>
-                  <img
-                    :src="previewUrl(comparisonPair.after)"
-                    :alt="comparisonPair.after.label"
-                  />
-                  <figcaption>{{ comparisonPair.after.label }}</figcaption>
-                </figure>
-              </div>
-            </section>
-            <p v-if="!scopedEvidence.length" class="empty">
-              No evidence recorded for this selection.
-            </p>
-            <div class="evidence-table" role="list" aria-label="Evidence records">
-              <article
-                v-for="proof in pagedEvidence"
-                :key="proof.uid"
-                class="evidence-row"
-                :id="`proof-${proof.uid}`"
-                :data-focused="focusedEvidence === proof.uid"
-                role="listitem"
-              >
-                <div class="evidence-main">
-                  <img
-                    v-if="proof.status === 'available' && isImage(proof)"
-                    :src="previewUrl(proof)"
-                    :alt="proof.label"
-                    loading="lazy"
-                    role="button"
-                    tabindex="0"
-                    :aria-label="`Open ${proof.label}`"
-                    @click="focusedEvidence = proof.uid; previewImage = proof"
-                    @keydown.enter="focusedEvidence = proof.uid; previewImage = proof"
-                    @keydown.space.prevent="focusedEvidence = proof.uid; previewImage = proof"
-                  />
-                  <div>
-                    <span class="status" :data-status="proof.status">{{
-                      proof.status
-                    }}</span>
-                    <span v-if="proof.local_available" class="status" data-status="available">local</span>
-                    <span v-else-if="proof.cloud_providers.length" class="status" data-status="cloud">cloud-only</span>
-                    <h3>{{ proof.label }}</h3>
-                    <p>
-                      {{ proof.objective_title || "Project-level evidence" }} ·
-                      {{
-                        proof.pass_ref
-                          ? `Pass ${proof.pass_ref}`
-                          : "No pass reference"
-                      }}
-                    </p>
-                    <time>Recorded {{ date(proof.created_at) }}</time>
-                  </div>
-                </div>
-                <dl>
-                  <div>
-                    <dt>Type</dt>
-                    <dd>{{ proof.type }}</dd>
-                  </div>
-                  <div>
-                    <dt>Origin</dt>
-                    <dd>{{ proof.origin }}</dd>
-                  </div>
-                  <div>
-                    <dt>Size</dt>
-                    <dd>{{ bytes(proof.bytes) }}</dd>
-                  </div>
-                  <div>
-                    <dt>Retention</dt>
-                    <dd>{{ proof.retention }}</dd>
-                  </div>
-                  <div>
-                    <dt>Date and time</dt>
-                    <dd>{{ date(proof.created_at) }}</dd>
-                  </div>
-                </dl>
-                <div class="proof-ref">
-                  <code :title="proof.sha256 || ''">{{
-                    proof.sha256
-                      ? proof.sha256.slice(0, 16) + "…"
-                      : "No verified hash"
-                  }}</code
-                  ><button
-                    v-if="proof.locator_kind === 'path'"
-                    class="text-button"
-                    :disabled="verifying === proof.uid"
-                    @click="verifyProof(proof)"
-                  >
-                    {{ verifying === proof.uid ? "Verifying…" : "Verify file" }}
-                  </button
-                  ><button
-                    v-if="!proof.local_available && proof.cloud_providers.length"
-                    class="text-button"
-                    :disabled="verifying === proof.uid"
-                    @click="downloadProof(proof)"
-                  >{{ verifying === proof.uid ? "Downloading…" : "Download evidence" }}</button
-                  ><button
-                    v-if="proof.status === 'available' && isText(proof)"
-                    class="text-button"
-                    @click="focusedEvidence = proof.uid; previewText(proof)"
-                  >
-                    {{
-                      openPreview === proof.uid ? "Close text" : "Read text"
-                    }}</button
-                  ><a
-                    v-else-if="proof.locator_kind === 'url' && proof.locator"
-                    :href="proof.locator"
-                    target="_blank"
-                    rel="noreferrer"
-                    >Open source</a
-                  ><span v-else :title="proof.locator || ''">{{
-                    proof.locator || "No locator"
-                  }}</span>
-                  <strong
-                    v-if="verification[proof.uid]"
-                    class="verification"
-                    :data-verification="verification[proof.uid].verification"
-                  >
-                    {{ verification[proof.uid].verification
-                    }}{{
-                      verification[proof.uid].size_matches === false
-                        ? " · size changed"
-                        : ""
-                    }}
-                  </strong>
-                </div>
-                <div v-if="openPreview === proof.uid" class="text-preview">
-                  <p v-if="previewErrors[proof.uid]" class="error">
-                    {{ previewErrors[proof.uid] }}
-                  </p>
-                  <pre v-else>{{ textPreviews[proof.uid] || "Loading…" }}</pre>
-                </div>
-              </article>
-            </div>
-            <div class="pagination">
-              <button :disabled="evidencePage === 1" @click="evidencePage--">
-                Previous</button
-              ><span
-                >{{ scopedEvidence.length }} records · Page {{ evidencePage }} /
-                {{ evidencePages }}</span
-              ><button
-                :disabled="evidencePage === evidencePages"
-                @click="evidencePage++"
-              >
-                Next
-              </button>
-            </div>
-          </section>
-        </section>
-        <section v-else-if="activeView === 'diagram'" class="panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Flow, returns and current state</p>
-              <h2>Project flow diagram</h2>
-            </div>
-            <div class="diagram-legend">
-              <span data-phase="completed">Completed</span
-              ><span data-phase="active">Active</span
-              ><span data-phase="blocked">Blocked / return</span
-              ><span data-phase="planned">Planned</span>
-            </div>
-          </div>
-          <section class="flow-summary" aria-label="Flow summary"><article><span>Current</span><strong>{{ flowSummary.current?.label || 'No active chapter' }}</strong></article><article><span>Next planned</span><strong>{{ flowSummary.next?.label || 'None' }}</strong></article><article><span>Completed</span><strong>{{ flowSummary.completed }} / {{ graphNodes.length }}</strong></article><article><span>Returns</span><strong>{{ flowSummary.returns }}</strong></article></section>
-          <div class="graph-scroll">
-            <svg
-              class="project-graph"
-              :style="{ height: `${graphHeight}px` }"
-              :viewBox="`0 0 1040 ${graphHeight}`"
-              role="img"
-              :aria-label="`${diagram?.project.name} project flow`"
-            >
-              <defs>
-                <marker
-                  id="arrow-flow"
-                  viewBox="0 0 10 10"
-                  refX="9"
-                  refY="5"
-                  markerWidth="7"
-                  markerHeight="7"
-                  orient="auto-start-reverse"
-                >
-                  <path d="M 0 0 L 10 5 L 0 10 z" />
-                </marker>
-                <marker
-                  id="arrow-return"
-                  viewBox="0 0 10 10"
-                  refX="9"
-                  refY="5"
-                  markerWidth="7"
-                  markerHeight="7"
-                  orient="auto-start-reverse"
-                >
-                  <path d="M 0 0 L 10 5 L 0 10 z" />
-                </marker>
-              </defs>
-              <g class="graph-edges">
-                <path
-                  v-for="(edge, index) in diagram?.edges.filter(
-                    (e) => e.type !== 'contains',
-                  )"
-                  :key="index"
-                  :d="graphPath(edge)"
-                  :class="[`edge-${edge.type}`,{ 'edge-critical': edgeCritical(edge) }]"
-                  :marker-end="
-                    edge.type === 'returns' || edge.type === 'retry'
-                      ? 'url(#arrow-return)'
-                      : 'url(#arrow-flow)'
-                  "
-                />
-              </g>
-              <g
-                v-for="(node, index) in graphNodes"
-                :key="node.id"
-                class="graph-node"
-                :data-phase="node.phase"
-                role="button"
-                tabindex="0"
-                :aria-label="`Open ${node.label}, ${node.phase}`"
-                @click="inspectGraphNode(node.id)"
-                @keydown.enter="inspectGraphNode(node.id)"
-              >
-                <rect
-                  :x="node.x"
-                  :y="node.y"
-                  :width="node.width"
-                  :height="node.height"
-                  rx="8"
-                />
-                <text :x="node.x + 14" :y="node.y + 20" class="node-order">
-                  {{ index + 1 }} · {{ node.phase.toUpperCase() }}
-                </text>
-                <text :x="node.x + 14" :y="node.y + 42" class="node-title">
-                  {{
-                    node.label.length > 34
-                      ? node.label.slice(0, 34) + "…"
-                      : node.label
-                  }}
-                </text>
-                <text :x="node.x + 14" :y="node.y + 64" class="node-meta">
-                  {{ node.evidence_count }} evidence ·
-                  {{ node.fail_count }} fails · {{ node.blocker_count }} returns
-                </text>
-              </g>
-            </svg>
-          </div>
-          <section class="dependency-list">
-            <h3>Contained objectives</h3>
-            <p
-              v-for="edge in diagram?.edges.filter(
-                (e) => e.type === 'contains',
-              )"
-              :key="edge.from + edge.to"
-            >
-              {{ diagram?.nodes.find((n) => n.id === edge.from)?.label }} →
-              {{ diagram?.nodes.find((n) => n.id === edge.to)?.label }}
-            </p>
-          </section>
-        </section>
-        <section v-else-if="activeView === 'planning'" class="planning-screen">
-          <div v-if="planningBusy && !planning" class="panel empty" role="status">Analysing recorded work…</div>
-          <template v-else-if="planning">
-            <section class="panel planning-hero"><div><p class="eyebrow">Human-approved planning</p><h2>Propose work from a project need</h2><p>This prompt creates a reviewable proposal from your instruction. It does not read or synchronize ClickUp.</p><textarea v-model="planningNeed" rows="3" aria-label="Project need for a new planning proposal" placeholder="What outcome, correction or instruction does this project need?"></textarea></div><div class="planning-hero-actions"><button :disabled="planningBusy || !planningNeed.trim()" @click="planningAction('planning/generate',{need:planningNeed});planningNeed=''">Create proposal</button><div class="recorded-analysis"><small>Separate local analysis</small><button class="secondary" :disabled="planningBusy" @click="planningAction('planning/generate')">{{ planningBusy ? 'Scanning recorded state…' : 'Scan recorded project state' }}</button></div></div></section>
-            <section class="panel plan-order"><div class="panel-head"><div><p class="eyebrow">Feasible sequence</p><h2>Objective order and prerequisites</h2><p>“What should I work on next?” only recommends unfinished objectives whose recorded prerequisites are proven.</p></div><span>{{ planning.plan.objectives.filter((row:any)=>row.feasible).length }} feasible now</span></div><ol><li v-for="(objective,index) in planning.plan.objectives" :key="objective.uid" :data-feasible="objective.feasible"><div class="plan-rank"><strong>{{ Number(index)+1 }}</strong><span><b>{{ objective.title }}</b><small>{{ objective.status }} · {{ objective.unmet_dependencies }} unmet prerequisite{{ objective.unmet_dependencies===1?'':'s' }}</small></span></div><div class="plan-controls"><button type="button" class="secondary" :disabled="Number(index)===0 || planningBusy" :aria-label="`Move ${objective.title} earlier`" @click="moveObjective(objective.uid,-1)">↑</button><button type="button" class="secondary" :disabled="Number(index)===planning.plan.objectives.length-1 || planningBusy" :aria-label="`Move ${objective.title} later`" @click="moveObjective(objective.uid,1)">↓</button><select v-model="dependencyDraft[objective.uid]" :aria-label="`Prerequisite for ${objective.title}`"><option value="">Add prerequisite…</option><option v-for="candidate in planning.plan.objectives.filter((row:any)=>row.uid!==objective.uid)" :key="candidate.uid" :value="candidate.uid">{{ candidate.title }}</option></select><button type="button" :disabled="!dependencyDraft[objective.uid] || planningBusy" @click="addDependency(objective.uid)">Add</button></div><div v-if="planning.plan.dependencies.some((row:any)=>row.objective_uid===objective.uid)" class="plan-dependencies"><span v-for="dependency in planning.plan.dependencies.filter((row:any)=>row.objective_uid===objective.uid)" :key="dependency.depends_on_uid">After {{ dependency.depends_on_title }} <button type="button" :aria-label="`Remove prerequisite ${dependency.depends_on_title}`" @click="removeDependency(objective.uid,dependency.depends_on_uid)">×</button></span></div><div class="objective-schedule"><label><span>Due</span><input v-model="objective.due_at" type="date"></label><label><span>Estimate (minutes)</span><input v-model.number="objective.estimate_minutes" type="number" min="0" max="525600" step="15"></label><button class="secondary" :disabled="planningBusy" @click="saveObjectiveSchedule(objective)">Save timing</button></div></li></ol></section>
-            <section class="planning-grid">
-              <div class="panel proposal-list"><div class="panel-head"><div><p class="eyebrow">Review queue</p><h2>{{ planning.proposals.filter((p:any)=>p.status==='proposed').length }} proposals</h2></div></div><p v-if="!planning.proposals.length" class="empty">Run the analysis to create deduplicated suggestions.</p>
-                <article v-for="proposal in planning.proposals" :key="proposal.uid" class="proposal-card" :data-status="proposal.status"><div><span class="status" :data-status="proposal.status">{{ proposal.status }}</span><small>{{ proposal.kind }} · {{ proposal.source_kind.replace('_',' ') }}</small><h3>{{ proposal.title }}</h3><p>{{ proposal.body || proposal.rationale }}</p><small v-if="proposal.success_criteria">Done when: {{ proposal.success_criteria }}</small><div class="proposal-links"><button v-if="proposal.objective_uid" class="evidence-link" @click="openProposalEvidence(proposal)">View related evidence{{ proposal.evidence_count ? ` (${proposal.evidence_count})` : '' }} →</button><a v-if="proposal.ticket_url" :href="proposal.ticket_url" target="_blank" rel="noreferrer">Open ClickUp ticket →</a></div></div><div v-if="proposal.status==='proposed'" class="proposal-actions"><button @click="planningAction(`planning/${proposal.uid}/review`,{status:'approved',reviewer:'dashboard'})">Approve</button><button class="secondary" @click="planningAction(`planning/${proposal.uid}/review`,{status:'rejected',reviewer:'dashboard'})">Reject</button></div></article>
-              </div>
-              <form class="panel clickup-settings" @submit.prevent="saveClickup">
-                <div><p class="eyebrow">Optional external registry</p><h2>ClickUp destination</h2><p>Configure where this project's complete registry is mirrored. This block is independent from the proposal prompt above.</p></div>
-                <a v-if="planning.clickup.oauth.available && !planning.clickup.connected" class="clickup-connect" :href="`/api/clickup/oauth/start?project=${selected}`">Connect with ClickUp <span>↗</span></a>
-                <div v-if="planning.clickup.connected" class="connected-badge"><span>✓</span><div><strong>ClickUp authorized globally</strong><small>One local token shared by every project · never exported</small></div><button type="button" class="secondary" :disabled="clickupBusy" @click="loadClickupResources">{{ clickupBusy ? 'Loading ClickUp…' : 'Load destinations' }}</button></div>
-                <p v-if="clickupActivity" class="clickup-activity" role="status" aria-live="polite"><span :class="{pulse:clickupBusy}"></span>{{ clickupActivity }}</p>
-                <section v-if="planning.clickup.progress.tickets || planning.clickup.progress.proposals.length" class="clickup-progress"><div><span>Published tickets</span><strong>{{ planning.clickup.progress.tickets }}</strong></div><div v-for="item in planning.clickup.progress.statuses" :key="item.status"><span>{{ item.status }}</span><strong>{{ item.count }}</strong></div><small v-if="planning.clickup.last_sync_at">Updated {{ date(planning.clickup.last_sync_at) }}</small></section>
-                <label v-if="clickupResourcesData.workspaces.length">Workspace<select v-model="clickupForm.workspace_id" @change="clickupForm.list_id=''" required><option value="" disabled>Choose workspace</option><option v-for="workspace in clickupResourcesData.workspaces" :key="workspace.id" :value="workspace.id">{{ workspace.name }}</option></select></label>
-                <label v-if="clickupResourcesData.lists.length">Destination list<select v-model="clickupForm.list_id" required @change="loadClickupStatuses"><option value="" disabled>Choose list</option><option v-for="list in clickupLists" :key="list.id" :value="list.id">{{ list.space_name }}<template v-if="list.folder_name"> / {{ list.folder_name }}</template> / {{ list.name }}</option></select></label>
-                <div v-if="planning.clickup.connected" class="tag-settings"><label>Project tag<input v-model="clickupForm.tag_name" required maxlength="80" placeholder="Project label"><small>Created automatically in the selected ClickUp Space when missing.</small></label><label class="tag-color">Tag color<span><input v-model="clickupForm.tag_color" type="color" aria-label="Project tag color"><code>{{ clickupForm.tag_color }}</code></span><small>Unique default per project; editable here.</small></label></div>
-                <section v-if="planning.clickup.connected" class="mapping-summary"><div><strong>Workflow mapping</strong><small>{{ Object.keys(clickupForm.status_mapping || {}).length ? 'Custom mapping for this project' : 'Recommended automatic mapping' }}</small></div><button type="button" class="secondary" @click="openClickupMapping">Configure</button></section>
-                <details class="manual-token" :open="!planning.clickup.connected"><summary>{{ planning.clickup.connected ? 'Replace global personal token' : 'Connect Orchestrator to ClickUp' }}</summary><label>Personal API token<input v-model="clickupForm.token" type="password" placeholder="pk_…" autocomplete="new-password"><small>Saved once for Orchestrator. Project destinations remain independent.</small></label><button type="button" class="token-connect" :disabled="clickupBusy || !clickupForm.token.startsWith('pk_')" @click="connectPersonalToken">Connect account and load destinations</button></details>
-                <label class="check"><input v-model="clickupForm.enabled" type="checkbox"><span>Enable passive synchronization</span></label>
-                <div class="clickup-actions"><button class="primary" :disabled="clickupBusy || !clickupForm.list_id">{{ clickupBusy ? 'Working…' : 'Save project destination' }}</button></div>
-                <section class="clickup-feedback"><p class="eyebrow">Separate ClickUp operation</p><h3>Registry sync & ticket feedback</h3><p>Mirrors every proposal and proof, then reads rejected or failed ClickUp tickets to create corrective proposals. It does not use the instruction prompt above.</p><section v-if="clickupSync.active || clickupSync.percent" class="sync-progress" :data-error="Boolean(clickupSync.error)" role="status" aria-live="polite"><div><span>{{ clickupSync.message }}</span><strong>{{ clickupSync.percent }}%</strong></div><progress :value="clickupSync.percent" max="100">{{ clickupSync.percent }}%</progress></section><button type="button" class="secondary" :disabled="clickupBusy || !planning.clickup?.enabled || !planning.clickup?.list_id" @click="runClickupSync">{{ clickupSync.active ? 'Synchronizing ClickUp…' : 'Sync registry & inspect feedback' }}</button></section>
-                <p v-if="planning.clickup?.last_detail" class="sync-detail" :data-status="planning.clickup.last_status">{{ planning.clickup.last_detail }}</p>
-                <div v-if="clickupMappingOpen" class="mapping-modal" role="dialog" aria-modal="true" aria-labelledby="mapping-title" @click.self="clickupMappingOpen=false"><section class="mapping-card"><div class="panel-head"><div><p class="eyebrow">Project-specific routing</p><h2 id="mapping-title">Orchestrator → ClickUp statuses</h2></div><button type="button" class="icon-close secondary" aria-label="Close status mapping" @click="clickupMappingOpen=false">×</button></div><p>Choose a ClickUp status for each Orchestrator state. Leave a row on Recommended to use the semantic default for this list.</p><div class="mapping-grid"><label v-for="kind in statusKinds" :key="kind[0]"><span><strong>{{ kind[1] }}</strong><small>Orchestrator</small></span><span aria-hidden="true">→</span><select v-model="clickupForm.status_mapping[kind[0]]"><option value="">Recommended</option><option v-for="status in clickupStatuses" :key="status.status" :value="status.status">{{ status.status }}</option></select></label></div><p v-if="!clickupStatuses.length" class="oauth-note">Load destinations and select a ClickUp list to retrieve its available statuses.</p><div class="mapping-actions"><button type="button" class="secondary" @click="resetClickupMapping">Use recommended defaults</button><button type="button" @click="clickupMappingOpen=false">Apply mapping</button></div></section></div>
-              </form>
-            </section>
-          </template>
-        </section>
-        <section v-else-if="activeView === 'ai'" class="ai-workspace-screen">
-          <div v-if="aiWorkspaceBusy && !aiWorkspace" class="panel empty" role="status">Building AI workspace…</div>
-          <template v-else-if="aiWorkspace">
-            <section class="panel ai-next" :data-kind="aiWorkspace.next.kind"><div><p class="eyebrow">What should I work on next?</p><h2>{{ aiWorkspace.next.title }}</h2><p>{{ aiWorkspace.next.reason }}</p></div><button @click="openAiTarget(aiWorkspace.next.target)">Open context →</button></section>
-            <section class="ai-summary" aria-label="AI workspace summary"><article><span>Professional capabilities</span><strong>{{ aiWorkspace.summary.features }}</strong></article><article><span>Ready</span><strong>{{ aiWorkspace.summary.ready }}</strong></article><article><span>Need attention</span><strong>{{ aiWorkspace.summary.attention }}</strong></article><article><span>Confidence</span><strong>{{ aiWorkspace.summary.confidence }}</strong></article></section>
-            <section class="panel ai-toolbar"><div><p class="eyebrow">Conversation continuity</p><h2>Agent-ready handoff</h2><p>Immutable memory, current Git context and next safe action. Orchestrator does not execute it.</p></div><div><a :href="`/api/projects/${selected}/handoff.md`">Download Markdown</a><a :href="`/api/projects/${selected}/handoff.json`">Download JSON</a><button :disabled="aiWorkspaceBusy" @click="loadAiWorkspace">Refresh</button></div></section>
-            <section class="ai-feature-grid">
-              <article v-for="feature in aiWorkspace.features" :key="feature.id" class="panel ai-feature" :data-status="feature.status">
-                <div class="ai-feature-head"><span class="ai-feature-state">{{ feature.status }}</span><strong v-if="feature.metric !== null">{{ feature.metric }}</strong></div>
-                <h3>{{ feature.title }}</h3><p>{{ feature.summary }}</p>
-                <ul v-if="feature.items.length"><li v-for="(item,index) in feature.items.slice(0,4)" :key="index"><strong>{{ item.title || item.name || item.agent || item.command || item.summary || item.kind }}</strong><small v-if="item.status || item.detail || item.reason">{{ item.status || item.detail || item.reason }}</small></li></ul>
-                <p v-else class="empty compact">No recorded item.</p>
-              </article>
-            </section>
-          </template>
-        </section>
-        <section v-else-if="activeView === 'snapshots'" class="snapshots-screen"><section class="panel snapshot-actions"><div><p class="eyebrow">Portable checkpoints</p><h2>Project snapshots</h2><p>Metadata and derived state only. Evidence files remain referenced.</p></div><button :disabled="snapshotBusy" @click="captureSnapshot">{{ snapshotBusy ? 'Capturing…' : 'Capture snapshot' }}</button></section><section v-if="snapshotDiff" class="panel snapshot-diff"><div class="panel-head"><div><p class="eyebrow">Latest comparison</p><h2>{{ snapshotDiff.identical ? 'No state change' : 'Changes detected' }}</h2></div><span>{{ snapshotDiff.before.state_hash.slice(7,15) }} → {{ snapshotDiff.after.state_hash.slice(7,15) }}</span></div><div class="snapshot-metrics"><article><strong>{{ snapshotDiff.summary.status_changes }}</strong><span>Status changes</span></article><article><strong>{{ snapshotDiff.summary.added_evidence }}</strong><span>New evidence</span></article><article><strong>{{ snapshotDiff.summary.opened_blockers }}</strong><span>Opened blockers</span></article><article><strong>{{ snapshotDiff.summary.confidence_delta > 0 ? '+' : '' }}{{ snapshotDiff.summary.confidence_delta }}</strong><span>Confidence</span></article></div><ul><li v-for="change in snapshotDiff.status_changes" :key="change.uid"><strong>{{ change.title }}</strong><span>{{ change.before || 'new' }} → {{ change.after }}</span></li></ul></section><section class="panel snapshot-list"><div class="panel-head"><div><p class="eyebrow">Local browser archive</p><h2>Captured states</h2></div><span>{{ snapshots.length }} / 10</span></div><p v-if="!snapshots.length" class="empty">No snapshot captured in this browser.</p><article v-for="snapshot in snapshots" :key="snapshot.state_hash"><div><strong>{{ date(snapshot.captured_at) }}</strong><code>{{ snapshot.state_hash }}</code><p>Event {{ snapshot.cursor.event_id }} · Confidence {{ snapshot.confidence.score }}</p></div><button @click="downloadSnapshot(snapshot)">Download JSON</button></article></section></section>
-        <section v-else-if="activeView === 'analytics'" class="analytics-screen">
-          <div v-if="analyticsBusy && !analytics" class="panel empty" role="status" aria-live="polite">Loading reported usage…</div>
-          <template v-else-if="analytics">
-            <section class="panel analytics-toolbar" aria-label="Analytics controls">
-              <div><p class="eyebrow">Usage scope</p><h2>{{ analyticsScope === 'project' ? detail?.name : 'All projects' }}</h2><p>Reported events and read-only local estimates.</p></div>
-              <div class="analytics-controls">
-                <label>Scope<select v-model="analyticsScope" @change="loadAnalytics"><option value="project">Current project</option><option value="global">All projects</option></select></label>
-                <label>Period<select v-model="analyticsDays" @change="loadAnalytics"><option :value="7">7 days</option><option :value="30">30 days</option><option :value="90">90 days</option><option :value="365">1 year</option></select></label>
-              </div>
-            </section>
-            <section class="analytics-metrics">
-              <article><span>Cost today</span><strong>{{ todayAnalytics && todayAnalytics.cost > 0 ? money(todayAnalytics.cost) : '—' }}</strong><small>{{ todayAnalytics?.unknown_costs ? `${todayAnalytics.unknown_costs} records have unknown cost` : 'No cost reported today' }}</small></article>
-              <article><span>Reported cost · {{ analyticsDays }} days</span><strong>{{ money(analytics.totals.cost) }}</strong><small>{{ money(analytics.totals.measured_cost) }} measured · {{ money(analytics.totals.estimated_cost) }} estimated</small></article>
-              <article><span>Local AI API equivalent · today</span><strong>{{ analyticsScope === 'project' ? money((analytics.local_today?.codex?.machine_total?.estimated_cost || 0) + (analytics.local_today?.claude?.estimated_cost || 0)) : '—' }}</strong><small>{{ analyticsScope === 'project' ? `Codex ${compactNumber(analytics.local_today?.codex?.machine_total?.total_tokens || 0)} · Claude ${compactNumber(analytics.local_today?.claude?.total_tokens || 0)} tokens · not an invoice` : 'Select one project for local usage' }}</small></article>
-              <article><span>Total tokens</span><strong>{{ compactNumber(analytics.totals.total_tokens) }}</strong><small>{{ compactNumber(analytics.totals.input_tokens) }} input · {{ compactNumber(analytics.totals.output_tokens) }} output</small></article>
-              <article><span>Cached tokens</span><strong>{{ compactNumber(analytics.totals.cached_tokens) }}</strong><small>{{ analytics.totals.token_records }} records include token usage</small></article>
-              <article><span>Efficiency</span><strong>{{ analytics.efficiency?.cost_per_proven == null ? '—' : money(analytics.efficiency.cost_per_proven) }}</strong><small>Cost per proven objective · {{ analytics.totals.unknown_costs }} unknown costs</small></article>
-            </section>
-            <div class="analytics-grid">
-              <section class="panel chart-panel"><div class="panel-head"><div><p class="eyebrow">Reported spend</p><h2>Cost by day</h2></div><span class="scope-note">Measured + estimated</span></div><p v-if="!analytics.daily.length" class="empty">No cost records in this period.</p><div v-else class="bar-chart" role="img" aria-label="Daily reported costs"><div v-for="day in analytics.daily" :key="day.key" class="bar-column"><span>{{ day.cost > 0 ? money(day.cost) : day.unknown_costs ? '—' : money(0) }}</span><i :style="{height:`${maxDailyCost && day.cost ? Math.max(3,day.cost/maxDailyCost*100) : 3}%`}"></i><small>{{ day.key.slice(5) }}</small></div></div></section>
-              <section class="panel chart-panel"><div class="panel-head"><div><p class="eyebrow">Model usage</p><h2>Tokens by day</h2></div><span class="scope-note">Externally reported only</span></div><p v-if="!analytics.totals.token_records" class="empty">No token usage has been reported yet. Future Codex/Claude clients can publish it through cost.recorded.</p><div v-else class="bar-chart tokens" role="img" aria-label="Daily reported tokens"><div v-for="day in analytics.daily" :key="day.key" class="bar-column"><span>{{ compactNumber(day.tokens) }}</span><i :style="{height:`${maxDailyTokens ? Math.max(3,day.tokens/maxDailyTokens*100) : 3}%`}"></i><small>{{ day.key.slice(5) }}</small></div></div></section>
-            </div>
-            <section class="panel analytics-table"><div class="panel-head"><div><p class="eyebrow">Attribution</p><h2>Models and sources</h2></div></div><p v-if="!analytics.models.length" class="empty">No attributed usage for this scope and period.</p><article v-for="model in analytics.models" :key="model.key"><strong>{{ model.key }}</strong><div><span>{{ money(model.cost) }}</span><span>{{ compactNumber(model.tokens) }} tokens</span><span>{{ model.records }} records</span><span>{{ model.unknown_costs }} unknown costs</span></div></article><article v-for="model in [...(analytics.local_today?.codex?.machine_total?.models || []), ...(analytics.local_today?.claude?.models || [])]" :key="`local-${model.model}`"><strong>{{ model.model }} · local today</strong><div><span>≈ {{ money(model.estimated_cost) }}</span><span>{{ compactNumber(model.total_tokens) }} tokens</span><span>{{ model.sessions }} sessions</span><span>API equivalent</span></div></article><p class="analytics-note">Local estimates apply public API token rates to observed Codex and Claude usage. They are not subscription charges or invoices. Pricing table: {{ analytics.local_today?.codex?.pricing_version || analytics.local_today?.claude?.pricing_version || 'not applicable to this scope' }}. Orchestrator remains observation-only.</p></section>
-          </template>
-        </section>
-        <section v-else class="panel memory-import">
-          <section class="memory-recovery"><div class="panel-head"><div><p class="eyebrow">Historical evidence recovery</p><h2>Recover missing proofs for {{ detail?.name }}</h2><p class="scope-note">Scans local Codex and Claude conversations since the latest recorded proof. Files are hashed when present; vanished references remain clearly marked missing.</p></div><button class="scan-button" :disabled="recoveryBusy" @click="previewRecovery">{{ recoveryBusy ? 'Scanning conversations…' : 'Find missing proofs' }}</button></div><template v-if="memoryRecovery"><div class="recovery-summary"><span><strong>{{ memoryRecovery.summary.new }}</strong> new references</span><span><strong>{{ memoryRecovery.summary.available }}</strong> available files</span><span><strong>{{ memoryRecovery.summary.missing }}</strong> missing files</span><span><strong>{{ memoryRecovery.sessions }}</strong> conversations scanned</span></div><div v-if="memoryRecovery.candidates.length" class="recovery-preview"><article v-for="proof in memoryRecovery.candidates.slice(0,30)" :key="proof.path" :data-status="proof.already_recorded?'recorded':proof.status"><div><strong>{{ proof.label }}</strong><code>{{ proof.path }}</code><small>{{ proof.source }} · {{ date(proof.occurred_at) }}<template v-if="proof.objective_uid"> · linked to chapter</template></small></div><span>{{ proof.already_recorded ? 'already recorded' : proof.status }}</span></article></div><button class="recovery-import" :disabled="recoveryBusy || !memoryRecovery.summary.new" @click="importRecovery">Recover {{ memoryRecovery.summary.new }} new references</button></template></section>
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">Global machine inventory</p>
-              <h2>Local Codex and Claude memory</h2>
-              <p class="scope-note">
-                Read-only scan of local conversation histories. Nothing is
-                imported automatically.
-              </p>
-            </div>
-            <button
-              class="scan-button"
-              :disabled="memoryBusy"
-              @click="scanMemory"
-            >
-              {{ memoryBusy ? "Scanning…" : "Scan this machine" }}
-            </button>
-          </div>
-          <p v-if="!localMemory" class="empty">
-            Scan to discover projects from existing Codex and Claude sessions.
-          </p>
-          <template v-else
-            ><div class="scan-summary">
-              <span
-                v-for="inventory in localMemory.inventories"
-                :key="inventory.source + inventory.root"
-                ><strong>{{ inventory.files }}</strong>
-                {{ inventory.source }} sessions</span
-              ><span
-                ><strong>{{ localMemory.projects.length }}</strong> project
-                paths</span
-              >
-            </div>
-            <div class="discovered-list">
-              <article
-                v-for="project in localMemory.projects"
-                :key="project.path"
-                :class="{ tracked: project.tracked }"
-              >
-                <div>
-                  <span>{{ project.sources.join(" + ") }}</span>
-                  <h3>{{ project.name }}</h3>
-                  <code>{{ project.path }}</code>
-                  <p>
-                    {{ project.sessions }} sessions · last activity
-                    {{ date(project.last_activity) }}
-                  </p>
-                </div>
-                <button
-                  v-if="!project.tracked"
-                  :disabled="memoryBusy"
-                  @click="addDiscovered(project)"
-                >
-                  Add to Orchestrator</button
-                ><strong v-else>Already tracked</strong>
-              </article>
-            </div></template
-          >
-        </section>
-      </template>
-      <div
-        v-if="previewImage"
-        class="lightbox"
-        role="dialog"
-        aria-modal="true"
-        :aria-label="previewImage.label"
-        @click.self="previewImage = null"
-      >
-        <button
-          class="lightbox-close"
-          aria-label="Close image"
-          autofocus
-          @click="previewImage = null"
-        >
-          ×</button
-        ><button
-          v-if="previewImages.length > 1"
-          class="lightbox-nav previous"
-          aria-label="Previous image"
-          @click="moveImage(-1)"
-        >
-          ‹
-        </button>
-        <figure>
-          <img :src="previewUrl(previewImage)" :alt="previewImage.label" />
-          <figcaption>
-            <strong>{{ previewImage.label }}</strong
-            ><span
-              >{{ previewImageIndex + 1 }} / {{ previewImages.length }} ·
-              {{ previewImage.objective_title || "Project evidence" }} ·
-              {{
-                previewImage.pass_ref
-                  ? `Pass ${previewImage.pass_ref}`
-                  : "No pass reference"
-              }} · {{ date(previewImage.created_at) }}</span
-            >
-          </figcaption>
-        </figure>
-        <button
-          v-if="previewImages.length > 1"
-          class="lightbox-nav next"
-          aria-label="Next image"
-          @click="moveImage(1)"
-        >
-          ›
-        </button>
-      </div>
-    </main>
+      <section v-if="stage==='scope'&&specAudit" class="panel gdd-merge-review gdd-audit-report">
+        <header><div><p class="eyebrow">{{ tr('Diagnostic IA en lecture seule') }}</p><h3>{{ specAudit.changes.length?'Manques et corrections détectés':'Le GDD paraît cohérent' }}</h3><p>Aucun changement ne peut être appliqué depuis ce diagnostic. Base analysée : révision {{ specAudit.baseline_revision }}.</p></div><div class="gdd-merge-counts"><span><b>{{ specAudit.counts.total }}</b> recommandations</span><span data-kind="added"><b>{{ specAudit.counts.added }}</b> manques</span><span data-kind="modified"><b>{{ specAudit.counts.modified }}</b> corrections</span><span data-kind="removed"><b>{{ specAudit.counts.removed }}</b> retraits</span></div></header>
+        <div v-if="specAudit.changes.length" class="gdd-change-list"><article v-for="change in specAudit.changes" :key="change.id" :data-kind="change.kind"><header><div><span>{{ proposalKindLabel(change.kind) }} · {{ change.scope==='chapter'?'Chapitre':'Document' }}</span><h4>{{ change.title }}</h4></div><div v-if="change.status_before!==undefined" class="gdd-status-change"><em v-if="change.status_before">{{ analysisStatusLabel(change.status_before) }}</em><b>→</b><em v-if="change.status_after">{{ analysisStatusLabel(change.status_after) }}</em></div></header><div class="gdd-diff"><section><small>{{ tr('Version actuelle') }}</small><pre>{{ proposalPreview(change.before) }}</pre></section><section><small>{{ tr('Correction recommandée') }}</small><pre>{{ proposalPreview(change.after) }}</pre></section></div></article></div>
+        <div v-else class="gdd-no-changes"><strong>{{ tr('Aucun écart pertinent détecté') }}</strong><p>{{ tr('L’analyse n’a identifié ni manque, ni incohérence, ni correction justifiée par les sources.') }}</p></div>
+      </section>
+
+      <section v-if="stage==='scope'&&specProposal" class="panel gdd-merge-review" :data-status="specProposal.status">
+        <header><div><p class="eyebrow">{{ tr('Revue de réanalyse') }}</p><h3>{{ specProposal.status==='resolved'?'Revue finalisée':'L’IA propose des changements' }}</h3><p>Le GDD actuel reste inchangé jusqu’à la finalisation de tous vos choix. Base comparée : révision {{ specProposal.baseline_revision }}.</p></div><div class="gdd-merge-counts"><span><b>{{ specProposal.counts.total }}</b> changements</span><span data-kind="added"><b>{{ specProposal.counts.added }}</b> ajouts</span><span data-kind="modified"><b>{{ specProposal.counts.modified }}</b> modifications</span><span data-kind="removed"><b>{{ specProposal.counts.removed }}</b> suppressions</span></div></header>
+        <template v-if="specProposal.status==='pending'&&specProposal.changes.length">
+          <div class="gdd-merge-toolbar"><span>{{ specProposalPending }} choix restant{{ specProposalPending>1?'s':'' }}</span><div><button @click="decideAllProposals('accepted')">{{ tr('Tout accepter') }}</button><button @click="decideAllProposals('rejected')">{{ tr('Tout refuser') }}</button></div></div>
+          <div class="gdd-change-list"><article v-for="change in specProposal.changes" :key="change.id" :data-kind="change.kind" :data-decision="specProposalDecisions[change.id]||'pending'"><header><div><span>{{ proposalKindLabel(change.kind) }} · {{ change.scope==='chapter'?'Chapitre':'Document' }}</span><h4>{{ change.title }}</h4></div><div v-if="change.status_before!==undefined" class="gdd-status-change"><em v-if="change.status_before">{{ analysisStatusLabel(change.status_before) }}</em><b>→</b><em v-if="change.status_after">{{ analysisStatusLabel(change.status_after) }}</em></div></header><div class="gdd-diff"><section><small>{{ tr('Version actuelle') }}</small><pre>{{ proposalPreview(change.before) }}</pre></section><section><small>{{ tr('Proposition IA') }}</small><pre>{{ proposalPreview(change.after) }}</pre></section></div><footer><button :class="{selected:specProposalDecisions[change.id]==='rejected'}" @click="decideProposal(change.id,'rejected')">{{ tr('Refuser') }}</button><button class="accept" :class="{selected:specProposalDecisions[change.id]==='accepted'}" @click="decideProposal(change.id,'accepted')">{{ tr('Accepter') }}</button></footer></article></div>
+          <footer class="gdd-merge-final"><span>{{ tr('Accepter applique uniquement les changements choisis et crée une nouvelle révision en brouillon.') }}</span><button class="primary" :disabled="specReviewBusy||specProposalPending>0" @click="finalizeSpecificationProposal">{{ specReviewBusy?'Fusion…':'Finaliser la revue' }}</button></footer>
+        </template>
+        <div v-else-if="!specProposal.changes.length" class="gdd-no-changes"><strong>{{ tr('Aucune nouveauté pertinente détectée') }}</strong><p>{{ tr('La réanalyse n’a trouvé aucune différence de contenu avec la révision actuelle.') }}</p></div>
+        <div v-else class="gdd-merge-resolved"><strong>{{ specProposal.accepted }} accepté{{ specProposal.accepted>1?'s':'' }} · {{ specProposal.rejected }} refusé{{ specProposal.rejected>1?'s':'' }}</strong><p>{{ specProposal.accepted?`Nouvelle révision ${specProposal.applied_revision} créée en brouillon.`:'Le GDD est resté inchangé.' }}</p></div>
+      </section>
+
+      <template v-if="stage==='scope'">
+<section v-if="gddAssistantTarget" class="panel gdd-consultation">
+  <header><div><p class="eyebrow">{{ tr('Discussion contextualisée') }}</p><h3>{{ gddAssistantTarget.title }}</h3><p>{{ gddAssistantTarget.detail }}</p></div><button @click="gddAssistantTarget=null">{{ tr('Fermer') }}</button></header>
+  <div class="gdd-consultation-body"><div class="provider-grid compact"><button v-for="item in providers.filter(row=>row.id==='codex'||row.id==='claude')" :key="item.id" :class="{selected:gddAssistantProvider===item.id}" :disabled="!item.available||gddAssistantBusy" @click="chooseGddAssistantProvider(item.id)"><strong>{{ item.label }}</strong><small>{{ item.available?'Disponible':'Indisponible' }}</small></button></div><label>{{ tr('Votre demande') }}<textarea v-model="gddAssistantPrompt" rows="4" placeholder="Question, doute ou décision à préparer…" @keydown.enter.exact.prevent="startGddDiscussion"></textarea></label><button class="primary" :disabled="gddAssistantBusy||!gddAssistantPrompt.trim()||!providers.find(item=>item.id===gddAssistantProvider)?.available" @click="startGddDiscussion">{{ gddAssistantBusy?'Ouverture…':'Démarrer la discussion' }}</button></div>
+  <footer>Une session {{ gddAssistantProvider }} en lecture seule sera créée avec ce chapitre, ses sources et la révision actuelle du {{ documentLabel }}.</footer>
+</section>
+<section v-if="specEditing" class="panel spec-editor">
+<header>
+<div>
+<p class="eyebrow">{{ tr('Éditeur du projet') }}</p>
+<h3>{{ specification?.uid?`Modifier le cadre général du ${documentLabel}`:`Créer le ${documentLabel}` }}</h3>
+<p v-if="specification?.uid" class="editor-context">{{ tr('Vous modifiez ici les informations affichées dans « Cadre général ». Les chapitres se modifient séparément avec « Gérer les chapitres ».') }}</p>
+</div>
+<button @click="specEditing=false">{{ tr('Annuler') }}</button>
+</header>
+<div class="spec-form">
+<label>{{ tr('Titre') }}<input v-model="specDraft.title">
+</label>
+<label>{{ tr('Public concerné') }}<input v-model="specDraft.audience" placeholder="Équipe, client, utilisateurs…">
+</label>
+<label class="full">{{ tr('Résumé de la mission') }}<textarea v-model="specDraft.summary" rows="4" placeholder="Quel problème résout ce projet et quel résultat doit-il produire ?">
+</textarea>
+</label>
+<label class="full">{{ tr('Contexte') }}<textarea v-model="specDraft.context" rows="3" placeholder="Situation actuelle, contraintes métier et origine du besoin">
+</textarea>
+</label>
+<label>{{ tr('Périmètre — un élément par ligne') }}<textarea v-model="specDraft.scope" rows="7" placeholder="Ce qui doit être réalisé">
+</textarea>
+</label>
+<label>{{ tr('Hors périmètre — un élément par ligne') }}<textarea v-model="specDraft.non_goals" rows="7" placeholder="Ce qui ne sera pas traité">
+</textarea>
+</label>
+<label>{{ tr('Livrables — un élément par ligne') }}<textarea v-model="specDraft.deliverables" rows="7" placeholder="Produit, build, rapport, documentation…">
+</textarea>
+</label>
+<label>{{ tr('Critères d’acceptation — un par ligne') }}<textarea v-model="specDraft.acceptance_criteria" rows="7" placeholder="Conditions objectives permettant d’accepter le projet">
+</textarea>
+</label>
+</div>
+<footer>
+<span>{{ tr('Toute modification replace le document en brouillon avant une nouvelle validation.') }}</span>
+<button class="primary" :disabled="specSaving" @click="saveSpecification">{{ specSaving?'Enregistrement…':'Enregistrer le brouillon' }}</button>
+</footer>
+</section>
+<div v-else class="scope-grid">
+<article class="panel spec-state">
+<template v-if="!specification?.uid">
+<span class="spec-badge missing">{{ tr('Non créé') }}</span>
+<p class="eyebrow">{{ documentLabel }}</p>
+<h3>{{ language==='fr'?`Aucun ${documentLabel} validé`:`No approved ${documentLabel}` }}</h3>
+<p class="lead-copy">{{ tr('Orchestrator peut analyser les anciennes discussions IA liées au dépôt. Le document généré restera un brouillon avec ses sources jusqu’à votre validation.') }}</p>
+<div class="spec-source">
+<span>{{ tr('Données disponibles') }}</span>
+<strong>{{ language==='fr'?'Dépôt local · mémoires IA':'Local repository · AI memories' }} · {{ projectDetail?.objectives?.length||0 }} {{ language==='fr'?'objectifs historiques':'historical objectives' }}</strong>
+</div>
+<div class="spec-actions">
+<button @click="editSpecification">{{ tr('Créer manuellement') }}</button>
+</div>
+</template>
+<style>
+.terminal-panel{position:relative}
+.terminal-copy-notice{position:absolute;z-index:30;top:76px;right:24px;padding:9px 13px;border:1px solid #69dca8;border-radius:999px;background:#153b2b;color:#dffff0;font-size:12px;font-weight:800;box-shadow:0 10px 28px #0008;pointer-events:none}
+.terminal-host{padding-bottom:20px}
+.terminal-host .xterm-viewport{overflow-y:scroll!important;scrollbar-gutter:stable;scrollbar-width:auto;scrollbar-color:#587064 #111820}
+.terminal-host .xterm-viewport::-webkit-scrollbar{width:12px}
+.terminal-host .xterm-viewport::-webkit-scrollbar-track{background:#111820;border-left:1px solid #27332e}
+.terminal-host .xterm-viewport::-webkit-scrollbar-thumb{min-height:42px;border:3px solid #111820;border-radius:999px;background:#587064}
+.terminal-host .xterm-viewport::-webkit-scrollbar-thumb:hover{background:#76a28d}
+</style>
+<template v-else>
+<span class="spec-badge" :class="{draft:!specification.approved}">{{ specification.approved?'Validé':`Brouillon · révision ${specification.revision}` }}</span>
+<p class="eyebrow">{{ specification.approved?`${documentLabel} validé`:`${documentLabel} généré — à revoir` }}</p>
+<h3>{{ specification.title }}</h3>
+<p class="lead-copy">{{ specification.content.summary||'Résumé non renseigné.' }}</p>
+<dl class="fact-list">
+<div>
+<dt>{{ tr('Périmètre') }}</dt>
+<dd>{{ specification.content.scope?.length||0 }} éléments</dd>
+</div>
+<div>
+<dt>{{ tr('Livrables') }}</dt>
+<dd>{{ specification.content.deliverables?.length||0 }} éléments</dd>
+</div>
+<div>
+<dt>{{ tr('Sources citées') }}</dt>
+<dd>{{ specification.content.sources?.length||0 }}</dd>
+</div>
+<div>
+<dt>{{ tr('État') }}</dt>
+<dd>{{ specification.approved?'Approuvé humainement':'Planification verrouillée' }}</dd>
+</div>
+</dl>
+<div v-if="specification.content.analysis_provider" class="gdd-authorship"><span>{{ tr('Analyse réalisée par') }}</span><strong>{{ specification.content.analysis_provider }}{{ specification.content.analysis_model?` · ${specification.content.analysis_model}`:'' }}</strong></div>
+<details class="gdd-framework" open>
+  <summary><div><p class="eyebrow">{{ tr('Cadre général') }}</p><strong>{{ tr('Audience, contexte, périmètre et livrables') }}</strong></div><span>{{ tr('Informations modifiables') }}</span></summary>
+  <div class="gdd-framework-body">
+    <section class="wide"><h4>{{ tr('Public concerné') }}</h4><p>{{ specification.content.audience||'Non renseigné.' }}</p></section>
+    <section class="wide"><h4>{{ tr('Contexte') }}</h4><p>{{ specification.content.context||'Non renseigné.' }}</p></section>
+    <section><h4>{{ tr('Périmètre') }}</h4><ul><li v-for="(item,index) in specification.content.scope||[]" :key="index">{{ item }}</li></ul><p v-if="!specification.content.scope?.length">{{ tr('Non renseigné.') }}</p></section>
+    <section><h4>{{ tr('Hors périmètre') }}</h4><ul><li v-for="(item,index) in specification.content.non_goals||[]" :key="index">{{ item }}</li></ul><p v-if="!specification.content.non_goals?.length">{{ tr('Non renseigné.') }}</p></section>
+    <section><h4>{{ tr('Livrables') }}</h4><ul><li v-for="(item,index) in specification.content.deliverables||[]" :key="index">{{ item }}</li></ul><p v-if="!specification.content.deliverables?.length">{{ tr('Non renseigné.') }}</p></section>
+    <section><h4>{{ tr('Critères d’acceptation') }}</h4><ul><li v-for="(item,index) in specification.content.acceptance_criteria||[]" :key="index">{{ validationRuleLabel(item) }}</li></ul><p v-if="!specification.content.acceptance_criteria?.length">{{ tr('Non renseigné.') }}</p></section>
   </div>
+</details>
+<section class="gdd-document">
+  <header><div><p class="eyebrow">{{ tr('Document structuré') }}</p><h3>{{ gddChapters.length }} chapitres de décision</h3></div><div class="gdd-document-actions"><div class="gdd-legend"><span data-status="closed">{{ chapterCounts.closed }} clos</span><span data-status="ambiguous">{{ chapterCounts.ambiguous }} ambigus</span><span data-status="open">{{ chapterCounts.open }} à décider</span></div><button @click="chapterManagerOpen?chapterManagerOpen=false:openChapterManager()">{{ chapterManagerOpen?'Fermer':'Gérer les chapitres' }}</button></div></header>
+  <section v-if="chapterManagerOpen" class="chapter-manager">
+    <header><div><p class="eyebrow">{{ tr('Ordre et priorité') }}</p><h4>{{ tr('Organiser le GDD') }}</h4></div><p>{{ tr('Un changement manuel crée une nouvelle révision en brouillon.') }}</p></header>
+    <div class="chapter-create"><label>{{ tr('Titre du nouveau chapitre') }}<input v-model="newChapter.title" placeholder="Ex. Économie et progression"></label><label>{{ tr('Priorité') }}<input v-model.number="newChapter.priority" type="number" min="1" max="999"></label><label>{{ tr('État') }}<select v-model="newChapter.status"><option value="open">{{ tr('À décider') }}</option><option value="ambiguous">{{ tr('Ambigu') }}</option><option value="closed">{{ tr('Clos') }}</option></select></label><label class="wide">{{ tr('Résumé') }}<textarea v-model="newChapter.summary" rows="2" placeholder="Objectif et contenu attendu du chapitre"></textarea></label><button :disabled="!newChapter.title.trim()" @click="addManualChapter">{{ tr('Ajouter le chapitre') }}</button></div>
+    <div class="chapter-order-list"><article v-for="(chapter,index) in chapterDraft" :key="chapter.key"><b>{{ String(index+1).padStart(2,'0') }}</b><div><input v-model="chapter.title" aria-label="Titre du chapitre"><textarea v-model="chapter.summary" rows="2" aria-label="Résumé du chapitre"></textarea></div><label>{{ tr('Priorité') }}<input v-model.number="chapter.priority" type="number" min="1" max="999"></label><label>{{ tr('État') }}<select v-model="chapter.status"><option value="open">{{ tr('À décider') }}</option><option value="ambiguous">{{ tr('Ambigu') }}</option><option value="closed">{{ tr('Clos') }}</option></select></label><nav><button :disabled="index===0" title="Monter" @click="moveChapter(index,-1)">↑</button><button :disabled="index===chapterDraft.length-1" title="Descendre" @click="moveChapter(index,1)">↓</button></nav></article></div>
+    <footer><span>{{ tr('Les numéros de priorité déterminent l’ordre final, du plus petit au plus grand.') }}</span><button @click="chapterManagerOpen=false">{{ tr('Annuler') }}</button><button class="primary" :disabled="chapterSaving||!chapterDraft.every(chapter=>chapter.title.trim())" @click="saveChapters">{{ chapterSaving?'Enregistrement…':'Enregistrer l’ordre' }}</button></footer>
+  </section>
+  <p v-if="!gddChapters.length&&!chapterManagerOpen" class="empty">{{ tr('Aucun chapitre. Utilisez « Gérer les chapitres » pour créer le premier.') }}</p>
+  <details v-for="(chapter,index) in gddChapters" :key="chapter.key||index" class="gdd-chapter" :data-status="chapter.status" :open="chapter.status!=='closed'">
+    <summary><i>{{ String(Number(index)+1).padStart(2,'0') }}</i><div><strong>{{ chapter.title }}</strong><small>{{ chapter.summary }}</small></div><span>{{ analysisStatusLabel(chapter.status) }}</span></summary>
+    <div class="gdd-chapter-body"><article v-for="(item,itemIndex) in chapter.items" :key="itemIndex" :data-status="item.status"><i></i><div><strong>{{ item.title }}</strong><p>{{ item.description }}</p><div v-if="item.source_ids?.length" class="gdd-source-links"><span>{{ tr('Sources') }}</span><button v-for="sourceId in item.source_ids" :key="sourceId" :disabled="!sourceById(sourceId)" @click="sourceById(sourceId)&&openSourceConversation(sourceById(sourceId))">{{ sourceId }}</button></div><div v-if="item.status!=='closed'" class="gdd-inline-actions"><button @click="openGddAssistant({kind:'item',title:item.title,detail:item.description,sourceIds:item.source_ids},'advice')">{{ tr('Demander un avis IA') }}</button><button @click="openGddAssistant({kind:'item',title:item.title,detail:item.description,sourceIds:item.source_ids},'discussion')">{{ tr('Discuter') }}</button></div></div><span>{{ analysisStatusLabel(item.status) }}</span></article><footer><div v-if="chapter.source_ids?.length" class="gdd-source-links"><span>{{ tr('Sources du chapitre') }}</span><button v-for="sourceId in chapter.source_ids" :key="sourceId" :disabled="!sourceById(sourceId)" @click="sourceById(sourceId)&&openSourceConversation(sourceById(sourceId))">{{ sourceId }}</button></div><div v-if="chapter.status!=='closed'" class="gdd-inline-actions"><button @click="openGddAssistant({kind:'chapter',title:chapter.title,detail:chapter.summary,sourceIds:chapter.source_ids},'advice')">{{ tr('Analyser ce chapitre') }}</button><button @click="openGddAssistant({kind:'chapter',title:chapter.title,detail:chapter.summary,sourceIds:chapter.source_ids},'discussion')">{{ tr('Discuter du chapitre') }}</button></div></footer></div>
+  </details>
+</section>
+<details v-if="specification.content.sources?.length" class="spec-sources">
+<summary>{{ tr('Voir les sources de discussion') }}</summary>
+<ol>
+<li v-for="source in specification.content.sources" :key="source.id"><button @click="openSourceConversation(source)"><b>{{ source.id }} · {{ source.provider }} · {{ date(source.occurred_at) }}</b><span>{{ source.excerpt }}</span><em>{{ tr('Ouvrir la session complète →') }}</em></button></li>
+</ol>
+</details>
+<div class="spec-actions">
+<button @click="editSpecification">{{ tr('Modifier le cadre général') }}</button>
+<button v-if="!specification.approved" class="primary" :disabled="specApproving" @click="approveCurrentSpecification">{{ specApproving?'Validation…':`Valider le ${documentLabel}` }}</button>
+<a v-if="specification.approved" :href="`/api/projects/${selectedProject}/specification.pdf`" target="_blank">{{ tr('Télécharger le PDF') }}</a>
+</div>
+</template>
+</article>
+<article class="panel validation-rules">
+<p class="eyebrow">{{ tr('Impact sur le parcours') }}</p>
+<h3>{{ language==='fr'?(scopeApproved?'Validation active':'Planifier et Exécuter sont verrouillés'):(scopeApproved?'Validation active':'Plan and Execute are locked') }}</h3>
+<p>{{ language==='fr'?(scopeApproved?`Le ${documentLabel} approuvé définit les critères et autorise les étapes suivantes.`:`Ces règles seront injectées dans le brouillon. Une validation humaine du ${documentLabel} est obligatoire pour continuer.`):(scopeApproved?`The approved ${documentLabel} defines the criteria and unlocks the next steps.`:`These rules will be inserted into the draft. Human approval of the ${documentLabel} is required to continue.`) }}</p>
+<ol class="criteria">
+<li v-for="(criterion,index) in (specification?.uid?specification.content.acceptance_criteria:validationProfile.criteria)" :key="index">
+<b>{{ Number(index)+1 }}</b>
+<span>{{ validationRuleLabel(criterion) }}</span>
+</li>
+</ol>
+<p v-if="!(specification?.uid?specification.content.acceptance_criteria:validationProfile.criteria)?.length" class="empty">{{ tr('Aucune règle de validation n’est définie.') }}</p>
+<section v-if="specification?.content?.decisions?.length" class="gdd-decisions"><p class="eyebrow">{{ tr('Décisions et ambiguïtés') }}</p><article v-for="(decision,index) in specification.content.decisions" :key="index" :data-status="decision.status"><span>{{ analysisStatusLabel(decision.status) }}</span><strong>{{ decision.title }}</strong><p>{{ decision.rationale }}</p><div v-if="decision.status!=='closed'" class="gdd-inline-actions"><button @click="openGddAssistant({kind:'decision',title:decision.title,detail:decision.rationale,sourceIds:decision.source_ids},'advice')">{{ tr('Demander un avis IA') }}</button><button @click="openGddAssistant({kind:'decision',title:decision.title,detail:decision.rationale,sourceIds:decision.source_ids},'discussion')">{{ tr('Discuter') }}</button></div></article></section>
+<section v-if="specification?.content?.open_questions?.length" class="gdd-questions"><p class="eyebrow">{{ tr('Questions avant validation') }}</p><div class="gdd-question-list"><article v-for="(question,index) in specification.content.open_questions" :key="index"><header><b>{{ Number(index)+1 }}</b><strong>{{ question }}</strong></header><label>{{ tr('Votre réponse') }}<textarea v-model="questionAnswers[index]" rows="3" placeholder="Répondre avec votre décision ou les informations manquantes…"></textarea></label><footer><button :disabled="!questionAnswers[index]?.trim()||questionSaving===index" @click="saveQuestionAnswer(question,index)">{{ questionSaving===index?'Enregistrement…':hasQuestionAnswer(question)?'Mettre à jour la réponse':'Enregistrer la réponse' }}</button><div class="gdd-inline-actions"><button @click="openGddAssistant({kind:'question',title:question,detail:question,sourceIds:[]},'advice')">{{ tr('Demander conseil') }}</button><button @click="openGddAssistant({kind:'question',title:question,detail:question,sourceIds:[]},'discussion')">{{ tr('Discuter avec l’IA') }}</button></div></footer></article></div></section>
+</article>
+</div>
+<section id="project-pilots" class="panel pilot-hub">
+  <header><div><p class="eyebrow">{{ tr('Pilotage durable') }}</p><h3>{{ tr('Pilotes du projet') }}</h3><p>{{ tr('Une mission persistante, plusieurs sessions observables, un seul contexte partagé.') }}</p></div><button @click="pilotCreatorOpen=!pilotCreatorOpen">{{ language==='fr'?(pilotCreatorOpen?'Annuler':'+ Créer un pilote'):(pilotCreatorOpen?'Cancel':'+ Create a pilot') }}</button></header>
+  <label class="pilot-permission-default">{{ tr('Permissions par défaut du projet') }}<select v-model="pilots.permission_policy.default_profile" @change="saveProjectPermissionDefault"><option v-for="profile in pilots.permission_policy?.profiles||[]" :key="profile.id" :value="profile.id" :disabled="remoteGate.remote&&profile.id==='full_access'">{{ permissionProfileText(profile) }}</option></select></label>
+  <form v-if="pilotCreatorOpen" class="pilot-form" @submit.prevent="createProjectPilot">
+    <label>{{ tr('Nom') }}<input v-model="pilotDraft.name" required placeholder="Pilote central, conseiller GDD…"></label>
+    <label>{{ tr('Travail délégué') }}<select v-model="pilotDraft.default_agent_role"><option value="researcher">{{ tr('Recherche') }}</option><option value="reviewer">{{ tr('Revue') }}</option><option value="executor">{{ tr('Exécution') }}</option></select></label>
+    <label>{{ tr('Mode de pilotage') }}<select v-model="pilotDraft.autonomy_mode"><option value="manual">{{ tr('Manuel · vous pilotez tout') }}</option><option value="semi">{{ tr('Semi-auto · décisions humaines') }}</option><option value="auto">{{ tr('Auto · réponses et décisions') }}</option></select></label>
+    <label>{{ tr('Relève de contexte') }}<select v-model="pilotDraft.rotation_mode"><option value="manual">{{ tr('Manuelle · à votre demande') }}</option><option value="auto">{{ tr('Auto · au prochain checkpoint') }}</option></select></label>
+    <label>{{ tr('Seuil de relève') }}<select v-model.number="pilotDraft.rotation_threshold_tokens"><option :value="40000">40 000 tokens</option><option :value="80000">80 000 tokens</option><option :value="120000">120 000 tokens</option><option :value="160000">160 000 tokens</option></select></label>
+    <label>{{ tr('IA') }}<select v-model="pilotDraft.provider" @change="choosePilotProvider(pilotDraft.provider)"><option v-for="item in providers" :key="item.id" :value="item.id" :disabled="!item.available">{{ item.label }}</option></select></label>
+    <label>{{ tr('Modèle') }}<select v-model="pilotDraft.model"><option value="">{{ language==='fr'?'Automatique':'Automatic' }}{{ selectedPilotProvider?.default_model?` · ${selectedPilotProvider.default_model}`:'' }}</option><option v-for="model in selectedPilotProvider?.models||[]" :key="model.id" :value="model.id">{{ model.label }}{{ language==='fr'?(model.configured?' · configuré':' · détecté'):(model.configured?' · configured':' · detected') }}</option></select></label>
+    <label v-if="selectedPilotProvider?.capabilities.efforts?.length">{{ tr('Effort') }}<select v-model="pilotDraft.effort"><option v-for="effort in selectedPilotProvider.capabilities.efforts" :key="effort" :value="effort">{{ effort }}</option></select></label><label>{{ tr('Permissions du sous-agent') }}<select v-model="pilotDraft.worker_permission_profile"><option v-for="profile in selectedPilotProvider?.permission_profiles||[]" :key="profile.id" :value="profile.id" :disabled="remoteGate.remote&&profile.id==='full_access'">{{ permissionProfileText(profile).split(' · ')[0] }}</option></select></label>
+    <label class="full">{{ tr('Mission') }}<textarea v-model="pilotDraft.mission" required rows="3" placeholder="Ce que ce pilote doit suivre et obtenir dans la durée"></textarea></label>
+    <label>{{ tr('Périmètre') }}<textarea v-model="pilotDraft.scope" rows="3" placeholder="Zones autorisées et exclusions"></textarea></label>
+    <label>{{ tr('Règles particulières') }}<textarea v-model="pilotDraft.instructions" rows="3" placeholder="Format des checkpoints, preuves attendues…"></textarea></label>
+    <footer><span>{{ tr('Les pilotes Conseil, Revue et Coordination restent en lecture seule. L’Exécution exige un GDD validé.') }}</span><button class="primary" :disabled="pilotBusy">{{ pilotBusy?'Création…':'Créer le pilote' }}</button></footer>
+  </form>
+  <div v-if="pilots.pilots?.length" class="pilot-request"><label>{{ tr('Demande pour le prochain lancement') }}<input v-model="pilotRequest" placeholder="Question, priorité ou décision à préparer"></label></div>
+  <div class="pilot-grid"><article v-for="item in pilots.pilots" :key="item.uid" class="pilot-card" :data-role="item.role"><header><span>{{ pilotRoleLabel(item.role) }} · {{ pilotAutonomyLabel(item.autonomy_mode||'semi') }}</span><small>IA · {{ item.model||'auto' }} · {{ item.effort||'défaut' }}</small></header><h4>{{ item.name }}</h4><p>{{ item.mission }}</p><small>Relève {{ item.rotation_mode==='auto'?'automatique':'manuelle' }} · {{ Math.round((item.rotation_threshold_tokens||80000)/1000) }}k tokens</small><dl><div><dt>{{ tr('Sessions') }}</dt><dd>{{ item.run_count }}</dd></div><div><dt>{{ tr('Dernier lancement') }}</dt><dd>{{ item.last_run_at?date(item.last_run_at):'Jamais' }}</dd></div></dl><footer><button v-if="item.last_session" @click="mountTerminal(item.last_session)">{{ tr('Voir la dernière') }}</button><button class="primary" :disabled="pilotBusy||(item.role==='executor'&&!scopeApproved)" :title="item.role==='executor'&&!scopeApproved?'Validez le GDD avant une exécution':''" @click="launchProjectPilot(item)">{{ tr('Lancer') }}</button></footer></article><div v-if="!pilots.pilots?.length" class="pilot-empty"><strong>{{ tr('Aucun pilote pour l’instant') }}</strong><p>{{ tr('Créez un conseiller GDD, un réviseur de preuves ou un pilote central de coordination.') }}</p></div></div>
+</section>
+</template>
+
+      <template v-else-if="stage==='plan'">
+<section class="panel reconciliation-panel" :data-alert="reconciliation.suggestions?.length?'true':'false'">
+<header><div><p class="eyebrow">{{ tr('Réconciliation multi-IA') }}</p><h3>{{ tr('Rattacher le travail réel au plan') }}</h3><p>{{ tr('Les changements existent déjà dans le projet. Ici, tu choisis seulement de les intégrer au suivi Orchestrator ou d’ignorer l’écart.') }}</p></div><div><span>{{ reconciliationBulk?`${reconciliationBulkProgress.done}/${reconciliationBulkProgress.total} traité${reconciliationBulkProgress.done>1?'s':''}`:reconciliationLoading?'Recherche des sessions…':`${reconciliation.summary?.sessions||0} sessions détectées` }}</span><button v-if="reconciliation.suggestions?.length" :disabled="!!reconciliationBulk||reconciliationBusy" @click="reviewAllReconciliation('rejected')">{{ reconciliationBulk==='rejected'?'Traitement…':'Tout ignorer' }}</button><button v-if="reconciliation.suggestions?.length" class="bulk-integrate" :disabled="!!reconciliationBulk||reconciliationBusy" @click="reviewAllReconciliation('accepted')">{{ reconciliationBulk==='accepted'?'Intégration…':'Tout intégrer' }}</button><button :disabled="reconciliationBusy||reconciliationLoading||!!reconciliationBulk" @click="scanReconciliation">{{ reconciliationBusy?'Analyse…':'Ré-analyser' }}</button></div></header>
+<article v-if="reconciliation.focus" class="reconciliation-focus" :data-aligned="reconciliation.focus.aligned?'true':'false'"><div><span>Pilote externe détecté · {{ reconciliation.focus.provider }}</span><strong>{{ reconciliation.focus.work||reconciliation.focus.title }}</strong><small>{{ reconciliation.focus.objective_title?`Relié à ${reconciliation.focus.objective_title}`:'Aucun objectif correspondant dans le plan' }} · {{ date(reconciliation.focus.last_activity) }}</small></div><div><em>{{ reconciliation.focus.aligned?'Plan aligné':'Priorité d’exécution actualisée' }}</em><button @click="openReconciliationSession({provider:reconciliation.focus.provider,id:reconciliation.focus.session_id,title:reconciliation.focus.title})">{{ tr('Ouvrir le pilote') }}</button></div></article>
+<div v-if="reconciliationLoading" class="reconciliation-clear"><strong>{{ tr('Analyse des historiques IA…') }}</strong><p>{{ tr('Le reste du planning reste disponible pendant la recherche.') }}</p></div>
+<div v-else-if="reconciliation.suggestions?.length" class="reconciliation-list"><article v-for="item in reconciliation.suggestions" :key="item.fingerprint" :data-loading="reconciliationReviewing===item.fingerprint?'true':'false'"><header><div><span>{{ item.action==='update_status'?'État du plan à actualiser':'Travail absent du plan' }}</span><h4>{{ item.title }}</h4></div><div class="reconciliation-transition"><em v-if="item.before">{{ item.before }}</em><b>→</b><em :data-status="item.after">{{ item.after }}</em></div></header><p>{{ item.rationale }}</p><small>{{ item.source.provider }} · {{ item.source.title }} · {{ date(item.observed_at) }}</small><details><summary>{{ tr('Voir l’extrait analysé') }}</summary><p>{{ item.excerpt }}</p></details><footer><button v-if="item.source.kind==='session'" :disabled="!!reconciliationBulk||reconciliationReviewing===item.fingerprint" @click="openReconciliationSession(item.source)">{{ tr('Ouvrir la session') }}</button><span></span><button :disabled="!!reconciliationBulk||reconciliationReviewing===item.fingerprint" title="Ne modifie ni les fichiers ni la session" @click="reviewReconciliation(item,'rejected')">{{ reconciliationReviewing===item.fingerprint?'Traitement…':'Ignorer l’écart' }}</button><button class="primary" :disabled="!!reconciliationBulk||reconciliationReviewing===item.fingerprint" title="Met à jour uniquement le plan Orchestrator" @click="reviewReconciliation(item,'accepted')">{{ reconciliationReviewing===item.fingerprint?'Intégration…':'Intégrer au plan' }}</button></footer></article></div>
+<div v-else class="reconciliation-clear"><strong>{{ tr('Plan cohérent avec les sessions analysées') }}</strong><p>{{ tr('Aucun écart nécessitant une décision n’a été détecté.') }}</p></div>
+</section>
+<section class="planning-bridge">
+<div><span>1</span><p><strong>{{ tr('GDD approuvé') }}</strong><small>{{ planChapters.length }} chapitres ordonnés</small></p></div>
+<i>→</i>
+<div><span>2</span><p><strong>{{ tr('Nouveaux objectifs') }}</strong><small>{{ pendingPlanProposals.length?`${pendingPlanProposals.length} à trier`:'Aucun nouvel objectif' }}</small></p></div>
+<i>→</i>
+<div><span>3</span><p><strong>{{ tr('File active') }}</strong><small>{{ activePlanObjectives.length }} objectifs exécutables</small></p></div>
+</section>
+<section class="panel workflow-diagram">
+<header><div><p class="eyebrow">{{ tr('Vue d’ensemble retrouvée') }}</p><h3>{{ tr('Chapitres → passes → décisions') }}</h3><p>{{ tr('Chaque ligne relie le cadre du GDD au travail réel et aux arbitrages encore attendus.') }}</p></div><div class="workflow-diagram-legend"><span data-kind="chapter">{{ tr('Chapitre') }}</span><span data-kind="pass">{{ tr('Passe') }}</span><span data-kind="decision">{{ tr('Décision') }}</span></div></header>
+<div class="workflow-diagram-head" aria-hidden="true"><span>{{ tr('Chapitres') }}</span><span>{{ tr('Objectifs et passes') }}</span><span>{{ tr('Décisions') }}</span></div>
+<div class="workflow-diagram-scroll">
+<article v-for="row in workflowDiagramRows" :key="row.key" class="workflow-diagram-row">
+<div class="workflow-diagram-chapter" :data-status="row.status"><small>{{ language==='fr'?(row.status==='closed'?'Cadre fermé':row.status==='ambiguous'?'À clarifier':'Cadre ouvert'):(row.status==='closed'?'Scope closed':row.status==='ambiguous'?'To clarify':'Scope open') }}</small><strong>{{ row.title }}</strong><span>{{ row.objectives.length }} {{ language==='fr'?(row.objectives.length===1?'objectif':'objectifs'):(row.objectives.length===1?'objective':'objectives') }}</span></div>
+<div class="workflow-diagram-passes"><article v-for="objective in row.objectives" :key="objective.uid" :data-status="objective.status"><button class="workflow-objective" @click="openObjectiveDetail(objective)"><span class="status" :data-status="objective.status">{{ objectiveStatusLabel(objective.status) }}</span><strong>{{ objective.title }}</strong><small>{{ objective.proof_count }} {{ language==='fr'?(objective.proof_count===1?'preuve':'preuves'):(objective.proof_count===1?'evidence item':'evidence items') }}</small></button><div v-if="objective.passes.length" class="workflow-pass-list"><button v-for="passRef in objective.passes.slice(0,4)" :key="passRef" @click="openDiagramPass(objective,passRef)"><b>{{ tr('Passe') }}</b><span>{{ passRef }}</span></button><small v-if="objective.passes.length>4">+{{ objective.passes.length-4 }} {{ language==='fr'?'anciennes':'older' }}</small></div><button v-else class="workflow-pass-empty" @click="openDiagramPass(objective)">{{ tr('Aucune passe enregistrée') }}</button></article><p v-if="!row.objectives.length">{{ tr('Aucun objectif relié à ce chapitre.') }}</p></div>
+<div class="workflow-diagram-decisions"><template v-for="objective in row.objectives" :key="objective.uid"><button v-for="decision in objective.decisions" :key="decision.uid" @click="openDiagramPass(objective,null,'decide')"><span>{{ tr('Décision requise') }}</span><strong>{{ decision.summary }}</strong></button></template><p v-if="!row.objectives.some((objective:any)=>objective.decisions.length)">{{ tr('Aucun arbitrage demandé.') }}</p></div>
+</article>
+</div>
+<footer v-if="workflowGlobalDecisions.length"><span>{{ tr('Décisions de cadrage') }}</span><button v-for="(decision,index) in workflowGlobalDecisions" :key="index" :data-status="decision.status" @click="selectStage('scope')"><strong>{{ decision.title }}</strong><small>{{ analysisStatusLabel(decision.status) }}</small></button></footer>
+</section>
+<p class="planning-help">{{ tr('Le GDD fixe le cadre et l’ordre de ses chapitres. Une proposition ne rejoint le travail qu’après votre approbation, à la position et dans le chapitre choisis ci-dessous.') }}</p>
+<div class="decision-grid planning-grid" :class="{single:!pendingPlanProposals.length}">
+<section class="panel plan-queue">
+<div class="panel-title">
+<div><p class="eyebrow">{{ tr('Ordre d’exécution') }}</p><h3>{{ activePlanObjectives.length }} objectifs actifs</h3></div>
+<button v-if="!planEditing" @click="openPlanEditor">{{ tr('Modifier l’ordre') }}</button>
+<div v-else class="plan-editor-actions"><button @click="planEditing=false">{{ tr('Annuler') }}</button><button class="primary" :disabled="planSaving" @click="savePlanOrder">{{ planSaving?'Enregistrement…':'Enregistrer' }}</button></div>
+</div>
+<template v-if="planEditing">
+<article v-for="(item,index) in planOrder" :key="item.uid" class="plan-editor-row">
+<b>{{ String(Number(index)+1).padStart(2,'0') }}</b>
+<div class="plan-move"><button :disabled="index===0" title="Monter" @click="movePlanObjective(index,-1)">↑</button><button :disabled="index===planOrder.length-1" title="Descendre" @click="movePlanObjective(index,1)">↓</button></div>
+<strong>{{ item.title }}</strong>
+<label>{{ tr('Chapitre GDD') }}<select v-model="planChapterLinks[item.uid]"><option value="">{{ tr('Non relié') }}</option><option v-for="chapter in planChapters" :key="chapter.key" :value="chapter.key">{{ chapter.title }}</option></select></label>
+</article>
+</template>
+<template v-else>
+<article v-for="(item,index) in activePlanObjectives" :key="item.uid" class="objective plan-objective" role="button" tabindex="0" @click="openObjectiveDetail(item)" @keydown.enter="openObjectiveDetail(item)">
+<b>{{ String(Number(index)+1).padStart(2,'0') }}</b>
+<div><strong>{{ item.title }}</strong><small>{{ item.gdd_chapter_title?`GDD · ${item.gdd_chapter_title}`:(language==='fr'?'Non relié au GDD':'Not linked to the GDD') }}<template v-if="item.gdd_link_source==='inferred'"> · {{ language==='fr'?'lien suggéré':'suggested link' }}</template></small></div>
+<span v-if="item.unmet_dependencies" class="plan-warning">{{ item.unmet_dependencies }} {{ language==='fr'?(item.unmet_dependencies>1?'dépendances':'dépendance'):(item.unmet_dependencies>1?'dependencies':'dependency') }}</span>
+<span class="status" :data-status="item.status">{{ objectiveStatusLabel(item.status) }}</span><i class="objective-open">→</i>
+</article>
+</template>
+<details class="plan-archive"><summary>{{ archivedPlanObjectives.length }} {{ language==='fr'?'objectifs terminés ou abandonnés':'finished or abandoned objectives' }}</summary><div><article v-for="item in archivedPlanObjectives" :key="item.uid" role="button" tabindex="0" @click="openObjectiveDetail(item)" @keydown.enter="openObjectiveDetail(item)"><strong>{{ item.title }}</strong><span class="status" :data-status="item.status">{{ objectiveStatusLabel(item.status) }}</span></article></div></details>
+</section>
+<section v-if="pendingPlanProposals.length" class="panel plan-proposals">
+<div class="panel-title"><div><p class="eyebrow">{{ tr('Boîte d’entrée') }}</p><h3>{{ tr('Nouveaux objectifs à trier') }}</h3></div><span>{{ pendingPlanProposals.length }}</span></div>
+<article v-for="item in pendingPlanProposals.slice(0,20)" :key="item.uid" class="proposal plan-proposal">
+<small>{{ item.kind }} · {{ item.source_kind }} · placement suggéré</small><h3>{{ proposalTitle(item) }}</h3><p>{{ proposalSummary(item) }}</p><details v-if="String(item.body||item.rationale||'').length>260"><summary>{{ tr('Lire la proposition complète') }}</summary><p>{{ item.body||item.rationale }}</p></details>
+<div class="proposal-placement">
+<label>{{ tr('Chapitre GDD') }}<select v-model="proposalPlacement[item.uid].chapter_key"><option value="">{{ tr('Non relié') }}</option><option v-for="chapter in planChapters" :key="chapter.key" :value="chapter.key">{{ chapter.title }}</option></select></label>
+<label>{{ tr('Position dans la file') }}<select v-model="proposalPlacement[item.uid].before_uid"><option value="">{{ tr('À la fin de la file active') }}</option><option v-for="(objective,index) in activePlanObjectives" :key="objective.uid" :value="objective.uid">Avant {{ String(Number(index)+1).padStart(2,'0') }} · {{ objective.title }}</option></select></label>
+</div>
+<div class="proposal-actions"><button class="primary" @click="reviewProposal(item,'approved')">{{ tr('Approuver et insérer') }}</button><button @click="reviewProposal(item,'rejected')">{{ tr('Rejeter') }}</button></div>
+</article>
+<p v-if="pendingPlanProposals.length>20" class="proposal-limit">{{ language==='fr'?`20 affichées sur ${pendingPlanProposals.length}. Traitez-les pour voir les suivantes.`:`20 shown out of ${pendingPlanProposals.length}. Process them to see the next ones.` }}</p>
+</section>
+</div>
+</template>
+
+      <template v-else-if="stage==='execute'">
+<section v-if="reconciliation.focus" class="reconciliation-focus execution-focus" :data-aligned="reconciliation.focus.aligned?'true':'false'"><div><span>{{ tr('Mission actuelle du pilote') }}</span><strong>{{ reconciliation.focus.work||reconciliation.focus.title }}</strong><small>{{ reconciliation.focus.objective_title?`Objectif relié · ${reconciliation.focus.objective_title}`:'Mission non encore reliée au plan' }}</small></div><div><em>{{ reconciliation.focus.aligned?'Alignée avec le plan':'Prioritaire sur l’ancien ordre' }}</em><button @click="openReconciliationSession({provider:reconciliation.focus.provider,id:reconciliation.focus.session_id,title:reconciliation.focus.title})">{{ tr('Voir le pilote') }}</button></div></section>
+<section v-if="reconciliation.suggestions?.length" class="reconciliation-execution-alert"><div><strong>{{ reconciliation.suggestions.length }} changement{{ reconciliation.suggestions.length===1?'':'s' }} de plan à examiner</strong><span>{{ tr('Des sessions IA plus récentes ne correspondent pas au plan actuel.') }}</span></div><button @click="selectStage('plan')">{{ tr('Réconcilier avant d’exécuter →') }}</button></section>
+<section class="execution-plan panel">
+<header><div><p class="eyebrow">{{ tr('Plan → Exécution') }}</p><h3>{{ tr('Choisir la prochaine passe') }}</h3><p>{{ tr('Les objectifs sont proposés selon leur état, leurs dépendances et l’ordre défini dans Planifier.') }}</p></div><button @click="selectStage('plan')">{{ tr('Modifier le plan') }}</button></header>
+<div class="execution-candidates"><article v-for="(item,index) in executionCandidates.slice(0,8)" :key="item.uid" :class="{selected:executionTarget?.uid===item.uid,blocked:item.status==='blocked'||item.unmet_dependencies}" @click="selectedExecutionObjective=item"><header><b>{{ String(Number(index)+1).padStart(2,'0') }}</b><span class="status" :data-status="item.status">{{ objectiveStatusLabel(item.status) }}</span><em v-if="index===0">{{ tr('Recommandée') }}</em></header><h4>{{ item.title }}</h4><small>{{ item.gdd_chapter_title?`GDD · ${item.gdd_chapter_title}`:'Sans chapitre GDD' }}</small><p>{{ item.intent||'Aucune intention détaillée.' }}</p><footer><span>{{ item.evidence_count||0 }} preuves · {{ item.unmet_dependencies||0 }} dépendance{{ item.unmet_dependencies===1?'':'s' }} ouverte{{ item.unmet_dependencies===1?'':'s' }}</span><button @click.stop="openObjectiveDetail(item)">{{ tr('Voir le dossier') }}</button></footer></article></div>
+<p v-if="!executionCandidates.length" class="empty">{{ tr('Aucune passe active. Revenez dans Planifier pour approuver ou créer le prochain objectif.') }}</p>
+</section>
+<div class="execution-grid execution-actions-grid">
+<section class="panel execution-target-card">
+<p class="eyebrow">{{ tr('Session directe') }}</p><template v-if="executionTarget"><h3>{{ executionTarget.title }}</h3><p>{{ executionTarget.success_criteria||executionTarget.intent }}</p><div class="execution-target-meta"><span>{{ executionTarget.gdd_chapter_title||'Sans chapitre GDD' }}</span><span>{{ executionTarget.evidence_count||0 }} preuves existantes</span></div><div class="provider-grid compact"><button v-for="item in providers" :key="item.id" :class="{selected:provider===item.id}" :disabled="!item.available" @click="chooseLaunchProvider(item.id)"><strong>{{ item.label }}</strong><small>{{ item.available?'Prêt':'Indisponible' }}</small></button></div><label class="execution-directives">Tes directives pour {{ providers.find(item=>item.id===provider)?.label||'l’IA' }}<textarea v-model="executionDirectives[executionTarget.uid]" rows="4" placeholder="Ex. Lis uniquement le fichier demandé, réponds en français et ne modifie rien."></textarea><small>{{ tr('Ajoutées au cadre de la passe. Tu pourras encore les relire et les modifier avant de démarrer.') }}</small></label><button class="primary wide" :disabled="executionTarget.status==='blocked'||executionTarget.unmet_dependencies" @click="prepareObjectiveSession(executionTarget)">{{ tr('Configurer la session sur cette passe →') }}</button><small v-if="executionTarget.status==='blocked'||executionTarget.unmet_dependencies" class="execution-blocked-note">{{ tr('Cette passe reste consultable, mais son blocage ou ses dépendances doivent être levés avant exécution.') }}</small></template><p v-else class="empty">{{ tr('Sélectionnez une passe ci-dessus.') }}</p>
+</section>
+<section class="panel execution-pilots">
+<header><div><p class="eyebrow">{{ tr('Pilotage persistant') }}</p><h3>{{ tr('Charger un pilote') }}</h3><p>{{ tr('Le pilote reçoit automatiquement l’objectif sélectionné, son chapitre et ses critères.') }}</p></div><button @click="prepareExecutionPilot(executionTarget)">{{ tr('+ Créer pour cette passe') }}</button></header>
+<article v-for="item in pilots.pilots" :key="item.uid"><div><span>{{ pilotRoleLabel(item.role) }} · {{ pilotAutonomyLabel(item.autonomy_mode||'semi') }}</span><strong>{{ item.name }}</strong><small>IA · {{ item.model||'auto' }} · {{ item.effort }} · {{ item.run_count }} session{{ item.run_count===1?'':'s' }}</small></div><div><button v-if="item.last_session" @click="mountTerminal(item.last_session)">{{ tr('Dernière session') }}</button><button class="primary" :disabled="pilotBusy||!executionTarget||(item.role==='executor'&&(executionTarget.status==='blocked'||executionTarget.unmet_dependencies))" @click="launchPilotForObjective(item,executionTarget)">{{ tr('Charger sur la passe') }}</button></div></article><article v-if="!pilots.pilots?.length&&reconciliation.focus"><div><span>{{ tr('Pilote externe relié') }}</span><strong>{{ reconciliation.focus.title }}</strong><small>{{ reconciliation.focus.provider }} · mission détectée automatiquement</small></div><div><button class="primary" @click="openReconciliationSession({provider:reconciliation.focus.provider,id:reconciliation.focus.session_id,title:reconciliation.focus.title})">{{ tr('Ouvrir le pilote') }}</button></div></article><div v-else-if="!pilots.pilots?.length" class="pilot-empty"><strong>{{ tr('Aucun pilote détecté') }}</strong><p>{{ tr('Créez un pilote prérempli depuis la passe sélectionnée.') }}</p></div>
+</section>
+</div>
+<form v-if="pilotCreatorOpen" class="panel pilot-form execution-pilot-create" @submit.prevent="createProjectPilot"><header class="full"><div><p class="eyebrow">{{ tr('Nouveau pilote contextualisé') }}</p><h3>{{ pilotDraft.name }}</h3></div><button type="button" @click="pilotCreatorOpen=false">{{ tr('Annuler') }}</button></header><label>{{ tr('Nom') }}<input v-model="pilotDraft.name" required></label><label>{{ tr('Rôle') }}<select v-model="pilotDraft.role"><option value="coordinator">{{ tr('Coordination') }}</option><option value="advisor">{{ tr('Conseil') }}</option><option value="reviewer">{{ tr('Revue') }}</option><option value="executor">{{ tr('Exécution') }}</option></select></label><label>{{ tr('Mode de pilotage') }}<select v-model="pilotDraft.autonomy_mode"><option value="manual">{{ tr('Manuel · vous pilotez tout') }}</option><option value="semi">{{ tr('Semi-auto · décisions humaines') }}</option><option value="auto">{{ tr('Auto · réponses et décisions') }}</option></select></label><label>{{ tr('IA') }}<select v-model="pilotDraft.provider" @change="choosePilotProvider(pilotDraft.provider)"><option v-for="item in providers" :key="item.id" :value="item.id" :disabled="!item.available">{{ item.label }}</option></select></label><label>{{ tr('Modèle') }}<select v-model="pilotDraft.model"><option value="">Automatique{{ selectedPilotProvider?.default_model?` · ${selectedPilotProvider.default_model}`:'' }}</option><option v-for="model in selectedPilotProvider?.models||[]" :key="model.id" :value="model.id">{{ model.label }}</option></select></label><label v-if="selectedPilotProvider?.capabilities.efforts?.length">{{ tr('Effort') }}<select v-model="pilotDraft.effort"><option v-for="effort in selectedPilotProvider.capabilities.efforts" :key="effort" :value="effort">{{ effort }}</option></select></label><label>{{ tr('Permissions') }}<select v-model="pilotDraft.permission_profile"><option v-for="profile in selectedPilotProvider?.permission_profiles||[]" :key="profile.id" :value="profile.id" :disabled="remoteGate.remote&&profile.id==='full_access'">{{ profile.label }}</option></select></label><label class="full">{{ tr('Mission') }}<textarea v-model="pilotDraft.mission" rows="3" required></textarea></label><label>{{ tr('Périmètre') }}<textarea v-model="pilotDraft.scope" rows="3"></textarea></label><label>{{ tr('Règles') }}<textarea v-model="pilotDraft.instructions" rows="3"></textarea></label><label class="full">{{ tr('Conditions d’arrêt') }}<textarea v-model="pilotDraft.stop_conditions" rows="2"></textarea></label><footer><span>{{ tr('Le pilote sera sauvegardé et réutilisable sur les prochaines passes.') }}</span><button class="primary" :disabled="pilotBusy">{{ pilotBusy?'Création…':'Créer le pilote' }}</button></footer></form>
+<section class="panel execution-history"><div class="panel-title"><div><p class="eyebrow">{{ tr('Historique d’exécution') }}</p><h3>{{ tr('Sessions du projet') }}</h3></div><span>{{ projectSessions.length }}</span></div><div class="execution-session-grid"><button v-for="item in projectSessions" :key="item.uid" class="execution-row" @click="mountTerminal(item)"><i :data-provider="item.provider"></i><div><strong>{{ item.title }}</strong><small>{{ item.metadata?.objective_title?`Passe · ${item.metadata.objective_title}`:`Session libre` }} · IA · {{ date(item.created_at) }}</small></div><span class="status" :data-status="sessionWorkflowStatus(item)">{{ sessionWorkflowLabel(item) }}</span><b>→</b></button></div><p v-if="!projectSessions.length" class="empty">{{ tr('Aucune session rattachée à ce projet.') }}</p></section>
+</template>
+
+<template v-else-if="stage==='verify'">
+<section class="verification-context"><div><p class="eyebrow">{{ evidenceObjectiveFilter?'Vérification ciblée':'Vérification du projet' }}</p><h3>{{ evidenceObjectiveFilter?.title||`${verificationEvidence.length} preuves actuellement affichées` }}</h3><span>{{ tr('Examinez le contenu, puis contrôlez l’intégrité des fichiers. Ce contrôle ne signifie pas que le résultat est accepté.') }}</span></div><div class="verification-context-actions"><button class="primary" :disabled="verificationBulkBusy||!verificationEvidence.length" @click="verifyDisplayedProofs">{{ verificationBulkBusy?`Contrôle ${verificationBulkProgress.done}/${verificationBulkProgress.total}…`:`Contrôler l’intégrité (${verificationEvidence.length})` }}</button><button v-if="evidenceObjectiveFilter" @click="clearVerificationFilter">{{ tr('Afficher toutes les preuves') }}</button></div></section>
+<div class="proof-summary">
+<span>
+<strong>{{ verificationEvidence.length }}</strong> preuves affichées</span>
+<span>
+<strong>{{ verificationEvidence.filter(item=>item.status==='available').length }}</strong> disponibles</span>
+<span>
+<strong>{{ verificationEvidence.filter(item=>item.verification==='verified').length }}</strong> vérifiées</span>
+<span>
+<strong>{{ imageProofs.length }}</strong> images visibles</span>
+<span>
+<strong>{{ evidenceGroups.length }}</strong> objectifs couverts</span>
+</div>
+<section v-if="imageProofs.length" class="proof-gallery">
+<header>
+<div>
+<p class="eyebrow">{{ tr('Galerie de preuves') }}</p>
+<h3>{{ tr('Captures et rendus disponibles') }}</h3>
+</div>
+<span>{{ tr('Cliquez pour agrandir') }}</span>
+</header>
+<div>
+<button v-for="proof in imageProofs" :key="proof.uid" @click="selectedProof=proof">
+<img :src="previewUrl(proof,true)" :alt="proof.label" loading="lazy" @error="proof.previewFailed=true">
+<span>
+<strong>{{ proof.label }}</strong>
+<small>{{ proof.objective_title||proof.pass_ref||'Projet' }}</small>
+</span>
+</button>
+</div>
+</section>
+<section class="evidence-groups">
+<article v-for="group in evidenceGroups.slice(0,100)" :key="group.key" class="evidence-group">
+<header>
+<div>
+<p class="eyebrow">{{ tr('Objectif') }}</p>
+<h3>{{ group.title }}</h3>
+</div>
+<span>{{ group.proofs.length }} preuves · {{ group.passes.size }} passes</span>
+</header>
+<div class="proof-row" v-for="proof in group.proofs.slice(0,12)" :key="proof.uid" role="button" tabindex="0" @click="openProofDetail(proof)" @keydown.enter="openProofDetail(proof)">
+<button v-if="imageProofs.some(item=>item.uid===proof.uid)" class="proof-thumb" @click="selectedProof=proof">
+<img :src="previewUrl(proof,true)" alt="">
+</button>
+<div>
+<strong>{{ proof.label }}</strong>
+<small>{{ proof.pass_ref||proof.origin }} · {{ date(proof.created_at) }}</small>
+</div>
+<span class="status" :data-status="proof.verification||proof.status">{{ proof.verification||proof.status }}</span>
+<code v-if="proof.sha256">{{ proof.sha256.slice(0,10) }}…</code>
+<div class="proof-row-actions"><button @click.stop="openProofDetail(proof)">{{ tr('Examiner') }}</button><button :disabled="proof.verificationBusy" @click.stop="verifyProof(proof)">{{ proof.verificationBusy?'Vérification…':'Vérifier l’intégrité' }}</button></div>
+</div>
+</article>
+</section>
+</template>
+
+      <template v-else-if="stage==='decide'">
+<section v-if="evidenceObjectiveFilter" class="decision-context">
+<div class="decision-context-head"><div><p class="eyebrow">{{ tr('Passe examinée') }}</p><h3>{{ evidenceObjectiveFilter.title }}</h3><span>{{ evidenceObjectiveFilter.passRef?`Passe ${evidenceObjectiveFilter.passRef}`:'Objectif ciblé' }}</span></div><button @click="openDecisionEvidence">{{ tr('Revoir le dossier de preuves') }}</button></div>
+<div class="decision-context-summary"><article><strong>{{ verificationEvidence.length }}</strong><span>{{ tr('preuves dans le dossier') }}</span></article><article><strong>{{ decisionContextJudgments.length }}</strong><span>{{ tr('décisions humaines requises') }}</span></article><article><strong>{{ objectiveStatusLabel(decisionContextObjective?.status||'ready') }}</strong><span>{{ tr('état de l’objectif') }}</span></article></div>
+<div v-if="!decisionContextJudgments.length" class="decision-guidance" data-state="clear"><b>{{ tr('Aucune décision humaine n’est demandée pour cette passe.') }}</b><p>{{ tr('Vous n’avez rien à accepter ou rejeter : « Vérifier » contrôle les preuves, tandis que « Décider » sert uniquement aux choix ambigus ou aux arbitrages explicitement demandés par une IA.') }}</p><div><button @click="openDecisionEvidence">{{ tr('Retourner aux preuves') }}</button><button class="primary" @click="selectStage('memory')">{{ tr('Continuer vers Mémoriser →') }}</button></div></div>
+<div v-else class="decision-guidance" data-state="pending"><b>{{ tr('Votre décision est nécessaire.') }}</b><p>{{ tr('Lisez la question, son objectif et les preuves liées avant d’accepter ou de rejeter.') }}</p></div>
+</section>
+<section v-if="unansweredSpecQuestions.length" class="panel decision-spec-questions">
+<div class="panel-title"><div><p class="eyebrow">{{ tr('Décisions produit ouvertes') }}</p><h3>Questions du {{ documentLabel }} à trancher</h3><p>{{ tr('Ces réponses complètent le cadre du projet et seront conservées dans le document.') }}</p></div><span>{{ unansweredSpecQuestions.length }}</span></div>
+<article v-for="item in unansweredSpecQuestions" :key="item.index"><b>{{ item.index+1 }}</b><div><strong>{{ item.question }}</strong><textarea v-model="questionAnswers[item.index]" rows="2" placeholder="Votre décision et, si utile, sa justification…"></textarea><button class="primary" :disabled="questionSaving===item.index||!questionAnswers[item.index]?.trim()" @click="saveQuestionAnswer(item.question,item.index)">{{ questionSaving===item.index?'Enregistrement…':'Enregistrer la décision' }}</button></div></article>
+</section>
+<div class="decision-grid">
+<section class="panel">
+<div class="panel-title">
+<div>
+<p class="eyebrow">{{ tr('Arbitrages') }}</p>
+<h3>{{ tr('Décisions humaines demandées') }}</h3>
+</div>
+<span>{{ evidenceObjectiveFilter?decisionContextJudgments.length:judgments.length }}</span>
+</div>
+<article v-for="item in (evidenceObjectiveFilter?decisionContextJudgments:judgments)" :key="item.uid" class="decision-card">
+<span class="status" data-status="decision">{{ tr('Décision requise') }}</span>
+<h3>{{ item.summary }}</h3>
+<small>{{ date(item.occurred_at) }}</small>
+<div>
+<button class="primary" @click="resolveJudgment(item,'accepted')">{{ tr('Accepter') }}</button>
+<button class="danger" @click="resolveJudgment(item,'rejected')">{{ tr('Rejeter') }}</button>
+</div>
+</article>
+<p v-if="!(evidenceObjectiveFilter?decisionContextJudgments:judgments).length" class="empty">{{ tr('Aucun arbitrage à traiter dans ce contexte.') }}</p>
+</section>
+<section class="panel">
+<div class="panel-title">
+<div>
+<p class="eyebrow">{{ tr('Alertes décisionnelles') }}</p>
+<h3>{{ evidenceObjectiveFilter?'Liées à cette passe':'Autres arbitrages du projet' }}</h3>
+</div>
+<span>{{ decisionAttention.length }}</span>
+</div>
+<article v-for="item in decisionAttention.slice(0,40)" :key="item.id" class="attention-row">
+<i :data-severity="item.severity">
+</i>
+<div>
+<small>{{ item.type }} · {{ item.objective?.title||'projet' }}</small>
+<strong>{{ item.title }}</strong>
+<p>{{ item.detail }}</p>
+</div>
+<button v-if="item.objective?.uid" @click="applyVerificationFilter(item.objective.uid,item.target?.pass_ref||null,item.objective.title);openDecisionEvidence()">{{ tr('Voir les preuves') }}</button>
+</article>
+<p v-if="!decisionAttention.length" class="empty">{{ tr('Aucune alerte ne nécessite une décision humaine.') }}</p>
+</section>
+</div>
+</template>
+
+      <template v-else-if="stage==='memory'">
+<section v-if="evidenceObjectiveFilter" class="memory-context"><div><p class="eyebrow">{{ tr('Mémoire de la passe') }}</p><h3>{{ evidenceObjectiveFilter.title }}</h3><span>{{ evidenceObjectiveFilter.passRef?`Passe ${evidenceObjectiveFilter.passRef}`:'Objectif ciblé' }} · {{ verificationEvidence.filter(item=>item.verification==='verified').length }}/{{ verificationEvidence.length }} preuves vérifiées</span></div><div><button @click="openDecisionEvidence">{{ tr('Revoir les preuves') }}</button><button @click="clearMemoryFilter">{{ tr('Afficher toute la mémoire du projet') }}</button></div></section>
+<section v-if="evidenceObjectiveFilter" class="memory-completion">
+<header><div><p class="eyebrow">{{ tr('Finaliser la passe') }}</p><h3>{{ memoryClosed?'Cette passe est clôturée':'Que voulez-vous conserver pour la suite ?' }}</h3><p>{{ memoryClosed?'L’objectif est validé et son dossier reste consultable.':'La clôture valide cet objectif et vous ramène au plan sur le prochain travail disponible.' }}</p></div><span :data-ready="memoryReady||memoryClosed">{{ memoryClosed?'Clôturée':memoryReady?'Prêt à clôturer':'Preuves à vérifier' }}</span></header>
+<div v-if="memoryClosed" class="memory-closed-actions"><p>Clôturée {{ date(memoryClosure.occurred_at) }}. Aucun nouvel enregistrement ne sera créé.</p><button class="primary" @click="returnToPlan">{{ tr('Retourner au plan') }}</button></div>
+<template v-else><div class="memory-completion-choices"><article><h4>{{ tr('Clôturer sans leçon') }}</h4><p>{{ tr('Conserver le journal et les preuves, sans créer de règle réutilisable.') }}</p><button :disabled="!memoryReady||memoryCloseBusy" @click="closeMemoryPass(false)">{{ memoryCloseBusy?'Clôture…':'Clôturer et retourner au plan' }}</button></article><article><h4>{{ tr('Créer une leçon durable') }}</h4><p>{{ tr('Ajouter une recommandation qui sera proposée aux prochaines passes pertinentes.') }}</p><button :disabled="!memoryReady||memoryCloseBusy" @click="memoryLessonOpen=!memoryLessonOpen">{{ memoryLessonOpen?'Annuler':'Rédiger une leçon' }}</button></article></div>
+<form v-if="memoryLessonOpen" @submit.prevent="closeMemoryPass(true)"><label>{{ tr('Titre de la leçon') }}<input v-model="memoryLesson.title" placeholder="Ex. Toujours isoler les preuves d’une passe" required></label><label>{{ tr('Recommandation') }}<textarea v-model="memoryLesson.recommendation" rows="3" placeholder="Ce qu’il faut refaire la prochaine fois…" required></textarea></label><label>{{ tr('À éviter') }}<textarea v-model="memoryLesson.avoid_text" rows="2" placeholder="L’erreur ou le risque à ne pas reproduire…"></textarea></label><footer><button type="button" @click="memoryLessonOpen=false">{{ tr('Annuler') }}</button><button class="primary" :disabled="memoryCloseBusy">{{ memoryCloseBusy?'Enregistrement…':'Enregistrer la leçon et clôturer' }}</button></footer></form></template>
+</section>
+<div class="memory-grid">
+<section v-if="evidenceObjectiveFilter" class="panel memory-pass-proofs">
+<div class="panel-title"><div><p class="eyebrow">{{ tr('Dossier conservé') }}</p><h3>{{ tr('Preuves de cette passe') }}</h3></div><span>{{ verificationEvidence.length }}</span></div>
+<button v-for="proof in verificationEvidence" :key="proof.uid" @click="openProofDetail(proof)"><div><strong>{{ proof.label }}</strong><small>{{ proof.type }} · {{ fileSize(proof.bytes) }}</small></div><span class="status" :data-status="proof.verification||proof.status">{{ proof.verification||proof.status }}</span></button>
+<p v-if="!verificationEvidence.length" class="empty">{{ tr('Aucune preuve n’est rattachée à cette passe.') }}</p>
+</section>
+<section class="panel memory-journal">
+<div class="panel-title">
+<div>
+<p class="eyebrow">{{ tr('Journal durable') }}</p>
+<h3>{{ evidenceObjectiveFilter?'Événements de cette passe':'Derniers événements' }}</h3>
+</div>
+<span>{{ meaningfulMemoryTimeline.length }} utiles</span>
+</div>
+<p v-if="hiddenMemoryEvents" class="memory-noise-note">{{ hiddenMemoryEvents }} événements techniques répétitifs masqués.</p>
+<article v-for="item in meaningfulMemoryTimeline.slice(0,80)" :key="item.uid" class="timeline-row">
+<i>
+</i>
+<div>
+<small>{{ item.actor }} · {{ date(item.occurred_at) }}</small>
+<strong>{{ item.summary }}</strong>
+<span>{{ item.objective_title||item.kind }}</span>
+</div>
+</article>
+<p v-if="!meaningfulMemoryTimeline.length" class="empty">{{ tr('Aucun événement utile n’est rattaché à cette passe.') }}</p>
+</section>
+<section v-if="!evidenceObjectiveFilter" class="panel memory-knowledge">
+<div class="panel-title">
+<div>
+<p class="eyebrow">{{ tr('Connaissance réutilisable') }}</p>
+<h3>{{ tr('Règles applicables') }}</h3>
+</div>
+<span>{{ memoryKnowledge.length }}</span>
+</div>
+<article v-for="item in memoryKnowledge" :key="item.uid" class="lesson">
+<div>
+<span class="status" :data-status="item.status">{{ item.status }}</span>
+<b>{{ item.confidence }}%</b>
+</div>
+<h3>{{ item.title }}</h3>
+<p>{{ item.recommendation }}</p>
+<small>Éviter : {{ item.avoid_text }}</small>
+</article>
+<p v-if="!memoryKnowledge.length" class="empty">{{ tr('Aucune règle réutilisable ne s’applique encore.') }}</p>
+</section>
+</div>
+</template>
+    </section>
+    <div v-if="objectiveDetail" class="objective-drawer" role="dialog" aria-modal="true" :aria-label="`Détails de ${objectiveDetail.objective?.title||'l’objectif'}`" @click.self="objectiveDetail=null">
+      <aside>
+        <header><div><p class="eyebrow">{{ tr('Dossier de décision') }}</p><h2>{{ objectiveDetail.objective?.title }}</h2><div><span class="status" :data-status="objectiveDetail.objective?.status">{{ objectiveStatusLabel(objectiveDetail.objective?.status) }}</span><span v-if="objectiveDetail.objective?.gdd_chapter_title">GDD · {{ objectiveDetail.objective.gdd_chapter_title }}</span></div></div><button class="drawer-close" aria-label="Fermer le dossier" @click="objectiveDetail=null"><span>{{ tr('Fermer') }}</span><b>×</b></button></header>
+        <div v-if="objectiveDetailLoading" class="objective-detail-loading">{{ tr('Chargement du dossier complet…') }}</div>
+        <div v-else class="objective-detail-body">
+          <section class="objective-summary"><article><strong>{{ objectiveDetail.summary?.evidence||0 }}</strong><span>{{ tr('preuves') }}</span></article><article><strong>{{ objectiveDetail.summary?.images||0 }}</strong><span>{{ tr('images') }}</span></article><article><strong>{{ objectiveDetail.summary?.events||0 }}</strong><span>{{ tr('événements') }}</span></article><article :data-alert="objectiveDetail.summary?.open_blockers?'true':'false'"><strong>{{ objectiveDetail.summary?.open_blockers||0 }}</strong><span>{{ tr('blocages ouverts') }}</span></article></section>
+          <section v-if="objectiveDetail.objective?.status==='blocked'" class="objective-next-action"><p class="eyebrow">{{ tr('Prochaine action') }}</p><h3>{{ tr('Comment débloquer cet objectif') }}</h3><p v-if="objectiveDetail.blockers?.some((row:any)=>row.status==='open')"><strong>{{ objectiveDetail.blockers.find((row:any)=>row.status==='open')?.title }}</strong><span>{{ objectiveDetail.blockers.find((row:any)=>row.status==='open')?.detail||'Le blocage doit être corrigé puis couvert par une nouvelle preuve.' }}</span></p><p v-else-if="objectiveDetail.verdicts?.some((row:any)=>row.verdict==='fail')"><strong>{{ tr('Corriger le dernier verdict en échec') }}</strong><span>{{ objectiveDetail.verdicts.find((row:any)=>row.verdict==='fail')?.rationale||'Une nouvelle preuve indépendante est nécessaire.' }}</span></p><p v-else><strong>{{ tr('Identifier la cause du blocage') }}</strong><span>{{ tr('Examiner les preuves liées, lancer une correction bornée, puis produire une nouvelle preuve vérifiable.') }}</span></p><footer><button @click="openObjectiveVerification">{{ tr('Voir uniquement ses preuves') }}</button><button class="primary" @click="prepareCorrectiveSession">{{ tr('Préparer une session corrective →') }}</button></footer></section>
+          <section class="objective-detail-section objective-brief"><p class="eyebrow">{{ tr('Objectif') }}</p><h3>{{ tr('Ce qui doit être obtenu') }}</h3><p>{{ objectiveDetail.objective?.intent||'Aucune intention détaillée n’a été enregistrée.' }}</p><h4>{{ tr('Critères de réussite') }}</h4><p class="criteria-copy">{{ objectiveDetail.objective?.success_criteria||'Aucun critère de réussite explicite.' }}</p><dl><div><dt>{{ tr('Priorité') }}</dt><dd>{{ objectiveDetail.objective?.priority }}</dd></div><div><dt>{{ tr('Échéance') }}</dt><dd>{{ objectiveDetail.objective?.due_at?date(objectiveDetail.objective.due_at):'Non définie' }}</dd></div><div><dt>{{ tr('Estimation') }}</dt><dd>{{ objectiveDetail.objective?.estimate_minutes?`${objectiveDetail.objective.estimate_minutes} min`:'Non définie' }}</dd></div><div><dt>{{ tr('Dernière activité') }}</dt><dd>{{ objectiveDetail.objective?.last_activity?date(objectiveDetail.objective.last_activity):'Aucune' }}</dd></div></dl></section>
+          <section v-if="objectiveDetail.parent||objectiveDetail.children?.length||objectiveDetail.dependencies?.length||objectiveDetail.dependents?.length" class="objective-detail-section"><p class="eyebrow">{{ tr('Place dans le projet') }}</p><h3>{{ tr('Relations et dépendances') }}</h3><div class="objective-relations"><article v-if="objectiveDetail.parent"><small>{{ tr('Objectif parent') }}</small><strong>{{ objectiveDetail.parent.title }}</strong><span class="status" :data-status="objectiveDetail.parent.status">{{ objectiveDetail.parent.status }}</span></article><article v-for="item in objectiveDetail.dependencies" :key="`dependency-${item.uid}`"><small>{{ tr('Doit être terminé avant') }}</small><strong>{{ item.title }}</strong><span class="status" :data-status="item.status">{{ item.status }}</span></article><article v-for="item in objectiveDetail.dependents" :key="`dependent-${item.uid}`"><small>{{ tr('Dépend ensuite de cet objectif') }}</small><strong>{{ item.title }}</strong><span class="status" :data-status="item.status">{{ item.status }}</span></article><article v-for="item in objectiveDetail.children" :key="`child-${item.uid}`"><small>{{ tr('Sous-objectif') }}</small><strong>{{ item.title }}</strong><span class="status" :data-status="item.status">{{ item.status }}</span></article></div></section>
+          <section v-if="objectiveDetail.blockers?.length||objectiveDetail.verdicts?.length||objectiveDetail.judgments?.length||objectiveDetail.decisions?.length" class="objective-detail-section"><p class="eyebrow">{{ tr('Décisions et alertes') }}</p><h3>{{ tr('Ce qui empêche ou autorise la suite') }}</h3><div class="objective-findings"><article v-for="item in objectiveDetail.blockers" :key="item.uid" :data-kind="item.status==='open'?'danger':'resolved'"><header><strong>Blocage · {{ item.status }}</strong><time>{{ date(item.created_at) }}</time></header><h4>{{ item.title }}</h4><p>{{ item.detail }}</p></article><article v-for="item in objectiveDetail.verdicts" :key="item.uid" :data-kind="item.verdict"><header><strong>Verdict · {{ item.verdict }}</strong><time>{{ date(item.created_at) }}</time></header><p>{{ item.rationale||'Aucune justification enregistrée.' }}</p></article><article v-for="item in objectiveDetail.judgments" :key="item.uid" :data-kind="item.resolved?'resolved':'warning'"><header><strong>Question humaine · {{ item.resolved?'traitée':'en attente' }}</strong><time>{{ date(item.occurred_at) }}</time></header><p>{{ item.summary }}</p></article><article v-for="item in objectiveDetail.decisions" :key="item.uid" :data-kind="item.status"><header><strong>Décision · {{ item.status }}</strong><time>{{ date(item.created_at) }}</time></header><h4>{{ item.title }}</h4><p>{{ item.body }}</p></article></div></section>
+          <section class="objective-detail-section"><div class="objective-section-head"><div><p class="eyebrow">{{ tr('Preuves et fichiers') }}</p><h3>{{ objectiveDetail.evidence?.length||0 }} éléments disponibles</h3></div><button @click="openObjectiveVerification">{{ tr('Vérifier uniquement cet objectif') }}</button></div><div v-if="objectiveDetail.evidence?.some(isImageProof)" class="objective-image-grid"><button v-for="proof in objectiveDetail.evidence.filter(isImageProof)" :key="proof.uid" type="button" :disabled="!proof.local_available" :class="{unavailable:!proof.local_available}" @click="selectedProof=proof"><img v-if="proof.local_available" :src="previewUrl(proof,true)" :alt="proof.label"><span v-else>{{ tr('Aperçu indisponible') }}</span><strong>{{ proof.label }}</strong><small>{{ proof.relationship==='direct'?'Preuve directe':proof.relationship==='parent'?'Objectif parent':'Sous-objectif' }} · {{ proof.pass_ref||date(proof.created_at) }}</small></button></div><div class="objective-file-list"><article v-for="proof in objectiveDetail.evidence" :key="`file-${proof.uid}`"><div><strong>{{ proof.label }}</strong><small>{{ proof.type }} · {{ fileSize(proof.bytes) }} · {{ date(proof.created_at) }}</small><code>{{ proof.locator||'Aucun emplacement enregistré' }}</code><span v-if="proof.sha256">SHA-256 · {{ proof.sha256 }}</span></div><div><span class="status" :data-status="proof.status">{{ proof.status }}</span><button v-if="proof.local_available&&isImageProof(proof)" @click="selectedProof=proof">{{ tr('Ouvrir l’aperçu') }}</button><a v-else-if="proof.local_available&&isPreviewableProof(proof)" :href="previewUrl(proof)" target="_blank">{{ tr('Ouvrir le fichier') }}</a><small v-else-if="proof.cloud_providers?.length">Cloud · {{ proof.cloud_providers.join(', ') }}</small></div></article><p v-if="!objectiveDetail.evidence?.length" class="empty">{{ tr('Aucune preuve ni aucun fichier n’est encore rattaché à cet objectif.') }}</p></div></section>
+          <section v-if="objectiveDetail.proposals?.length" class="objective-detail-section"><p class="eyebrow">{{ tr('Origine du travail') }}</p><h3>{{ tr('Propositions liées') }}</h3><article v-for="item in objectiveDetail.proposals" :key="item.uid" class="objective-linked-proposal"><header><span>{{ item.kind }} · {{ item.source_kind }}</span><span class="status" :data-status="item.status">{{ item.status }}</span></header><h4>{{ item.title }}</h4><p>{{ item.body||item.rationale }}</p><small>{{ item.source_ref||'Source non précisée' }}</small></article></section>
+          <section v-if="objectiveDetail.sessions?.length" class="objective-detail-section"><p class="eyebrow">{{ tr('Exécution liée') }}</p><h3>{{ objectiveDetail.sessions.length }} session{{ objectiveDetail.sessions.length===1?'':'s' }} sur cette passe</h3><div class="objective-session-list"><button v-for="item in objectiveDetail.sessions" :key="item.uid" @click="objectiveDetail=null;mountTerminal(item)"><span><strong>{{ item.title }}</strong><small>{{ item.metadata?.pilot_uid?'Pilote':'Session directe' }} · IA · {{ date(item.created_at) }}</small></span><span class="status" :data-status="sessionWorkflowStatus(item)">{{ sessionWorkflowLabel(item) }}</span><b>{{ tr('Ouvrir →') }}</b></button></div></section>
+          <section class="objective-detail-section"><p class="eyebrow">{{ tr('Historique complet') }}</p><h3>{{ objectiveDetail.events?.length||0 }} événements enregistrés</h3><div class="objective-history"><details v-for="item in objectiveDetail.events" :key="item.uid"><summary><span><strong>{{ item.summary }}</strong><small>{{ item.actor }} · {{ item.assertion }} · {{ date(item.occurred_at) }}</small></span><b>+</b></summary><div><p>{{ item.kind }} · {{ item.source||'source non précisée' }}</p><pre v-if="Object.keys(item.payload||{}).length">{{ JSON.stringify(item.payload,null,2) }}</pre></div></details><p v-if="!objectiveDetail.events?.length" class="empty">{{ tr('Aucun événement détaillé n’est enregistré.') }}</p></div></section>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <main v-else-if="view==='terminal'" class="terminal-workspace" :class="{'has-session-assets':selectedSession,'has-project-context':selectedSession?.project_slug,'pilot-cockpit':pilotRunUid,'show-technical':pilotTechnicalOpen}">
+<section v-if="selectedSession?.project_slug" class="session-workflow-context">
+<button class="session-project-back" type="button" @click="openSessionProjectStage('execute')"><span>{{ tr('Projet') }}</span><strong>← {{ selectedSession.project_name }}</strong></button>
+<nav aria-label="Parcours du projet"><button v-for="item in stages" :key="item.id" type="button" :class="{done:Number(item.index)<3,active:item.id==='execute',next:item.id==='verify'}" @click="openSessionProjectStage(item.id)"><b>{{ item.index }}</b><span>{{ tr(item.label) }}</span></button></nav>
+<div class="session-next-step"><span>{{ selectedSession.metadata?.objective_title?'Passe liée':'Session projet' }}</span><strong>{{ selectedSession.metadata?.objective_title||selectedSession.title }}</strong><button v-if="!selectedSession.metadata?.reported_at" type="button" :disabled="sessionReportBusy" @click="reportSession">{{ sessionReportBusy?'Transmission…':selectedSession.metadata?.objective_uid?'Suite : vérifier →':'Préparer la vérification →' }}</button><button v-else type="button" @click="openSessionProjectStage('verify')">{{ tr('Ouvrir Vérifier →') }}</button></div>
+</section>
+<aside class="terminal-rail">
+<section v-if="pilotRunUid" class="pilot-room-rail">
+<header><div><p class="eyebrow">{{ tr('Salle de pilotage') }}</p><h2>{{ pilotRoomRoot?.title||selectedSession?.title }}</h2><span>{{ pilotRoomSessions.filter(item=>item.active).length }} actif{{ pilotRoomSessions.filter(item=>item.active).length===1?'':'s' }} · {{ pilotRoomSessions.length }} agent{{ pilotRoomSessions.length===1?'':'s' }}</span></div><button @click="openSessionProjectStage('execute')">{{ tr('Retour au projet') }}</button></header>
+<div class="pilot-room-team pilot-room-tree">
+<button v-if="pilotRoomRoot" class="pilot-tree-root" :class="{active:pilotRoomRoot.uid===selectedSession?.uid}" @click="openPilotAgentTerminal(pilotRoomRoot)"><i :data-provider="pilotRoomRoot.provider"></i><span><strong>{{ tr('Pilote central') }}</strong><small>{{ tr('coordinateur · lecture seule · IA') }}</small></span><em :data-active="pilotRoomRoot.active">{{ pilotRoomRoot.active?'live':sessionWorkflowLabel(pilotRoomRoot) }}</em></button>
+<div v-if="pilotRoomWorkers.length" class="pilot-tree-workers"><span class="pilot-tree-label">Sous-sessions déléguées · {{ pilotRoomWorkers.length }}</span><button v-for="item in pilotRoomWorkers" :key="item.uid" :class="{active:item.uid===selectedSession?.uid}" @click="openPilotAgentTerminal(item)"><i :data-provider="item.provider"></i><span><strong>{{ item.metadata?.pilot_agent_name||item.title }}</strong><small>{{ item.metadata?.pilot_agent_role||item.metadata?.pilot_role||'sous-agent' }} · IA</small></span><em :data-active="item.active">{{ item.active?'live':sessionWorkflowLabel(item) }}</em></button></div>
+<p v-else class="pilot-tree-empty">{{ tr('Aucune sous-session déléguée pour cette relève.') }}</p>
+</div>
+<button v-if="pilotConversationMessages.length" type="button" class="pilot-team-log-button" @click="pilotTeamMessagesOpen=true"><span>{{ tr('Ouvrir les échanges de l’équipe') }}</span><b>{{ pilotConversationMessages.length }}</b></button>
+<button class="pilot-add-agent" @click="pilotAgentOpen=!pilotAgentOpen">{{ pilotAgentOpen?'Annuler':'+ Ajouter un sous-agent' }}</button>
+<form v-if="pilotAgentOpen" class="pilot-agent-form" @submit.prevent="createPilotAgent"><label>{{ tr('Nom') }}<input v-model="pilotAgentDraft.name" placeholder="Recherche, revue, exécution…"></label><label>{{ tr('Rôle') }}<select v-model="pilotAgentDraft.role"><option value="researcher">{{ tr('Recherche') }}</option><option value="reviewer">{{ tr('Revue') }}</option><option value="executor">{{ tr('Exécution') }}</option></select></label><label>{{ tr('IA') }}<select v-model="pilotAgentDraft.provider"><option v-for="item in providers" :key="item.id" :value="item.id" :disabled="!item.available">{{ item.label }}</option></select></label><label>{{ tr('Permissions') }}<select v-model="pilotAgentDraft.permission_profile"><option value="read_only">{{ tr('Lecture seule') }}</option><option value="workspace_guarded">{{ tr('Projet protégé') }}</option><option value="workspace_autonomous">{{ tr('Projet autonome') }}</option></select></label><label>{{ tr('Mission') }}<textarea v-model="pilotAgentDraft.mission" rows="4" required placeholder="Mission bornée confiée par le pilote…"></textarea></label><button class="primary" :disabled="pilotAgentBusy">{{ pilotAgentBusy?'Lancement…':'Lancer dans cette salle' }}</button></form>
+<form class="pilot-room-message" @submit.prevent="sendPilotRoomMessage"><label>{{ tr('Directive partagée') }}<textarea v-model="pilotRoomMessage" rows="3" placeholder="Envoyer le même contexte au pilote et à tous ses agents…" @keydown.enter.exact.prevent="sendPilotRoomMessage"></textarea></label><button :disabled="pilotAgentBusy||!pilotRoomMessage.trim()">{{ tr('Envoyer à toute l’équipe') }}</button><small v-if="pilotRoomNotice">{{ pilotRoomNotice }}</small></form>
+</section>
+<div v-if="pilotTeamMessagesOpen" class="session-asset-modal pilot-team-modal" @click.self="pilotTeamMessagesOpen=false"><article role="dialog" aria-modal="true" aria-labelledby="pilot-team-title"><header><div><span>{{ tr('Salle de pilotage') }}</span><strong id="pilot-team-title">{{ tr('Échanges de l’équipe') }}</strong></div><button type="button" aria-label="Fermer" @click="pilotTeamMessagesOpen=false">×</button></header><div class="pilot-team-log"><article v-for="message in pilotConversationMessages.slice(-50)" :key="message.uid"><header><strong>{{ message.sender }}</strong><time :datetime="message.created_at">{{ messageDate(message.created_at) }}</time></header><p><template v-for="(segment,index) in pilotChatSegments(cleanPilotChatContent(message.content))" :key="index"><strong v-if="segment.bold">{{ segment.text }}</strong><template v-else>{{ segment.text }}</template></template></p></article></div></article></div>
+<section v-if="!pilotRunUid" class="launcher">
+<p class="eyebrow">{{ tr('Nouvelle session IA') }}</p>
+<h1>{{ tr('Ouvrir un terminal') }}</h1>
+<div v-if="remoteAccess?.prevent_idle?.available&&(remoteGate.remote||remoteAccess?.phase==='online')" class="session-idle-control" :data-active="remoteAccess.prevent_idle.active"><div><strong>{{ tr('Ordinateur éveillé') }}</strong><small>{{ remoteAccess.prevent_idle.active?'Protection active pendant l’accès distant':'Activez-la pour éviter une interruption des sessions.' }}</small></div><button type="button" :disabled="preventIdleBusy" @click="togglePreventIdle">{{ remoteAccess.prevent_idle.active?'Désactiver':'Activer' }}</button></div>
+<div v-if="pendingSessionObjective" class="linked-pass"><div><small>{{ tr('Passe liée au lancement') }}</small><strong>{{ pendingSessionObjective.title }}</strong><span>{{ pendingSessionObjective.gdd_chapter_title||'Sans chapitre GDD' }}</span></div><button @click="pendingSessionObjective=null">{{ tr('Détacher') }}</button></div>
+<div class="provider-grid">
+<button v-for="item in providers" :key="item.id" :class="{selected:provider===item.id}" :disabled="!item.available" @click="chooseLaunchProvider(item.id)">
+<strong>{{ item.label }}</strong>
+<small>{{ item.available?'Prêt':'Indisponible' }}</small>
+</button>
+</div>
+<label>{{ tr('Projet') }}<select v-model="selectedProject" @change="loadLaunchPermissionPolicy">
+<option value="">{{ tr('Espace Orchestrator') }}</option>
+<option v-for="item in projects" :key="item.uid" :value="item.slug">{{ item.name }}</option>
+</select>
+</label>
+<label>{{ tr('Nom de mission') }}<input v-model="sessionTitle" :placeholder="`Session ${selectedProvider?.label||'IA'}`">
+</label>
+<label>{{ tr('Mode de démarrage') }}<select v-model="launchOptions.resume_mode">
+<option value="new">{{ tr('Nouvelle session') }}</option>
+<option value="last" :disabled="!selectedProvider?.capabilities.resume">{{ tr('Reprendre la dernière') }}</option>
+<option value="picker" :disabled="!selectedProvider?.capabilities.resume">{{ tr('Sélecteur natif') }}</option>
+<option value="id" :disabled="!selectedProvider?.capabilities.resume">{{ tr('Reprendre par ID / nom') }}</option>
+</select>
+</label>
+<label v-if="launchOptions.resume_mode==='id'">{{ tr('ID ou nom') }}<input v-model="launchOptions.resume_id">
+</label>
+<details class="launch-options" open>
+<summary>{{ tr('Options et permissions') }}</summary>
+<label>{{ tr('Modèle') }}<select v-model="launchOptions.model"><option value="">{{ language==='fr'?'Automatique':'Automatic' }}{{ selectedProvider?.default_model?` · ${selectedProvider.default_model}`:'' }}</option><option v-for="model in selectedProvider?.models||[]" :key="model.id" :value="model.id">{{ model.label }}{{ language==='fr'?(model.configured?' · configuré':' · détecté'):(model.configured?' · configured':' · detected') }}</option></select></label>
+<label v-if="selectedProvider?.capabilities.efforts?.length">{{ tr('Effort') }}<select v-model="launchOptions.effort"><option v-for="effort in selectedProvider.capabilities.efforts" :key="effort" :value="effort">{{ effort }}</option></select></label>
+<label>{{ tr('Profil de permissions') }}<select v-model="launchOptions.permission_profile"><option v-for="profile in selectedProvider?.permission_profiles||[]" :key="profile.id" :value="profile.id" :disabled="remoteGate.remote&&profile.id==='full_access'">{{ permissionProfileText(profile) }}</option></select></label>
+<template v-if="selectedProvider?.capabilities.sandbox instanceof Array">
+<label>{{ tr('Sandbox') }}<select v-model="launchOptions.sandbox" :disabled="launchOptions.dangerously_bypass">
+<option value="read-only">{{ tr('Lecture seule') }}</option>
+<option value="workspace-write">{{ tr('Écriture workspace') }}</option>
+<option value="danger-full-access">{{ tr('Accès machine complet') }}</option>
+</select>
+</label>
+<label>{{ tr('Approbations') }}<select v-model="launchOptions.approval_policy" :disabled="launchOptions.dangerously_bypass">
+<option value="untrusted">{{ tr('Commandes non fiables') }}</option>
+<option value="on-request">{{ tr('À la demande') }}</option>
+<option value="never">{{ tr('Ne jamais demander') }}</option>
+</select>
+</label>
+<label class="check">
+<input v-model="launchOptions.search" type="checkbox">
+<span>{{ tr('Recherche web') }}</span>
+</label>
+</template>
+<template v-if="selectedProvider?.capabilities.permission_modes">
+<label>{{ tr('Permissions') }}<select v-model="launchOptions.permission_mode" :disabled="launchOptions.dangerously_bypass">
+<option value="auto">{{ tr('Auto') }}</option>
+<option value="acceptEdits">{{ tr('Accepter les éditions') }}</option>
+<option value="manual">{{ tr('Manuel') }}</option>
+<option value="dontAsk">{{ tr('Ne pas demander') }}</option>
+<option value="plan">{{ tr('Plan seulement') }}</option>
+</select>
+</label>
+<label class="check" v-if="launchOptions.resume_mode!=='new'">
+<input v-model="launchOptions.fork_session" type="checkbox">
+<span>{{ tr('Fork de la session reprise') }}</span>
+</label>
+</template>
+<label v-if="selectedProvider?.capabilities.approval_modes">Validation Gemini<select v-model="launchOptions.approval_mode"><option v-for="mode in selectedProvider.capabilities.approval_modes" :key="mode" :value="mode">{{ mode }}</option></select></label>
+<label>{{ tr('Instruction initiale') }}<textarea v-model="launchOptions.prompt" rows="3">
+</textarea>
+</label>
+<label v-if="selectedProvider?.capabilities.dangerous_bypass" class="check danger-check">
+<input v-model="launchOptions.dangerously_bypass" type="checkbox" :disabled="remoteGate.remote">
+<span>Dangerously bypass all permissions</span>
+</label>
+<small v-if="remoteGate.remote" class="remote-danger-note">{{ tr('Cette option est désactivée à distance. Activez-la uniquement depuis l’ordinateur hôte.') }}</small>
+<div v-if="launchOptions.dangerously_bypass||launchOptions.permission_profile==='full_access'" class="danger-warning">
+<strong>{{ tr('Accès machine sans restriction') }}</strong>
+<p>{{ tr('L’IA peut exécuter et modifier sans approbation ni sandbox.') }}</p>
+<label class="check">
+<input v-model="dangerConfirmed" type="checkbox">
+<span>{{ tr('Je comprends et je confirme') }}</span>
+</label>
+</div>
+</details>
+<button class="primary wide" :disabled="busy||!selectedProvider?.available||((launchOptions.dangerously_bypass||launchOptions.permission_profile==='full_access')&&!dangerConfirmed)" @click="createSession">{{ language==='fr'?(busy?'Démarrage de l’IA…':launchOptions.resume_mode==='new'?'Démarrer l’IA':'Reprendre avec l’IA'):(busy?'Starting AI…':launchOptions.resume_mode==='new'?'Start AI':'Resume with AI') }}</button>
+<p v-if="error" class="error">{{ error }}</p>
+</section>
+<section v-if="!pilotRunUid" class="session-list">
+<div class="session-list-filters">
+<label>{{ tr('Rechercher') }}<input v-model="sessionSearch" type="search" placeholder="Mission, projet ou IA…"></label>
+<label>{{ tr('Projet') }}<select v-model="sessionProjectFilter"><option value="">{{ tr('Tous les projets') }}</option><option v-for="item in projects" :key="item.uid" :value="item.slug">{{ item.name }}</option></select></label>
+<label>{{ tr('État') }}<select v-model="sessionStatusFilter"><option value="all">{{ tr('Tous les états') }}</option><option value="active">{{ tr('En cours') }}</option><option value="verification">{{ tr('À vérifier') }}</option><option value="closed">{{ tr('Clôturées') }}</option><option value="stopped">{{ tr('Arrêtées') }}</option></select></label>
+</div>
+<div class="section-title">
+<span>{{ tr('En cours') }}</span>
+<b>{{ liveSessions.length }}</b>
+</div>
+<button v-for="item in liveSessions" :key="item.uid" :class="{active:selectedSession?.uid===item.uid}" @click="mountTerminal(item)">
+<i :data-provider="item.provider">
+</i>
+<span>
+<strong>{{ item.title }}</strong>
+<small>{{ item.project_name||item.cwd.split('/').at(-1) }}</small>
+</span>
+<em>{{ tr('live') }}</em>
+</button>
+</section>
+<section v-if="!pilotRunUid" class="session-list saved">
+<div class="section-title">
+<span>{{ tr('Sauvegardées') }}</span>
+<b>{{ archivedSessions.length }}</b>
+</div>
+<button v-for="item in archivedSessions" :key="item.uid" @click="mountTerminal(item)">
+<i :data-provider="item.provider">
+</i>
+<span>
+<strong>{{ item.title }}</strong>
+<small>{{ date(item.created_at) }}</small>
+</span>
+<em>{{ sessionWorkflowLabel(item) }}</em>
+</button>
+</section>
+</aside>
+<section v-if="pilotRunUid&&!pilotTechnicalOpen&&pilotChatOpen" class="pilot-chat-main">
+<header><div><p class="eyebrow">{{ tr('Conversation') }}</p><h1>{{ tr('Pilote central') }}</h1><span>{{ tr('Coordinateur en lecture seule · les actions restent déléguées aux sous-sessions.') }}</span></div><button type="button" @click="pilotChatOpen=false">{{ tr('← Retour au cockpit') }}</button></header>
+<div v-if="pilotAgentBusy||pilotAwaitingReply||pilotAwaitingAgentReview" class="pilot-thinking-banner" role="status" aria-live="polite"><i></i><div><strong>{{ language==='fr'?(pilotAgentBusy?'Transmission au pilote…':pilotAwaitingAgentReview?'Le pilote analyse le retour du sous-agent…':'Le pilote analyse votre message…'):(pilotAgentBusy?'Sending to pilot…':pilotAwaitingAgentReview?'The pilot is reviewing the agent report…':'The pilot is analyzing your message…') }}</strong><span>{{ language==='fr'?(pilotAgentBusy?'Votre message est en cours d’envoi.':'L’indicateur disparaîtra dès que la synthèse du pilote sera reçue.'):(pilotAgentBusy?'Your message is being sent.':'The indicator will disappear when the pilot summary is received.') }}</span></div></div>
+<div class="pilot-command pilot-chat" :data-focus="pilotConversationFocus?'true':'false'"><div><h2>{{ selectedSession?.metadata?.objective_title||pilotRoomRoot?.title }}</h2><p>{{ tr('Discutez ici comme dans une session normale. L’historique reste dans cette conversation.') }}</p></div><div ref="pilotChatHost" class="pilot-chat-thread" aria-live="polite"><article v-for="message in pilotChatMessages" :key="message.uid" :data-role="message.role"><header><strong>{{ message.role==='agent'?message.sender:language==='fr'?(message.role==='pilot'?'Pilote central':message.sender==='Votre note'?'Votre précision · sans décision':'Vous'):(message.role==='pilot'?'Central pilot':message.sender==='Votre note'?'Your clarification · no decision':'You') }}</strong><time :datetime="message.created_at">{{ messageDate(message.created_at) }}</time></header><p><template v-for="(segment,index) in pilotChatSegments(message.content)" :key="index"><strong v-if="segment.bold">{{ segment.text }}</strong><template v-else>{{ segment.text }}</template></template></p></article><div v-if="!pilotChatMessages.length" class="pilot-chat-empty"><strong>{{ tr('Commencez la conversation') }}</strong><span>{{ tr('Posez une question ou donnez une direction au pilote central.') }}</span></div><div v-if="pilotAgentBusy" class="pilot-chat-typing"><i></i><span>{{ tr('Transmission du message…') }}</span></div></div><form @submit.prevent="sendPilotDirect()"><div v-if="sessionPendingAttachments.length" class="pilot-chat-files"><span v-for="item in sessionPendingAttachments" :key="item.uid">{{ item.name }}</span></div><textarea v-model="pilotDirectMessage" rows="4" :placeholder="language==='fr'?'Écrivez au pilote central…':'Write to the central pilot…'" @paste="pasteSessionFiles" @keydown.enter.exact.prevent="sendPilotDirect()"></textarea><footer><button type="button" :disabled="sessionUploading" @click="sessionFileInput?.click()">{{ language==='fr'?(sessionUploading?'Ajout…':sessionPendingAttachments.length?`${sessionPendingAttachments.length} fichier(s)`:'Joindre'):(sessionUploading?'Adding…':sessionPendingAttachments.length?`${sessionPendingAttachments.length} file(s)`:'Attach') }}</button><button class="primary" type="submit" :disabled="pilotAgentBusy||(!pilotDirectMessage.trim()&&!sessionPendingAttachments.length)||!pilotRoomRoot?.active">{{ language==='fr'?(pilotAgentBusy?'Envoi…':'Envoyer'):(pilotAgentBusy?'Sending…':'Send') }}</button></footer></form><small v-if="pilotRoomNotice">{{ pilotRoomNotice }}</small><p v-if="error" class="error">{{ error }}</p></div>
+</section>
+<section v-if="pilotRunUid&&!pilotTechnicalOpen&&!pilotChatOpen" class="pilot-cockpit-main">
+<header class="pilot-cockpit-title"><div><p class="eyebrow">{{ tr('Cockpit de mission') }}</p><h1>{{ selectedSession?.metadata?.objective_title||pilotRoomRoot?.title }}</h1><p>{{ pilotActiveWorkers.length?`${pilotActiveWorkers.length} sous-agent${pilotActiveWorkers.length===1?' travaille':'s travaillent'}`:pilotCoordinatorActive?'Pilote disponible · en attente de message ou de retour':'Équipe arrêtée · résultats conservés' }}</p></div><div><button v-if="pilotCanContinue" class="primary" :disabled="sessionResumeBusy" @click="continuePilotWorkflow">{{ sessionResumeBusy?'Reprise…':'Poursuivre l’action décidée' }}</button><button v-else-if="!pilotRoomRoot?.active" class="primary" :disabled="sessionResumeBusy" @click="resumePilotRoot">{{ sessionResumeBusy?'Reprise…':'Reprendre le pilote' }}</button><button @click="openPilotTechnicalHistory()">{{ tr('Voir l’historique technique') }}</button></div></header>
+<section v-if="pilotActiveSessions.length" class="pilot-active-now"><div><p class="eyebrow">{{ tr('En cours maintenant') }}</p><strong>{{ pilotActiveWorkers.length?`${pilotActiveWorkers.length} sous-agent${pilotActiveWorkers.length===1?' travaille':'s travaillent'}`:'Pilote central disponible' }}</strong><span>{{ pilotActiveWorkers.length?'Le pilote attend leurs retours pour les analyser et vous répondre.':'Aucune exécution en cours · ouvrez la conversation pour discuter ou décider.' }}</span></div><button v-for="item in pilotActiveSessions" :key="item.uid" type="button" @click="openPilotAgentTerminal(item)"><i :data-provider="item.provider"></i><span><strong>{{ item.metadata?.pilot_agent_name||'Pilote central' }}</strong><small>IA · {{ item.metadata?.pilot_parent_session_uid?'terminal actif':'conversation en attente' }}</small></span><b>{{ item.metadata?.pilot_parent_session_uid?'Ouvrir le terminal →':'Parler au pilote →' }}</b></button></section>
+<section class="pilot-autonomy-control"><div><p class="eyebrow">{{ tr('Mode de pilotage') }}</p><strong>{{ pilotAutonomyLabel(pilotAutonomyMode) }}</strong><span v-if="pilotAutonomyMode==='manual'">{{ tr('Vous donnez les réponses et prenez toutes les décisions.') }}</span><span v-else-if="pilotAutonomyMode==='semi'">{{ tr('Le pilote coordonne et répond ; vous intervenez uniquement pour les décisions.') }}</span><span v-else>{{ tr('Le pilote coordonne, répond et prend les décisions réversibles dans le périmètre autorisé.') }}</span></div><div role="group" aria-label="Mode de pilotage"><button :class="{active:pilotAutonomyMode==='manual'}" :disabled="pilotAutonomyBusy" @click="setPilotAutonomy('manual')"><b>{{ tr('Manuel') }}</b><small>{{ tr('Tout valider') }}</small></button><button :class="{active:pilotAutonomyMode==='semi'}" :disabled="pilotAutonomyBusy" @click="setPilotAutonomy('semi')"><b>{{ tr('Semi-auto') }}</b><small>{{ tr('Décisions uniquement') }}</small></button><button :class="{active:pilotAutonomyMode==='auto'}" :disabled="pilotAutonomyBusy" @click="setPilotAutonomy('auto')"><b>{{ tr('Automatique') }}</b><small>{{ tr('Réponses + décisions') }}</small></button></div></section>
+<section class="pilot-context-control" :data-alert="pilotRotation.should_rotate?'true':'false'"><div><p class="eyebrow">{{ tr('Contexte du pilote') }}</p><strong>{{ Math.round(pilotRotation.estimated_tokens/1000) }}k / {{ Math.round(pilotRotation.threshold_tokens/1000) }}k tokens estimés</strong><span v-if="pilotRotation.rotation_index">Relève {{ pilotRotation.rotation_index }} active · l’historique précédent reste consultable.</span><span v-else>{{ tr('La relève conserve les décisions, preuves, checkpoints et prochaine action sans reprendre toute la transcription.') }}</span><div class="pilot-context-meter"><i :style="{width:`${Math.min(100,pilotRotation.percent)}%`}"></i></div></div><div class="pilot-context-actions"><label>{{ tr('Rotation') }}<select :value="pilotRotation.mode" :disabled="pilotRotationBusy" @change="setPilotRotation(($event.target as HTMLSelectElement).value as 'manual'|'auto')"><option value="manual">{{ tr('Manuelle') }}</option><option value="auto">{{ tr('Automatique au checkpoint') }}</option></select></label><label>{{ tr('Seuil') }}<select :value="pilotRotation.threshold_tokens" :disabled="pilotRotationBusy" @change="setPilotRotationThreshold(Number(($event.target as HTMLSelectElement).value))"><option :value="40000">40k</option><option :value="80000">80k</option><option :value="120000">120k</option><option :value="160000">160k</option></select></label><button class="primary" :disabled="pilotRotationBusy||!pilotRoomRoot" @click="rotatePilotContext">{{ pilotRotationBusy?'Passation…':pilotRotation.should_rotate?'Créer la relève maintenant':'Créer une relève' }}</button></div></section>
+<section class="pilot-status-grid"><article><small>{{ tr('État actuel') }}</small><strong>{{ pilotActiveWorkers.length?'Exécution déléguée':pilotCoordinatorActive?'Pilote en attente':'Mission en pause' }}</strong><span>{{ pilotRoomSessions.length }} agent{{ pilotRoomSessions.length===1?'':'s' }} conservé{{ pilotRoomSessions.length===1?'':'s' }}</span></article><article><small>{{ tr('Prochaine action') }}</small><strong>{{ pilotDecisionRequest?'Répondre à la décision':pilotActiveWorkers.length?'Attendre le retour du sous-agent':pilotCanContinue?'Poursuivre l’action décidée':pilotCoordinatorActive?'Discuter avec le pilote':'Reprendre le pilote central' }}</strong><span>{{ pilotLatestCheckpoint?'Un retour consolidé est disponible.':'Aucun checkpoint consolidé pour le moment.' }}</span></article><article :data-alert="pilotDecisionRequest?'true':'false'"><small>{{ tr('Décision attendue') }}</small><strong>{{ pilotDecisionRequest?'Arbitrage à examiner':'Aucune décision demandée' }}</strong><span>{{ pilotDecisionRequest?'Le pilote a signalé un point nécessitant votre choix.':'Aucune réponse humaine requise actuellement.' }}</span><button v-if="pilotDecisionRequest" type="button" @click="focusPilotDecision">{{ tr('Voir et répondre') }}</button></article><article><small>{{ tr('Preuves visibles') }}</small><strong>{{ sessionAssets.length }} fichier{{ sessionAssets.length===1?'':'s' }}</strong><span>{{ tr('Pour l’agent actuellement sélectionné') }}</span></article></section>
+<section class="pilot-cockpit-columns"><div class="pilot-synthesis"><p class="eyebrow">{{ tr('Dernier retour consolidé') }}</p><article v-if="pilotLatestCheckpoint" class="pilot-checkpoint-digest"><header><strong>{{ pilotLatestCheckpoint.sender }}</strong><time :datetime="pilotLatestCheckpoint.created_at">{{ messageDate(pilotLatestCheckpoint.created_at) }}</time></header><div class="pilot-rich-report"><template v-for="(block,index) in pilotLatestReportBlocks" :key="index"><h3 v-if="block.type==='heading'">{{ block.text }}</h3><ul v-else-if="block.type==='list'"><li v-for="(item,itemIndex) in block.items" :key="itemIndex">{{ item }}</li></ul><p v-else>{{ block.text }}</p></template></div><div class="pilot-report-next"><small>{{ tr('Prochaine action recommandée') }}</small><strong>{{ pilotRecommendedAction }}</strong></div></article><div v-else class="empty"><strong>{{ tr('Aucune synthèse reçue') }}</strong><span>{{ tr('Demandez une synthèse au pilote lorsqu’il a terminé sa première analyse.') }}</span></div><article v-if="pilotDecisionRequest" class="pilot-decision"><header><strong>{{ tr('Décision humaine requise') }}</strong></header><p>{{ pilotDecisionRequest.content }}</p><footer><button type="button" class="primary" :disabled="pilotDecisionBusy" @click="resolvePilotDecision('approved')">{{ pilotDecisionBusy?'Transmission…':'Autoriser et poursuivre' }}</button><button type="button" :disabled="pilotDecisionBusy" @click="resolvePilotDecision('rejected')">{{ tr('Refuser') }}</button></footer><small>{{ tr('Votre choix est envoyé au pilote central. S’il est arrêté, Orchestrator le reprend automatiquement.') }}</small></article></div></section>
+<footer class="pilot-cockpit-actions"><div><strong>{{ tr('Étape suivante') }}</strong><span>{{ selectedSession?.metadata?.objective_uid?'Lorsque le résultat est prêt, transmettez cette passe à Vérifier.':'Orchestrator créera une passe liée au résultat avant de transmettre ses preuves.' }}</span></div><button @click="openSessionProjectStage('execute')">{{ tr('Retour au plan d’exécution') }}</button><button v-if="!selectedSession?.metadata?.reported_at" class="primary" :disabled="sessionReportBusy" @click="reportSession">{{ sessionReportBusy?'Transmission…':selectedSession?.metadata?.objective_uid?'Envoyer le résultat à Vérifier →':'Créer la passe et vérifier →' }}</button><button v-else-if="selectedSession?.metadata?.objective_uid" class="primary" @click="openSessionVerification(selectedSession)">{{ tr('Ouvrir Vérifier →') }}</button></footer>
+</section>
+<div v-if="pilotDecisionOpen&&pilotDecisionRequest" class="session-asset-modal pilot-decision-modal" @click.self="pilotDecisionOpen=false">
+<article role="dialog" aria-modal="true" aria-labelledby="pilot-decision-title">
+<header><div><span>Arbitrage · {{ currentProject?.name||selectedSession?.project_name }}</span><strong id="pilot-decision-title">{{ selectedSession?.metadata?.objective_title||pilotRoomRoot?.title }}</strong></div><button type="button" aria-label="Fermer" @click="pilotDecisionOpen=false">×</button></header>
+<div class="pilot-decision-modal-body">
+<section class="pilot-decision-identity"><div><small>{{ tr('Vous répondez à') }}</small><strong>{{ pilotRoomRoot?.title||'Pilote central' }}</strong><span>{{ pilotRoomRoot?.provider }} · {{ pilotRoomRoot?.active?'session active':'session arrêtée, reprise automatique' }}</span></div><div><small>{{ tr('Demande reçue') }}</small><strong>{{ date(pilotDecisionRequest.created_at) }}</strong><span>{{ sessionAssets.length }} fichier{{ sessionAssets.length===1?'':'s' }} ou preuve{{ sessionAssets.length===1?'':'s' }} disponible{{ sessionAssets.length===1?'':'s' }}</span></div></section>
+<section class="pilot-decision-question"><small>{{ tr('Pourquoi le pilote attend') }}</small><p>{{ pilotDecisionRequest.content }}</p></section>
+<section v-if="pilotDecisionChoices.length" class="pilot-decision-choices"><small>{{ tr('Choisissez une réponse pour décider') }}</small><button v-for="choice in pilotDecisionChoices" :key="choice.label" type="button" :disabled="pilotDecisionBusy" @click="selectPilotDecisionChoice(choice)"><strong>{{ choice.label }}</strong><span>{{ choice.description }}</span><b>{{ tr('Confirmer ce choix →') }}</b></button></section>
+<section v-else class="pilot-decision-action"><small>{{ tr('Ce que votre autorisation déclenchera') }}</small><p>{{ pilotRecommendedAction }}</p></section>
+<section v-if="pilotCurrentImageAssets.length" class="pilot-decision-evidence"><div><small>{{ tr('Preuves visuelles liées') }}</small><span>{{ pilotCurrentImageAssets.length }} image{{ pilotCurrentImageAssets.length===1?'':'s' }} · cliquez pour agrandir</span></div><div class="pilot-decision-gallery"><button v-for="asset in pilotCurrentImageAssets" :key="asset.uid" type="button" @click="openSessionAsset(asset)"><img :src="sessionAssetUrl(asset)" :alt="asset.label"><strong>{{ asset.label }}</strong></button></div></section>
+<details v-if="pilotLatestCheckpoint"><summary>{{ tr('Relire le dernier rapport complet du pilote') }}</summary><p>{{ pilotLatestCheckpoint.content }}</p></details>
+<details v-if="sessionFileAssets.length" class="pilot-linked-files"><summary>Voir les {{ sessionFileAssets.length }} fichiers techniques liés</summary><ul><li v-for="asset in sessionFileAssets" :key="asset.uid||asset.path"><button type="button" @click="openSessionAsset(asset)"><span class="session-file-mark">{{ (asset.name||asset.path||'file').split('.').pop()?.slice(0,4)||'file' }}</span><span><strong>{{ asset.label||asset.name||asset.path }}</strong><small>{{ tr('Cliquer pour ouvrir') }}</small></span><b>→</b></button></li></ul></details>
+<section class="pilot-decision-note"><label for="pilot-decision-note">{{ tr('Ajouter seulement une précision') }}</label><textarea id="pilot-decision-note" v-model="pilotDecisionNote" rows="3" placeholder="Question ou contrainte complémentaire — ceci ne choisit aucune réponse…" @keydown.enter.exact.prevent="addPilotDecisionNote"></textarea><div><small>{{ tr('Une précision ne valide aucun choix et laisse la décision ouverte.') }}</small><button type="button" :disabled="pilotDecisionBusy||!pilotDecisionNote.trim()" @click="addPilotDecisionNote">{{ pilotDecisionBusy?'Transmission…':'Envoyer sans décider' }}</button></div></section>
+<small class="pilot-decision-effect">Votre choix sera envoyé à {{ pilotRoomRoot?.title||'la session du pilote central' }}. Si elle est arrêtée, Orchestrator la reprendra avant de transmettre votre réponse.</small>
+</div>
+<footer><button type="button" @click="openPilotTechnicalHistory()">{{ tr('Voir l’historique technique') }}</button><button v-if="pilotDecisionChoices.length" type="button" @click="pilotDecisionOpen=false">{{ tr('Fermer sans décider') }}</button><template v-else><button type="button" :disabled="pilotDecisionBusy" @click="resolvePilotDecision('rejected')">{{ tr('Refuser et demander une alternative') }}</button><button type="button" class="primary" :disabled="pilotDecisionBusy" @click="resolvePilotDecision('approved')">{{ pilotDecisionBusy?'Transmission…':'Autoriser cette prochaine action' }}</button></template></footer>
+</article>
+</div>
+<div v-if="pilotTechnicalHistoryOpen&&pilotTechnicalSession" class="session-asset-modal pilot-history-modal" @click.self="pilotTechnicalHistoryOpen=false">
+<article role="dialog" aria-modal="true" aria-labelledby="pilot-history-title">
+<header><div><span>{{ tr('Historique technique · lecture seule') }}</span><strong id="pilot-history-title">{{ pilotTechnicalSession.title }}</strong></div><button type="button" aria-label="Fermer" @click="pilotTechnicalHistoryOpen=false">×</button></header>
+<div class="pilot-history-body">
+<section class="pilot-history-state"><div><small>Session</small><strong>{{ pilotTechnicalSession.provider }} · {{ pilotTechnicalSession.active?'active':'arrêtée' }}</strong><span>{{ date(pilotTechnicalSession.created_at) }}</span></div><div><small>{{ tr('Reprise native') }}</small><strong>{{ pilotTechnicalSession.metadata?.native_session_id?'Contexte conservé':'Nouvelle session requise' }}</strong><code v-if="pilotTechnicalSession.metadata?.native_session_id">{{ pilotTechnicalSession.metadata.native_session_id }}</code></div><div><small>{{ tr('Lecture') }}</small><strong>{{ pilotTechnicalHistoryRaw?(pilotTechnicalAsset?`${Math.max(1,Math.round((pilotTechnicalAsset.bytes||0)/1024))} Ko chargés`:'Sortie récente'):'Résumé lisible' }}</strong><span>{{ tr('Aucune action n’est lancée depuis cette vue.') }}</span></div></section>
+<section class="pilot-history-transcript"><header><div><small>{{ pilotTechnicalHistoryRaw?'Sortie technique brute':'Résumé de la session' }}</small><span>{{ pilotTechnicalHistoryRaw?'Cette sortie reste destinée au diagnostic.':'État, analyse, preuves, décision et prochaine action lorsqu’ils sont disponibles.' }}</span></div><button v-if="!pilotTechnicalHistoryRaw" type="button" @click="loadPilotTechnicalRawHistory">{{ tr('Afficher la sortie brute') }}</button></header><div v-if="pilotTechnicalHistoryLoading" class="pilot-history-loading">{{ tr('Chargement de la transcription…') }}</div><div v-else-if="pilotTechnicalHistoryError" class="pilot-history-error">{{ pilotTechnicalHistoryError }}</div><pre v-else>{{ pilotTechnicalHistory }}</pre></section>
+</div>
+<footer><button type="button" @click="openRawPilotTerminal">{{ tr('Ouvrir la session technique') }}</button><button type="button" @click="pilotTechnicalHistoryOpen=false">{{ tr('Fermer') }}</button><button v-if="!pilotTechnicalSession.active" type="button" class="primary" :disabled="sessionResumeBusy" @click="resumeTechnicalSession">{{ sessionResumeBusy?'Reprise…':'Reprendre cette session' }}</button></footer>
+</article>
+</div>
+<section class="terminal-panel" :aria-hidden="Boolean(pilotRunUid&&!pilotTechnicalOpen)">
+<template v-if="selectedSession">
+<header>
+<div>
+<span class="provider-badge" :data-provider="selectedSession.provider">{{ selectedSession.provider }}</span>
+<div>
+<h2>{{ selectedSession.title }}</h2>
+<code>{{ selectedSession.cwd }}</code>
+</div>
+</div>
+<div class="session-header-actions">
+<button v-if="pilotRunUid" class="technical-back" type="button" @click="pilotTechnicalOpen=false">{{ tr('← Cockpit') }}</button>
+<div class="session-input-mode" aria-label="Mode d’affichage"><button v-if="selectedSession.active" type="button" :class="{active:terminalInputMode==='composer'&&!terminalHistoryOpen}" :aria-pressed="terminalInputMode==='composer'&&!terminalHistoryOpen" @click="terminalHistoryOpen=false;setTerminalInputMode('composer')">{{ tr('Discussion') }}</button><button v-if="selectedSession.active" type="button" :class="{active:terminalInputMode==='direct'&&!terminalHistoryOpen}" :aria-pressed="terminalInputMode==='direct'&&!terminalHistoryOpen" @click="terminalHistoryOpen=false;setTerminalInputMode('direct')">{{ tr('Terminal direct') }}</button><button type="button" :class="{active:terminalHistoryOpen}" :aria-pressed="terminalHistoryOpen" @click="terminalHistoryOpen?hideTerminalHistory():showTerminalHistory()">{{ selectedSession.active?tr('Historique'):terminalHistoryOpen?(language==='fr'?'Terminal brut':'Raw terminal'):(language==='fr'?'Discussion lisible':'Readable conversation') }}</button></div>
+<span v-if="selectedSession.metadata?.resumed_from_uid" class="session-reported">{{ tr('Suite reprise') }}</span>
+<span class="connection" :data-state="connection">{{ connection }}</span>
+<span v-if="selectedSession.metadata?.report_status==='awaiting_verification'" class="session-reported">{{ tr('En vérification') }}</span>
+</div>
+</header>
+<div v-show="!terminalHistoryOpen" ref="terminalHost" class="terminal-host" @wheel="handleTerminalWheel"></div>
+<div v-if="terminalCopyNotice" class="terminal-copy-notice" role="status" aria-live="polite">{{ tr('Texte copié') }}</div>
+<section v-if="terminalHistoryOpen" ref="terminalHistoryHost" class="terminal-history" :class="{'session-archive':!selectedSession.active}"><header><div><strong>{{ selectedSession.active?tr('Historique du terminal'):(language==='fr'?'Discussion archivée':'Archived conversation') }}</strong><span>{{ selectedSession.active?tr('Sortie complète conservée · lecture seule'):(language==='fr'?'Messages natifs de la session · lecture seule':'Native session messages · read only') }}</span></div><button type="button" @click="hideTerminalHistory">{{ selectedSession.active?tr('Retour au direct'):(language==='fr'?'Voir le terminal brut':'View raw terminal') }}</button></header><div v-if="!selectedSession.active&&sessionArchiveMessages.length" class="session-archive-messages"><article v-for="message in sessionArchiveMessages" :key="message.uid" :data-role="message.role"><header><strong>{{ message.role==='assistant'?(language==='fr'?'IA':'AI'):(language==='fr'?'Vous':'You') }}</strong><time :datetime="message.created_at">{{ messageDate(message.created_at) }}</time></header><div><template v-for="(block,index) in pilotReportBlocks(message.content)" :key="index"><h3 v-if="block.type==='heading'">{{ block.text }}</h3><ul v-else-if="block.type==='list'"><li v-for="(item,itemIndex) in block.items" :key="itemIndex">{{ item }}</li></ul><p v-else>{{ block.text }}</p></template></div></article></div><div v-else-if="!selectedSession.active" class="session-archive-empty"><strong>{{ language==='fr'?'Aucun message natif retrouvé':'No native message found' }}</strong><span>{{ language==='fr'?'Le terminal brut reste disponible pour cette ancienne session.':'The raw terminal remains available for this older session.' }}</span></div><pre v-else>{{ terminalHistoryText||'Aucune sortie enregistrée pour cette session.' }}</pre></section>
+<form v-if="selectedSession.active&&terminalInputMode==='composer'" class="session-composer" @submit.prevent="sendSessionMessage">
+<div v-if="sessionPendingAttachments.length" class="session-attachments">
+<figure v-for="(item,index) in sessionPendingAttachments" :key="item.uid">
+<img v-if="String(item.mime||'').startsWith('image/')" :src="sessionAttachmentUrl(item)" :alt="item.name">
+<span v-else class="session-attachment-file">{{ String(item.name||'fichier').split('.').pop()?.slice(0,5).toUpperCase() }}</span>
+<figcaption>{{ item.name }}</figcaption>
+<button type="button" aria-label="Retirer la pièce jointe" @click="sessionPendingAttachments.splice(index,1)">×</button>
+</figure>
+</div>
+<div class="session-compose-row">
+<button type="button" class="session-upload" :disabled="sessionUploading" @click="sessionFileInput?.click()">{{ language==='fr'?(sessionUploading?'Chargement…':'Ajouter un fichier'):(sessionUploading?'Uploading…':'Add a file') }}</button>
+<input ref="sessionFileInput" class="session-file-input" type="file" accept="image/png,image/jpeg,image/webp,image/gif,.pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.xml,.yaml,.yml,.toml,.ini,.log,.js,.jsx,.ts,.tsx,.vue,.css,.scss,.html,.php,.py,.rb,.java,.kt,.swift,.go,.rs,.c,.cc,.cpp,.h,.hpp,.cs,.shader,.sql,.sh" multiple @change="uploadSessionFiles">
+<textarea v-model="sessionMessage" rows="3" placeholder="Écrivez ou collez directement une image ou un fichier…" @paste="pasteSessionFiles" @keydown.enter.exact.prevent="sendSessionMessage"></textarea>
+<div class="session-compose-actions">
+<button class="primary" type="submit" :disabled="connection!=='live'||(!sessionMessage.trim()&&!sessionPendingAttachments.length)">Envoyer à {{ providers.find(item=>item.id===selectedSession?.provider)?.label||selectedSession?.provider }}</button>
+<button type="button" class="danger" @click="stopSession">{{ tr('Arrêter') }}</button>
+<button v-if="!selectedSession.metadata?.reported_at" type="button" class="session-report" :disabled="sessionReportBusy" @click="reportSession">{{ sessionReportBusy?'Transmission…':'Terminer et vérifier' }}</button>
+</div>
+</div>
+<small>{{ tr('Entrée envoie · Maj + Entrée ajoute une ligne · Collez directement une image ou un fichier. Les pièces jointes restent dans le contexte de la session.') }}</small>
+</form>
+<section v-else-if="selectedSession.active" class="session-direct-controls"><div><strong>{{ tr('Terminal direct actif') }}</strong><span>{{ tr('Le formulaire est désactivé. Votre clavier agit uniquement dans le terminal.') }}</span></div><button type="button" @click="setTerminalInputMode('composer')">{{ tr('Revenir à la discussion') }}</button><button type="button" class="danger" @click="stopSession">{{ tr('Arrêter') }}</button></section>
+<section v-else class="session-handoff">
+<div v-if="selectedSession.metadata?.report_status==='awaiting_verification'"><strong>{{ tr('Résultat transmis à Vérifier') }}</strong><span>{{ tr('L’objectif n’est pas encore validé : ses preuves doivent être examinées.') }}</span></div>
+<div v-else><strong>{{ tr('Session arrêtée') }}</strong><span>{{ tr('Reprenez cette discussion ou transmettez son résultat si la passe est terminée.') }}</span></div>
+<div class="session-handoff-actions"><button :disabled="sessionResumeBusy" @click="resumeSession">{{ language==='fr'?(sessionResumeBusy?'Reprise…':'Reprendre la session'):(sessionResumeBusy?'Resuming…':'Resume session') }}</button><button v-if="!selectedSession.metadata?.reported_at" class="session-report" :disabled="sessionReportBusy" @click="reportSession">{{ language==='fr'?(sessionReportBusy?'Transmission…':'Envoyer à Vérifier'):(sessionReportBusy?'Sending…':'Send to Review') }}</button></div>
+</section>
+<footer>
+<span>{{ language==='fr'?(terminalInputMode==='direct'?'Saisie directe active dans le terminal.':'Terminal en lecture seule · utilisez le formulaire pour écrire.'):(terminalInputMode==='direct'?'Direct terminal input enabled.':'Read-only terminal · use the form to write.') }}</span>
+<span>{{ tr('Toute la sortie est sauvegardée.') }}</span>
+</footer>
+</template>
+<div v-else class="welcome">
+<img :src="orchestratorMark" alt="">
+<p class="eyebrow">{{ tr('Terminal prêt') }}</p>
+<h2>{{ tr('Toutes vos IA, au même endroit.') }}</h2>
+<p>{{ tr('Choisissez le projet, les permissions et le mode de reprise. La session apparaît ici en direct.') }}</p>
+</div>
+</section>
+<aside v-if="selectedSession" class="session-assets-panel">
+<header><div><p class="eyebrow">{{ tr('Contexte de session') }}</p><h3>{{ tr('Fichiers et images') }}</h3></div><span>{{ sessionAssets.length }}</span></header>
+<div v-if="selectedSession.metadata?.pilot_role==='coordinator'" class="session-assets-list session-assets-grouped">
+<section v-if="pilotCurrentAssets.length" class="session-assets-current"><header><div><strong>{{ language==='fr'?'Liés au dernier retour':'Linked to latest report' }}</strong><small>{{ language==='fr'?'À examiner pour la décision actuelle':'Review for the current decision' }}</small></div><span>{{ pilotCurrentAssets.length }}</span></header>
+<button v-for="item in pilotCurrentAssets" :key="item.uid" @click="openSessionAsset(item)">
+<img v-if="item.mime?.startsWith('image/')" :src="sessionAssetUrl(item)" :alt="item.label">
+<span v-else class="session-file-mark">{{ item.name.split('.').pop()?.slice(0,4)||'file' }}</span>
+<span><strong>{{ item.label }}</strong><small>{{ item.source==='user'?'Joint par vous':item.source==='result'?'Résultat de session':'Détecté dans le terminal' }} · {{ Math.max(1,Math.round(item.bytes/1024)) }} Ko</small></span>
+</button>
+</section>
+<details v-if="pilotHistoricalAssets.length" class="session-assets-history"><summary><span><strong>{{ language==='fr'?'Fichiers précédents':'Previous files' }}</strong><small>{{ language==='fr'?'Historique de la passe et des anciens échanges':'Pass and earlier message history' }}</small></span><b>{{ pilotHistoricalAssets.length }}</b></summary><div>
+<button v-for="item in pilotHistoricalAssets" :key="item.uid" @click="openSessionAsset(item)">
+<img v-if="item.mime?.startsWith('image/')" :src="sessionAssetUrl(item)" :alt="item.label">
+<span v-else class="session-file-mark">{{ item.name.split('.').pop()?.slice(0,4)||'file' }}</span>
+<span><strong>{{ item.label }}</strong><small>{{ item.source==='user'?'Joint par vous':item.source==='result'?'Résultat de session':'Détecté dans le terminal' }} · {{ Math.max(1,Math.round(item.bytes/1024)) }} Ko</small></span>
+</button>
+</div></details>
+<div v-if="!sessionAssets.length" class="session-assets-empty"><strong>{{ tr('Aucun fichier détecté') }}</strong><p>{{ tr('Les chemins cités, images jointes et preuves produites apparaîtront ici automatiquement.') }}</p></div>
+</div>
+<div v-else class="session-assets-list">
+<button v-for="item in sessionAssets" :key="item.uid" @click="openSessionAsset(item)">
+<img v-if="item.mime?.startsWith('image/')" :src="sessionAssetUrl(item)" :alt="item.label">
+<span v-else class="session-file-mark">{{ item.name.split('.').pop()?.slice(0,4)||'file' }}</span>
+<span><strong>{{ item.label }}</strong><small>{{ item.source==='user'?'Joint par vous':item.source==='result'?'Résultat de session':'Détecté dans le terminal' }} · {{ Math.max(1,Math.round(item.bytes/1024)) }} Ko</small></span>
+</button>
+<div v-if="!sessionAssets.length" class="session-assets-empty"><strong>{{ tr('Aucun fichier détecté') }}</strong><p>{{ tr('Les chemins cités, images jointes et preuves produites apparaîtront ici automatiquement.') }}</p></div>
+</div>
+</aside>
+<div v-if="selectedSessionAsset" class="session-asset-modal" @click.self="selectedSessionAsset=null">
+<article><header><div><span>{{ selectedSessionAsset.source==='user'?'Pièce jointe':selectedSessionAsset.source==='result'?'Résultat':'Fichier détecté' }}</span><strong>{{ selectedSessionAsset.label }}</strong></div><button @click="selectedSessionAsset=null">×</button></header><img v-if="selectedSessionAsset.mime?.startsWith('image/')" :src="sessionAssetUrl(selectedSessionAsset)" :alt="selectedSessionAsset.label"><div v-else-if="selectedSessionAssetLoading" class="session-file-loading">{{ tr('Chargement du fichier…') }}</div><div v-else-if="selectedSessionAssetError" class="session-file-loading error">{{ selectedSessionAssetError }}</div><div v-else-if="selectedSessionAssetContent" class="session-file-preview"><div><code>{{ selectedSessionAsset.path }}</code><span>{{ Math.max(1,Math.round((selectedSessionAsset.bytes||0)/1024)) }} Ko</span></div><pre>{{ selectedSessionAssetContent }}</pre></div><div v-else class="session-file-detail"><span class="session-file-mark">{{ (selectedSessionAsset.name||selectedSessionAsset.path||'file').split('.').pop()?.slice(0,4)||'file' }}</span><code>{{ selectedSessionAsset.path }}</code><small>{{ tr('Ce format ne peut pas être prévisualisé dans Orchestrator.') }}</small></div></article>
+</div>
+</main>
+
+  <main v-else class="page-shell">
+<header class="page-lead">
+<div>
+<p class="eyebrow">{{ tr('Accès') }}</p>
+<h1>{{ tr('Continuer depuis votre téléphone.') }}</h1>
+<p>{{ language==='fr'?'Orchestrator crée un lien Internet temporaire et protège toutes les données par un code d’appairage.':'Orchestrator creates a temporary Internet link and protects all data with a pairing code.' }}</p>
+</div>
+</header>
+<section class="access-grid">
+<section class="panel access-setup remote-access-card">
+<div class="panel-title"><div><p class="eyebrow">{{ language==='fr'?'Relais Internet temporaire':'Temporary Internet relay' }}</p><h2>{{ language==='fr'?(remoteAccess?.phase==='online'?'Votre téléphone peut se connecter':remoteAccess?.installed?'Prêt à être ouvert':'Installation en une étape'):(remoteAccess?.phase==='online'?'Your phone can connect':remoteAccess?.installed?'Ready to open':'One-step installation') }}</h2></div><span class="status" :data-status="remoteAccess?.phase==='online'?'active':remoteAccess?.phase==='error'?'failed':'ready'">{{ language==='fr'?(remoteAccess?.phase==='online'?'en ligne':remoteAccess?.phase==='installing'?'installation':remoteAccess?.phase==='starting'?'connexion':remoteAccess?.installed?'prêt':'à installer'):(remoteAccess?.phase==='online'?'online':remoteAccess?.phase==='installing'?'installing':remoteAccess?.phase==='starting'?'connecting':remoteAccess?.installed?'ready':'install') }}</span></div>
+<p v-if="!remoteAccess?.installed">{{ language==='fr'?'Orchestrator peut installer le composant de connexion officiel sur':'Orchestrator can install the official connection component on' }} {{ remoteAccess?.platform==='win32'?'Windows':'macOS' }}. {{ language==='fr'?'Aucun compte Cloudflare n’est demandé.':'No Cloudflare account is required.' }}</p>
+<p v-else-if="remoteAccess?.phase!=='online'">{{ language==='fr'?'Le lien est aléatoire, chiffré en HTTPS et valable seulement tant que ce PC et Orchestrator restent allumés.':'The link is random, HTTPS-encrypted, and valid only while this computer and Orchestrator remain on.' }}</p>
+<button v-if="remoteAccess&&!remoteAccess.installed" class="primary wide" :disabled="remoteAccessBusy||!remoteAccess.installer?.available" @click="remoteAction('install')">{{ remoteAccess?.phase==='installing'?'Installation en cours…':remoteAccess.installer?.label }}</button>
+<button v-else-if="remoteAccess?.phase!=='online'" class="primary wide" :disabled="remoteAccessBusy||remoteAccess?.phase==='starting'" @click="remoteAction('start')">{{ language==='fr'?(remoteAccess?.phase==='starting'?'Création du lien…':'Ouvrir l’accès Internet'):(remoteAccess?.phase==='starting'?'Creating link…':'Open Internet access') }}</button>
+<div v-if="remoteAccess" class="prevent-idle" :data-active="remoteAccess.prevent_idle?.active">
+  <div><strong>{{ language==='fr'?'Garder l’ordinateur éveillé':'Keep the computer awake' }}</strong><span>{{ language==='fr'?'Les sessions et l’accès distant continuent même si l’écran s’éteint.':'Sessions and remote access continue even if the screen turns off.' }}</span><small v-if="!remoteAccess.prevent_idle?.available">{{ remoteAccess.prevent_idle?.label }}</small><small v-else-if="remoteAccess.prevent_idle?.active">{{ language==='fr'?'Actif depuis':'Active since' }} {{ date(remoteAccess.prevent_idle.started_at) }}</small></div>
+  <button type="button" role="switch" :aria-checked="Boolean(remoteAccess.prevent_idle?.active)" :disabled="preventIdleBusy||!remoteAccess.prevent_idle?.available" @click="togglePreventIdle">{{ language==='fr'?(preventIdleBusy?'Patientez…':remoteAccess.prevent_idle?.active?'Désactiver':'Activer'):(preventIdleBusy?'Please wait…':remoteAccess.prevent_idle?.active?'Disable':'Enable') }}</button>
+</div>
+<div v-if="remoteAccess?.phase==='online'" class="remote-online">
+  <img v-if="remoteQr" :src="remoteQr" alt="QR code du lien Orchestrator">
+  <div><span>{{ tr('1. Scannez ou copiez ce lien') }}</span><code>{{ remoteAccess.public_url }}</code><button @click="copyRemoteLink">{{ remoteCopied?'Lien copié':'Copier le lien' }}</button></div>
+  <div class="pairing-code"><span>{{ tr('2. Entrez ce code sur le téléphone') }}</span><strong>{{ remoteAccess.pairing_code||'Code expiré ou déjà utilisé' }}</strong><small v-if="remoteAccess.pairing_expires_at">Expire {{ date(remoteAccess.pairing_expires_at) }}</small><button :disabled="remoteAccessBusy" @click="remoteAction('code')">{{ remoteAccess.pairing_code?'Renouveler le code':'Nouveau code' }}</button></div>
+</div>
+<p v-if="remoteAccess?.error" class="error">{{ remoteAccess.error }}</p>
+<details v-if="remoteAccess?.logs?.length" class="remote-logs"><summary>{{ tr('Détails techniques') }}</summary><pre>{{ remoteAccess.logs.join('\n') }}</pre></details>
+<div v-if="remoteAccess?.phase==='online'" class="remote-stop"><span>{{ tr('Fermer le relais coupe immédiatement le lien public.') }}</span><button class="danger" :disabled="remoteAccessBusy" @click="remoteAction('stop')">{{ tr('Fermer l’accès Internet') }}</button></div>
+</section>
+<section class="panel">
+<div class="panel-title">
+<h2>{{ tr('Appareils associés') }}</h2>
+<div class="token-panel-actions"><span>{{ tokens.filter(item=>!item.revoked_at).length }} {{ language==='fr'?'actifs':'active' }}</span><button v-if="tokens.some(item=>!item.revoked_at)" class="danger" @click="revokeAllTokens">{{ language==='fr'?'Tout révoquer':'Revoke all' }}</button></div>
+</div>
+<article v-for="item in tokens" :key="item.uid" class="token-row">
+<div>
+<strong>{{ item.label }}</strong>
+<small>{{ language==='fr'?'Droits':'Permissions' }} : {{ item.scopes.join(' · ') }} · {{ language==='fr'?'associé':'linked' }} {{ date(item.created_at) }}</small><small v-if="item.last_used_at">{{ language==='fr'?'Dernière activité':'Last activity' }} : {{ date(item.last_used_at) }}</small><small v-else>{{ language==='fr'?'Jamais utilisé':'Never used' }}</small><small class="token-access-link"><template v-if="item.access_url||remoteAccess?.public_url">{{ language==='fr'?'Lien actuel':'Current link' }} : <a :href="item.access_url||remoteAccess.public_url" target="_blank" rel="noreferrer">{{ item.access_url||remoteAccess.public_url }}</a></template><template v-else-if="!item.revoked_at">{{ language==='fr'?'Lien actuel : aucun accès Internet ouvert':'Current link: no Internet access open' }}</template></small>
+</div>
+<span class="status" :data-status="item.revoked_at?'revoked':'active'">{{ language==='fr'?(item.revoked_at?'révoqué':'actif'):(item.revoked_at?'revoked':'active') }}</span>
+<button v-if="!item.revoked_at" class="danger" @click="revokeToken(item)">{{ language==='fr'?'Révoquer':'Revoke' }}</button>
+</article>
+<div v-if="!tokens.length" class="empty">{{ language==='fr'?'Aucun appareil associé. Le premier apparaîtra ici après saisie du code sur le téléphone.':'No linked device. The first one will appear here after entering the code on the phone.' }}</div>
+</section>
+</section>
+<section class="panel cloud-sync-panel">
+<div class="panel-title"><div><p class="eyebrow">{{ tr('Mémoire cloud') }}</p><h2>{{ tr('Google Drive et Dropbox') }}</h2></div><button :disabled="Boolean(cloudSyncing)" @click="loadCloudSync">{{ tr('Actualiser l’état') }}</button></div>
+<p>{{ language==='fr'?'Les journaux, décisions et preuves sont copiés dans les espaces déjà associés. La synchronisation est commune à tous les projets et conserve les conflits au lieu d’écraser silencieusement un historique.':'Logs, decisions, and evidence are copied to the linked storage spaces. Synchronization is shared by all projects and preserves conflicts instead of silently overwriting history.' }}</p>
+<div class="cloud-sync-grid">
+<article v-for="item in cloudConnections" :key="item.provider" :data-state="item.last_status">
+<header><div><span class="cloud-provider-mark">{{ item.provider==='gdrive'?'G':'D' }}</span><div><strong>{{ item.label }}</strong><small>{{ tr(item.enabled?'Connexion configurée':'Connexion désactivée') }}</small></div></div><span class="status" :data-status="item.progress?.active?'running':item.last_status==='ok'?'active':item.last_status==='error'?'failed':'ready'">{{ item.progress?.active?(language==='fr'?'en cours':'running'):tr(item.last_status==='ok'?'opérationnel':item.last_status==='error'?'à vérifier':'jamais lancé') }}</span></header>
+<div v-if="item.progress" class="cloud-sync-progress"><div><strong>{{ item.progress.active?item.progress.detail:(language==='fr'?'Synchronisation terminée':'Synchronization completed') }}</strong><span>{{ item.progress.percent }}%</span></div><i><em :style="{width:`${item.progress.percent}%`}"></em></i></div>
+<dl><div><dt>{{ tr('Preuves cloud') }}</dt><dd>{{ item.cloud_evidence||0 }}</dd></div><div><dt>{{ tr('Événements en attente') }}</dt><dd>{{ item.pending_events||0 }}</dd></div><div><dt>{{ tr('Conflits ouverts') }}</dt><dd>{{ item.open_conflicts||0 }}</dd></div></dl>
+<p class="cloud-sync-detail">{{ item.last_detail||tr('Aucune synchronisation enregistrée.') }}</p>
+<div class="cloud-auto-sync"><strong>{{ tr('Synchronisation automatique active') }}</strong><span>{{ tr('Prochaine synchronisation automatique sous 15 minutes.') }}</span></div>
+<footer><span>{{ item.last_push_at||item.last_pull_at?(language==='fr'?`Dernier échange ${date(item.last_push_at||item.last_pull_at)}`:`Last exchange ${date(item.last_push_at||item.last_pull_at)}`):tr('Aucun échange daté') }}</span><button class="primary" :disabled="!item.enabled||Boolean(cloudSyncing)" @click="runCloudSync(item)">{{ cloudSyncing===item.provider?(language==='fr'?'Synchronisation…':'Synchronizing…'):`${language==='fr'?'Synchroniser':'Sync'} ${item.provider==='gdrive'?'Drive':'Dropbox'}` }}</button></footer>
+</article>
+<div v-if="!cloudConnections.length" class="empty">{{ language==='fr'?'Aucune connexion Drive ou Dropbox n’est configurée sur cet Orchestrator.':'No Drive or Dropbox connection is configured on this Orchestrator.' }}</div>
+</div>
+<p v-if="cloudSyncNotice" class="cloud-sync-notice">{{ cloudSyncNotice }}</p>
+</section>
+</main>
+<aside v-if="sourceConversation" class="source-conversation" @click.self="closeSourceConversation"><section><header><div><p class="eyebrow">Source {{ sourceConversation.source?.id }}</p><h3>{{ sourceConversation.title||'Session historique' }}</h3><p>IA · {{ sourceConversation.messages?.length||0 }} messages</p></div><button @click="closeSourceConversation">{{ tr('Fermer') }}</button></header><div v-if="sourceConversationLoading" class="loading">{{ tr('Chargement de la session…') }}</div><div v-else class="source-transcript"><article v-for="message in sourceConversation.messages" :key="`${message.line}-${message.role}`" :data-role="message.role"><span>{{ message.role==='user'?'Vous':'IA' }}</span><p>{{ message.content }}</p><small><time :datetime="message.occurred_at">{{ messageDate(message.occurred_at) }}</time><template v-if="message.timestamp_source==='file'"> · heure du fichier</template></small></article><p v-if="!sourceConversation.messages?.length" class="empty">{{ tr('L’extrait existe, mais aucun historique complet lisible n’est disponible.') }}</p></div></section></aside>
+<div v-if="proofDetail" class="proof-detail-drawer" role="dialog" aria-modal="true" :aria-label="`Examen de ${proofDetail.label}`" @click.self="proofDetail=null"><aside><header><div><p class="eyebrow">{{ tr('Preuve à examiner') }}</p><h2>{{ proofDetail.label }}</h2><span class="status" :data-status="proofDetail.verification||proofDetail.status">{{ proofDetail.verification||proofDetail.status }}</span></div><button class="drawer-close" aria-label="Fermer l’examen" @click="proofDetail=null"><span>{{ tr('Fermer') }}</span><b>×</b></button></header><div class="proof-detail-body"><section class="proof-detail-meta"><div><span>{{ tr('Objectif') }}</span><strong>{{ proofDetail.objective_title||'Preuve générale du projet' }}</strong></div><div><span>{{ tr('Passe') }}</span><strong>{{ proofDetail.pass_ref||'Non rattachée' }}</strong></div><div><span>{{ tr('Origine') }}</span><strong>{{ proofDetail.origin }}</strong></div><div><span>{{ tr('Enregistrée') }}</span><strong>{{ date(proofDetail.created_at) }}</strong></div></section><section class="proof-detail-content"><button v-if="isImageProof(proofDetail)&&proofDetail.local_available" class="proof-detail-image" @click="selectedProof=proofDetail"><img :src="previewUrl(proofDetail)" :alt="proofDetail.label"><span>{{ tr('Agrandir l’image') }}</span></button><div v-else-if="proofDetailLoading" class="loading">{{ tr('Lecture du contenu…') }}</div><pre v-else-if="proofDetailContent">{{ proofDetailContent }}</pre><p v-else-if="proofDetailError" class="error">{{ proofDetailError }}</p><div v-else class="proof-detail-file"><code>{{ proofDetail.locator||'Aucun emplacement local' }}</code><a v-if="proofDetail.local_available" :href="previewUrl(proofDetail)" target="_blank">{{ tr('Ouvrir le fichier brut') }}</a></div></section><section class="proof-detail-related"><header><div><span>{{ tr('Dossier de la passe') }}</span><strong>{{ proofDetailRelated.length }} preuve{{ proofDetailRelated.length===1?'':'s' }}</strong></div></header><button v-for="item in proofDetailRelated" :key="item.uid" :class="{active:item.uid===proofDetail.uid}" @click="openProofDetail(item)"><span>{{ item.label }}</span><small>{{ item.type }} · {{ item.local_available?'disponible':'indisponible' }}</small></button></section><section class="proof-detail-integrity"><div><span>SHA-256</span><code>{{ proofDetail.sha256||'Non disponible' }}</code></div><button :disabled="proofDetail.verificationBusy" @click="verifyProof(proofDetail)">{{ proofDetail.verificationBusy?'Vérification…':'Vérifier maintenant' }}</button></section></div></aside></div>
+<div v-if="selectedProof" class="proof-lightbox" role="dialog" aria-modal="true" :aria-label="`Aperçu de ${selectedProof.label}`" @click.self="selectedProof=null"><button class="lightbox-close" aria-label="Fermer l’aperçu" @click="selectedProof=null"><span>{{ tr('Fermer') }}</span><b>×</b></button><figure><img :src="previewUrl(selectedProof)" :alt="selectedProof.label"><figcaption><strong>{{ selectedProof.label }}</strong><span>{{ selectedProof.objective_title||selectedProof.pass_ref||selectedProof.origin }}</span></figcaption></figure></div>
+  </template>
+</div>
 </template>
